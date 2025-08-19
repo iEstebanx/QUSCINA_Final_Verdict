@@ -7,13 +7,16 @@ import {
   Typography,
   TextField,
   Button,
+  IconButton,
+  Tooltip,
   Divider,
   FormControlLabel,
   Switch,
   InputAdornment,
-  IconButton,
 } from "@mui/material";
 import { useTheme, alpha } from "@mui/material/styles";
+import FacebookIcon from "@mui/icons-material/Facebook";
+import GitHubIcon from "@mui/icons-material/GitHub";
 import GoogleIcon from "@mui/icons-material/Google";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
@@ -28,7 +31,7 @@ export default function LoginPage() {
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const { login, loginWithProvider } = useAuth(); // if undefined, we'll guard
+  const { login /* , loginWithProvider */ } = useAuth();
   const nav = useNavigate();
   const alert = useAlert();
   const theme = useTheme();
@@ -47,34 +50,18 @@ export default function LoginPage() {
     }
   };
 
-  const onGoogle = async () => {
-    if (!loginWithProvider) {
-      alert.info("Google sign-in is not configured yet.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await loginWithProvider("google");
-      alert.success("Signed in with Google");
-      nav("/dashboard");
-    } catch (err) {
-      alert.error(err?.message || "Google sign-in failed");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
+    // No full-height container here — EmptyLayout handles centering/viewport
     <Paper
       elevation={3}
       sx={{
         width: "100%",
-        maxWidth: 440,
+        maxWidth: 440,             // grows down to phones, caps on desktop
         borderRadius: 3,
         overflow: "hidden",
       }}
     >
-      {/* Header (clean, no social icons) */}
+      {/* Header with gradient + social logins */}
       <Box
         sx={{
           px: { xs: 3, sm: 4 },
@@ -94,6 +81,35 @@ export default function LoginPage() {
         >
           Sign in
         </Typography>
+
+        <Stack
+          direction="row"
+          justifyContent="center"
+          spacing={2}
+          sx={{ mt: 2 }}
+        >
+          <Tooltip title="Continue with Facebook">
+            <span>
+              <IconButton size="large" aria-label="Facebook login" disabled>
+                <FacebookIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Continue with GitHub">
+            <span>
+              <IconButton size="large" aria-label="GitHub login" disabled>
+                <GitHubIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Continue with Google">
+            <span>
+              <IconButton size="large" aria-label="Google login" disabled>
+                <GoogleIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
       </Box>
 
       <Divider />
@@ -157,21 +173,6 @@ export default function LoginPage() {
             disabled={submitting}
           >
             {submitting ? "Signing in..." : "Sign In"}
-          </Button>
-
-          {/* “Or” separator */}
-          <Divider sx={{ my: 0.5 }}>or</Divider>
-
-          {/* Google as a secondary action, full width */}
-          <Button
-            onClick={onGoogle}
-            variant="outlined"
-            size="large"
-            fullWidth
-            startIcon={<GoogleIcon />}
-            disabled={submitting}
-          >
-            Continue with Google
           </Button>
         </Stack>
       </Box>
