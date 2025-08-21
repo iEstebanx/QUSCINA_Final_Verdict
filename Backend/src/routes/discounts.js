@@ -21,7 +21,6 @@ router.get("/", async (_req, res) => {
 });
 
 // POST /api/discounts  (auto-generate code via transaction)
-// POST /api/discounts  (auto-generate code via transaction)
 router.post("/", async (req, res) => {
   try {
     const {

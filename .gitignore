@@ -58,3 +58,6 @@ coverage/
 # ---- Optional: Capacitor/Android/iOS (ignore if not present)
 android/
 ios/
+
+# Ignore VS Code local history
+.history/

@@ -1,15 +1,8 @@
-// Frontend/src/utils/firebaseConfig.js
-// Import the functions you need from the SDKs you need
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
 // src/utils/firebaseConfig.js
 import { initializeApp } from "firebase/app";
 import {
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache, // <- in-memory cache only (no IndexedDB/disk)
 } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -23,7 +16,11 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 
+// Firestore with NO persistent offline cache.
+// This keeps only a small, ephemeral in-memory cache for the current tab.
 export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-  experimentalAutoDetectLongPolling: true, // or experimentalForceLongPolling: true
+  localCache: memoryLocalCache(),
+  // If your environment needs it, you can keep this transport tweak.
+  // It doesn't enable offline, it's just a networking fallback.
+  // experimentalAutoDetectLongPolling: true,
 });

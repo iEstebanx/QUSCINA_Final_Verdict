@@ -1,47 +1,40 @@
 // Frontend/src/services/Discounts/discounts.jsx
-import {
-  collection, onSnapshot, query, orderBy
-} from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
 import { db } from "@/utils/firebaseConfig";
 
-// 🔹 helper to safely parse JSON
+// safer JSON parse for API responses
 async function safeJson(res) {
   const text = await res.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { error: text || res.statusText || "Invalid response" };
-  }
+  try { return text ? JSON.parse(text) : {}; }
+  catch { return { error: text || res.statusText || "Invalid response" }; }
 }
 
 const colRef = collection(db, "discounts");
 
-export function subscribeDiscounts(cb, includeMetadata = true) {
+// 🔁 Live reads from Firestore (no metadata, no offline flags)
+export function subscribeDiscounts(cb) {
   const q = query(colRef, orderBy("createdAt", "desc"));
-  return onSnapshot(q, { includeMetadataChanges: includeMetadata }, (snap) => {
+  return onSnapshot(q, (snap) => {
     const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    cb({
-      rows,
-      fromCache: snap.metadata.fromCache,
-      hasPendingWrites: snap.metadata.hasPendingWrites,
-    });
+    cb({ rows });
   });
 }
 
-// WRITES: go through your API
-
-export async function createDiscountAuto({
-  name, value, type = "percent", scope = "order",
-  isStackable = false, requiresApproval = false, isActive = true,
-}) {
+// Writes go through your API (no queuing/optimism)
+export async function createDiscountAuto(payload) {
   const res = await fetch("/api/discounts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      name, value: Number(value), type, scope, isStackable, requiresApproval, isActive
+      name: payload.name,
+      value: Number(payload.value),
+      type: payload.type ?? "percent",
+      scope: payload.scope ?? "order",
+      isStackable: !!payload.isStackable,
+      requiresApproval: !!payload.requiresApproval,
+      isActive: payload.isActive !== false,
     }),
   });
-
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Create failed");
   return data; // { ok: true, code }

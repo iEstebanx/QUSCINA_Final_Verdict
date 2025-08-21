@@ -1,24 +1,19 @@
 // Backend/server.js
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ health FIRST — guaranteed to work even if other modules fail
+// health stays here so it never breaks
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-// Try to mount the router, but don't crash the whole server if it fails
-try {
-  const discountsRouter = require("./src/routes/discounts");
-  app.use("/api/discounts", discountsRouter);
-} catch (err) {
-  console.error("Failed to mount /api/discounts:", err);
-}
+// mount all route files under /api
+app.use("/api", require("./src/routes")());
 
-// JSON 404 for any other /api path
+// 404 for unknown /api paths
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 // global error handler

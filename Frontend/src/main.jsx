@@ -5,9 +5,6 @@ import "./index.css";
 import App from "./App.jsx";
 import ThemeModeProvider from "./theme/ThemeModeProvider.jsx";
 
-import { initFirestoreNetworkAutoToggle } from "@/utils/firestoreNetwork";
-initFirestoreNetworkAutoToggle();
-
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <ThemeModeProvider>

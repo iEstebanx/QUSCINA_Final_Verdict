@@ -1,11 +1,11 @@
 // src/pages/Discounts/DiscountPage.jsx
 import { useEffect, useMemo, useState } from "react";
 import {
-  Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle,
+  Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, IconButton, InputAdornment, Paper, Stack, Table, TableBody,
   TableCell, TableContainer, TableHead, TablePagination, TableRow, TextField, Typography,
-  Alert
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import AddIcon from "@mui/icons-material/Add";
 import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -13,6 +13,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   subscribeDiscounts,
   createDiscountAuto,
+  updateDiscount,
   deleteMany
 } from "@/services/Discounts/discounts";
 
@@ -23,8 +24,6 @@ function percentClamp(n) {
 
 export default function DiscountPage() {
   const [rows, setRows] = useState([]);
-  const [fromCache, setFromCache] = useState(false);
-  const [hasPendingWrites, setHasPendingWrites] = useState(false);
 
   // selection
   const [selected, setSelected] = useState([]);
@@ -32,11 +31,8 @@ export default function DiscountPage() {
   const someChecked = selected.length > 0 && selected.length < rows.length;
 
   useEffect(() => {
-    const unsub = subscribeDiscounts(({ rows, fromCache, hasPendingWrites }) => {
+    const unsub = subscribeDiscounts(({ rows }) => {
       setRows(rows);
-      setFromCache(fromCache);
-      setHasPendingWrites(hasPendingWrites);
-      // clear selection if ids disappeared
       setSelected((sel) => sel.filter((id) => rows.some(r => r.id === id)));
     });
     return () => unsub();
@@ -49,42 +45,61 @@ export default function DiscountPage() {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   };
 
-  // pagination
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
-  const paged = useMemo(() => {
-    const start = page * rowsPerPage;
-    return rows.slice(start, start + rowsPerPage);
-  }, [rows, page, rowsPerPage]);
-
-  // dialog
+  // dialog (create/edit)
   const [open, setOpen] = useState(false);
+  const [editingCode, setEditingCode] = useState(null); // null = create, string = edit
+  const isEdit = Boolean(editingCode);
+
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [touched, setTouched] = useState(false);
-  const resetForm = () => { setName(""); setValue(""); setTouched(false); };
+
+  const resetForm = () => {
+    setName("");
+    setValue("");
+    setTouched(false);
+    setEditingCode(null);
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setOpen(true);
+  };
+
+  const openEdit = (row) => {
+    setEditingCode(row.id);
+    setName(row.name ?? "");
+    setValue(String(row.value ?? ""));
+    setTouched(false);
+    setOpen(true);
+  };
 
   const onSave = async () => {
     setTouched(true);
     const pct = percentClamp(parseFloat(String(value).replace(",", ".")));
     const valid = name.trim().length > 0 && !Number.isNaN(pct);
-
     if (!valid) return;
 
+    const payload = {
+      name: name.trim(),
+      value: pct,
+      type: "percent",
+      scope: "order",
+      isStackable: false,
+      requiresApproval: false,
+      isActive: true,
+    };
+
     try {
-      await createDiscountAuto({
-        name: name.trim(),
-        value: pct,
-        type: "percent",
-        scope: "order",
-        isStackable: false,
-        requiresApproval: false,
-        isActive: true,
-      });
+      if (isEdit) {
+        await updateDiscount(editingCode, { name: payload.name, value: payload.value });
+      } else {
+        await createDiscountAuto(payload);
+      }
       setOpen(false);
       resetForm();
-    } catch (e) {
-      alert(e.message);
+    } finally {
+      setEditingCode(null);
     }
   };
 
@@ -94,22 +109,23 @@ export default function DiscountPage() {
     setSelected([]);
   };
 
+  // pagination
+  const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
+  const page = pageState.page;
+  const rowsPerPage = pageState.rowsPerPage;
+  const paged = useMemo(() => {
+    const start = page * rowsPerPage;
+    return rows.slice(start, start + rowsPerPage);
+  }, [rows, page, rowsPerPage]);
+
   const nameError = touched && name.trim().length === 0;
   const valueNum = percentClamp(parseFloat(String(value).replace(",", ".")));
   const valueError = touched && (Number.isNaN(valueNum) || String(value).trim() === "");
 
   return (
     <Stack spacing={2}>
-      {/* Sync / Offline banners */}
-      {hasPendingWrites && (
-        <Alert severity="info">Saving changes… (will sync when online)</Alert>
-      )}
-      {fromCache && !hasPendingWrites && (
-        <Alert severity="warning">You’re viewing cached data (offline)</Alert>
-      )}
-
       <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>
           Add Discount
         </Button>
 
@@ -128,21 +144,49 @@ export default function DiscountPage() {
           <TableHead>
             <TableRow>
               <TableCell padding="checkbox">
-                <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
+                <Checkbox
+                  checked={allChecked}
+                  indeterminate={someChecked}
+                  onChange={toggleAll}
+                />
               </TableCell>
               <TableCell><Typography fontWeight={600}>Item Name</Typography></TableCell>
-              <TableCell width={180}><Typography fontWeight={600}>Value</Typography></TableCell>
+              <TableCell width={220}><Typography fontWeight={600}>Value</Typography></TableCell>
             </TableRow>
           </TableHead>
 
           <TableBody>
             {paged.map((r) => (
-              <TableRow key={r.id} hover>
-                <TableCell padding="checkbox">
-                  <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
+              <TableRow
+                key={r.id}
+                hover
+                onClick={() => { openEdit(r); }}
+                sx={(theme) => ({
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) },
+                })}
+              >
+                <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    checked={selected.includes(r.id)}
+                    onChange={() => toggleOne(r.id)}
+                  />
                 </TableCell>
-                <TableCell>{r.name}</TableCell>
-                <TableCell><Typography fontWeight={600}>{r.value}%</Typography></TableCell>
+
+                {/* Name */}
+                <TableCell>
+                  <Stack direction="row" alignItems="center" spacing={1}>
+                    <Typography>{r.name}</Typography>
+                    {r.isActive === false && (
+                      <Chip size="small" label="Inactive" variant="outlined" />
+                    )}
+                  </Stack>
+                </TableCell>
+
+                {/* Value */}
+                <TableCell>
+                  <Typography fontWeight={700}>{r.value}%</Typography>
+                </TableCell>
               </TableRow>
             ))}
 
@@ -162,19 +206,31 @@ export default function DiscountPage() {
           component="div"
           count={rows.length}
           page={page}
-          onPageChange={(_, p) => setPage(p)}
+          onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
           rowsPerPage={rowsPerPage}
-          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          onRowsPerPageChange={(e) => setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })}
           rowsPerPageOptions={[5, 10, 25]}
         />
       </TableContainer>
 
-      {/* Create dialog */}
-      <Dialog open={open} onClose={() => { setOpen(false); resetForm(); }} maxWidth="xs" fullWidth>
+      {/* Create/Edit dialog */}
+      <Dialog
+        open={open}
+        onClose={() => { setOpen(false); resetForm(); }}
+        maxWidth="xs"
+        fullWidth
+      >
         <DialogTitle>
           <Stack alignItems="center" spacing={1}>
             <LocalOfferOutlinedIcon sx={{ fontSize: 56 }} color="error" />
-            <Typography variant="h5" fontWeight={800}>Type of Discount</Typography>
+            <Typography variant="h5" fontWeight={800}>
+              {isEdit ? "Edit Discount" : "Type of Discount"}
+            </Typography>
+            {isEdit && (
+              <Typography variant="body2" color="text.secondary">
+                Code: {editingCode}
+              </Typography>
+            )}
           </Stack>
         </DialogTitle>
 
@@ -190,19 +246,23 @@ export default function DiscountPage() {
               helperText={nameError ? "Please enter a name." : " "}
               autoFocus
               fullWidth
+              onKeyDown={(e) => { if (e.key === "Enter") onSave(); }}
             />
             <TextField
               label="Value"
               value={value}
-              onChange={(e) => setValue(e.target.value)}
+              onChange={(e) => {
+                let raw = e.target.value.replace(/\D/g, "");
+                if (raw.length > 3) raw = raw.slice(0, 3);
+                setValue(raw);
+              }}
               type="number"
               inputProps={{ min: 0, max: 100, step: 1 }}
               error={valueError}
               helperText={valueError ? "Enter a number from 0 to 100." : " "}
               fullWidth
-              slotProps={{
-                input: { endAdornment: <InputAdornment position="end">%</InputAdornment> }
-              }}
+              slotProps={{ input: { endAdornment: <InputAdornment position="end">%</InputAdornment> } }}
+              onKeyDown={(e) => { if (e.key === "Enter") onSave(); }}
             />
           </Stack>
         </DialogContent>
@@ -211,7 +271,11 @@ export default function DiscountPage() {
           <Button variant="outlined" onClick={() => { setOpen(false); resetForm(); }}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={onSave}>
+          <Button
+            variant="contained"
+            onClick={onSave}
+            disabled={name.trim().length === 0 || Number.isNaN(valueNum)}
+          >
             Save
           </Button>
         </DialogActions>
