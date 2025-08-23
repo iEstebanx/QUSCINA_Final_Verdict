@@ -1,4 +1,4 @@
-// src/routes/AppRoutes.jsx
+// Frontend/src/routes/AppRoutes.jsx
 import { Routes, Route } from "react-router-dom";
 import MainLayout from "../layouts/MainLayout";
 import EmptyLayout from "../layouts/EmptyLayout";

@@ -10,8 +10,6 @@ import {
 
 import AddIcon from "@mui/icons-material/Add";
 import SearchIcon from "@mui/icons-material/Search";
-import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
@@ -22,16 +20,16 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import AccountCircleOutlinedIcon from "@mui/icons-material/AccountCircleOutlined";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import CancelOutlinedIcon from "@mui/icons-material/CancelOutlined";
-
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import { Avatar } from "@mui/material";
 import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 
-// 🔗 services (make sure these paths match your project)
+// 🔗 services
 import {
   subscribeUsers,
   createUser,
   updateUser,
-  // deleteUser, // (optional) if you add delete actions later
 } from "@/services/Users/users";
 
 const ROLE_OPTIONS = ["Admin", "Manager", "Chef", "Cashier"];
@@ -61,19 +59,38 @@ const ruleChecks = (pw) => ({
   special: /[^A-Za-z0-9]/.test(pw),
 });
 
+// ——— util: format Firestore Timestamp | string | Date
+function formatLastChanged(val) {
+  try {
+    if (!val || val === "—") return "—";
+    let d = val;
+    if (typeof val?.toDate === "function") d = val.toDate();
+    else if (typeof val === "string") d = new Date(val);
+    const fmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+    return fmt.format(d);
+  } catch {
+    return "—";
+  }
+}
+
 export default function UserManagementPage() {
-  const [rows, setRows] = useState([]); // 🔁 now fed by Firestore subscription
+  const [rows, setRows] = useState([]);
 
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
   const [open, setOpen] = useState(false);
+
+  // === Password sub-dialog state ===
+  const [pwDialogOpen, setPwDialogOpen] = useState(false);
+  const [pwShow, setPwShow] = useState({ current: false, next: false, confirm: false });
+  const [pwFields, setPwFields] = useState({ current: "", next: "", confirm: "" });
+  const [pwError, setPwError] = useState("");
+
   const [pinHidden, setPinHidden] = useState(true);
-  const [showPw, setShowPw] = useState(false);
   const pinRefs = Array.from({ length: 6 }).map(() => useRef(null));
 
-  // ===== subscription to Firestore =====
   useEffect(() => {
     const unsub = subscribeUsers(({ rows }) => setRows(rows));
     return () => unsub();
@@ -83,13 +100,11 @@ export default function UserManagementPage() {
   const [errors, setErrors] = useState({});
 
   function nextEmployeeId(allRows) {
-    const year = new Date().getFullYear();   // e.g. 2025
-    const base = year * 1000000;             // e.g. 202500000
-
+    const year = new Date().getFullYear();
+    const base = year * 1000000;
     const nums = allRows
       .map((r) => Number(String(r.employeeId).replace(/\D/g, "")))
       .filter((n) => Number.isFinite(n));
-
     const max = nums.length ? Math.max(...nums) : base;
     const next = String(max + 1).padStart(9, "0");
     return next;
@@ -105,7 +120,7 @@ export default function UserManagementPage() {
       phone: "",
       role: "",
       status: "Active",
-      password: "",
+      password: "",                  // <- staged here by password dialog
       passwordLastChanged: "—",
       pinDigits: ["", "", "", "", "", ""],
       loginVia: { employeeId: true, username: true, email: true },
@@ -145,9 +160,9 @@ export default function UserManagementPage() {
         phone: row.phone || "",
         role: row.role || "",
         status: row.status || "Active",
-        password: "",
+        password: "", // nothing staged initially
         passwordLastChanged: row.passwordLastChanged || "—",
-        pinDigits: ("".padStart(6)).split(""), // we never show real pin; editing requires new input
+        pinDigits: ("".padStart(6)).split(""),
         loginVia: { ...(row.loginVia || { employeeId: true, username: true, email: true }) },
       });
     } else {
@@ -155,7 +170,9 @@ export default function UserManagementPage() {
     }
     setErrors({});
     setPinHidden(true);
-    setShowPw(false);
+    setPwDialogOpen(false);
+    setPwFields({ current: "", next: "", confirm: "" });
+    setPwError("");
     setOpen(true);
   };
 
@@ -218,8 +235,7 @@ export default function UserManagementPage() {
       photoUrl: form.photoUrl || "",
     };
 
-    // Only include sensitive fields if provided (server will hash)
-    if (form.password) payload.password = form.password;
+    if (form.password) payload.password = form.password; // staged by password dialog
     if (/^\d{6}$/.test(pin)) payload.pin = pin;
 
     const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
@@ -231,15 +247,42 @@ export default function UserManagementPage() {
         await createUser(payload); // POST
       }
       setOpen(false);
-      // no local setRows — Firestore snapshot will refresh the table
     } catch (e) {
       console.error(e);
-      // TODO: surface toasts/snackbar if you have an AlertProvider
+      // TODO: show toast/snackbar
     }
   };
 
-  const pwScore = scorePassword(form.password);
-  const pwRules = ruleChecks(form.password);
+  // ===== Password dialog handlers =====
+  const isEditingExisting = rows.some((r) => String(r.employeeId) === String(form.employeeId));
+  const pwScore = scorePassword(pwFields.next);
+  const pwRules = ruleChecks(pwFields.next);
+
+  function openPasswordDialog() {
+    setPwFields({ current: "", next: "", confirm: "" });
+    setPwError("");
+    setPwShow({ current: false, next: false, confirm: false });
+    setPwDialogOpen(true);
+  }
+
+  function savePasswordDialog() {
+    // basic client-side checks
+    if (isEditingExisting && !pwFields.current.trim()) {
+      setPwError("Please enter your current password.");
+      return;
+    }
+    if (!pwFields.next || pwFields.next.length < 8) {
+      setPwError("New password must be at least 8 characters.");
+      return;
+    }
+    if (pwFields.next !== pwFields.confirm) {
+      setPwError("New password and confirmation do not match.");
+      return;
+    }
+    // Stage into the main form; do not persist yet
+    setForm((f) => ({ ...f, password: pwFields.next }));
+    setPwDialogOpen(false);
+  }
 
   return (
     <Box p={2}>
@@ -328,7 +371,7 @@ export default function UserManagementPage() {
         </TextField>
       </Stack>
 
-      {/* dialog */}
+      {/* main dialog */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
@@ -349,153 +392,153 @@ export default function UserManagementPage() {
             }}
           >
 
-          {/* ===== Profile ===== */}
-          <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Profile</Typography>
+            {/* ===== Profile ===== */}
+            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Profile</Typography>
 
-          <Grid container spacing={1.5} alignItems="flex-start" wrap="nowrap">
-            {/* LEFT: Photo (fixed column) */}
-            <Grid size={{ xs: 12, md: "auto" }} sx={{ width: { md: 280 }, flexShrink: 0 }}>
-              <Paper sx={{ p: 1, height: "100%" }}>
-                <Stack alignItems="center" spacing={1}>
-                  <Avatar
-                    src={form.photoUrl || undefined}
-                    alt={`${form.firstName || "User"} ${form.lastName || ""}`}
-                    sx={{ width: 88, height: 88 }}
-                  />
-                  <Stack direction="row" spacing={0.75}>
-                    <input
-                      id="user-photo-input"
-                      type="file"
-                      accept="image/*"
-                      hidden
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        const url = URL.createObjectURL(file);
-                        setForm((f) => ({ ...f, photoUrl: url }));
+            <Grid container spacing={1.5} alignItems="flex-start" wrap="nowrap">
+              {/* LEFT: Photo */}
+              <Grid size={{ xs: 12, md: "auto" }} sx={{ width: { md: 280 }, flexShrink: 0 }}>
+                <Paper sx={{ p: 1, height: "100%" }}>
+                  <Stack alignItems="center" spacing={1}>
+                    <Avatar
+                      src={form.photoUrl || undefined}
+                      alt={`${form.firstName || "User"} ${form.lastName || ""}`}
+                      sx={{ width: 88, height: 88 }}
+                    />
+                    <Stack direction="row" spacing={0.75}>
+                      <input
+                        id="user-photo-input"
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const url = URL.createObjectURL(file);
+                          setForm((f) => ({ ...f, photoUrl: url }));
+                        }}
+                      />
+                      <label htmlFor="user-photo-input">
+                        <Button component="span" size="small" startIcon={<PhotoCameraOutlinedIcon />} variant="outlined">
+                          Upload
+                        </Button>
+                      </label>
+                      {form.photoUrl && (
+                        <Button size="small" color="error" onClick={() => setForm((f) => ({ ...f, photoUrl: "" }))}>
+                          Remove
+                        </Button>
+                      )}
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary">JPG/PNG</Typography>
+                  </Stack>
+                </Paper>
+              </Grid>
+
+              {/* RIGHT: Employee ID / Username / Email */}
+              <Grid size={{ xs: true }} sx={{ minWidth: 0 }}>
+                <Grid container spacing={1.5}>
+                  {/* Employee ID */}
+                  <Grid size={{ xs: 12 }}>
+                    <TextField
+                      sx={{ width: 250 }}
+                      size="small"
+                      label="Employee ID"
+                      value={form.employeeId}
+                      disabled={!form.loginVia.employeeId}
+                      InputProps={{
+                        readOnly: true,
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <BadgeOutlinedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Switch
+                              size="small"
+                              checked={form.loginVia.employeeId}
+                              onChange={(_, c) => {
+                                const next = { ...form.loginVia, employeeId: c };
+                                if (!next.employeeId && !next.username && !next.email) return;
+                                setForm((f) => ({ ...f, loginVia: next }));
+                              }}
+                            />
+                          </InputAdornment>
+                        ),
                       }}
                     />
-                    <label htmlFor="user-photo-input">
-                      <Button component="span" size="small" startIcon={<PhotoCameraOutlinedIcon />} variant="outlined">
-                        Upload
-                      </Button>
-                    </label>
-                    {form.photoUrl && (
-                      <Button size="small" color="error" onClick={() => setForm((f) => ({ ...f, photoUrl: "" }))}>
-                        Remove
-                      </Button>
-                    )}
-                  </Stack>
-                  <Typography variant="caption" color="text.secondary">JPG/PNG</Typography>
-                </Stack>
-              </Paper>
-            </Grid>
+                  </Grid>
 
-            {/* ===== RIGHT: (row 1) Employee ID | Username — (row 2) Email ===== */}
-            <Grid size={{ xs: true }} sx={{ minWidth: 0 }}>
-              <Grid container spacing={1.5}>
-                {/* Employee ID */}
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField
-                    size="small"
-                    label="Employee ID"
-                    value={form.employeeId}
-                    fullWidth
-                    disabled={!form.loginVia.employeeId}   // 👈 disabled when toggled off
-                    InputProps={{
-                      readOnly: true,                      // value is readonly
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <BadgeOutlinedIcon fontSize="small" />
-                        </InputAdornment>
-                      ),
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <Switch
-                            size="small"
-                            checked={form.loginVia.employeeId}
-                            onChange={(_, c) => {
-                              const next = { ...form.loginVia, employeeId: c };
-                              if (!next.employeeId && !next.username && !next.email) return;
-                              setForm((f) => ({ ...f, loginVia: next }));
-                            }}
-                          />
-                        </InputAdornment>
-                      ),
-                    }}
-                  />
-                </Grid>
+                  {/* Username */}
+                  <Grid size={{ xs: 12 }} sx={{ minWidth: 0 }}>
+                    <TextField
+                      sx={{ width: 300 }}
+                      size="small"
+                      label="Username"
+                      value={form.username}
+                      error={!!errors.username}
+                      helperText={errors.username || "Optional — unique (lowercased)"}
+                      onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
+                      disabled={!form.loginVia.username}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <AccountCircleOutlinedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Switch
+                              size="small"
+                              checked={form.loginVia.username}
+                              onChange={(_, c) => {
+                                const next = { ...form.loginVia, username: c };
+                                if (!next.employeeId && !next.username && !next.email) return;
+                                setForm((f) => ({ ...f, loginVia: next }));
+                              }}
+                            />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Grid>
 
-                {/* Username */}
-                <Grid size={{ xs: 12, md: 6 }} sx={{ minWidth: 0 }}>
-                  <TextField
-                    size="small"
-                    label="Username"
-                    value={form.username}
-                    error={!!errors.username}
-                    helperText={errors.username || "Optional — unique (lowercased)"}
-                    onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
-                    fullWidth
-                    disabled={!form.loginVia.username}   // 👈 disabled when toggled off
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <AccountCircleOutlinedIcon fontSize="small" />
-                        </InputAdornment>
-                      ),
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <Switch
-                            size="small"
-                            checked={form.loginVia.username}
-                            onChange={(_, c) => {
-                              const next = { ...form.loginVia, username: c };
-                              if (!next.employeeId && !next.username && !next.email) return;
-                              setForm((f) => ({ ...f, loginVia: next }));
-                            }}
-                          />
-                        </InputAdornment>
-                      ),
-                    }}
-                  />
-                </Grid>
-
-                {/* Email */}
-                <Grid size={{ xs: 12, md: 6 }} sx={{ minWidth: 0 }}>
-                  <TextField
-                    size="small"
-                    label="Email"
-                    value={form.email}
-                    error={!!errors.email}
-                    helperText={errors.email || "Optional — unique, valid email format"}
-                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                    fullWidth
-                    disabled={!form.loginVia.email}   // 👈 disabled when toggled off
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <MailOutlineIcon fontSize="small" />
-                        </InputAdornment>
-                      ),
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <Switch
-                            size="small"
-                            checked={form.loginVia.email}
-                            onChange={(_, c) => {
-                              const next = { ...form.loginVia, email: c };
-                              if (!next.employeeId && !next.username && !next.email) return;
-                              setForm((f) => ({ ...f, loginVia: next }));
-                            }}
-                          />
-                        </InputAdornment>
-                      ),
-                    }}
-                  />
+                  {/* Email */}
+                  <Grid size={{ xs: 12 }} sx={{ minWidth: 0 }}>
+                    <TextField
+                      sx={{ width: 300 }}
+                      size="small"
+                      label="Email"
+                      value={form.email}
+                      error={!!errors.email}
+                      helperText={errors.email || "Optional — unique, valid email format"}
+                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      disabled={!form.loginVia.email}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <MailOutlineIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Switch
+                              size="small"
+                              checked={form.loginVia.email}
+                              onChange={(_, c) => {
+                                const next = { ...form.loginVia, email: c };
+                                if (!next.employeeId && !next.username && !next.email) return;
+                                setForm((f) => ({ ...f, loginVia: next }));
+                              }}
+                            />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Grid>
                 </Grid>
               </Grid>
             </Grid>
-          </Grid>
 
             {/* ===== Name ===== */}
             <Divider sx={{ my: 2 }} />
@@ -530,8 +573,9 @@ export default function UserManagementPage() {
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Contact & Access</Typography>
             <Grid container spacing={3}>
-              <Grid size={{ xs: 12, md: 6 }}>
+              <Grid size={{ xs: 12, md: 4 }}>
                 <TextField
+                  sx={{ width: 200 }}
                   size="small"
                   label={<>Phone<span style={{ color: "#d32f2f" }}> *</span></>}
                   placeholder="09559391324"
@@ -585,81 +629,45 @@ export default function UserManagementPage() {
             {/* ===== Credentials ===== */}
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Credentials</Typography>
-            <Grid container spacing={3}>
-              {/* Password */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Stack spacing={0.75}>
-                  <Typography variant="body2" color="text.secondary">
-                    Password<span style={{ color: "#d32f2f" }}> *</span>
-                  </Typography>
-                  <TextField
-                    size="small"
-                    type={showPw ? "text" : "password"}
-                    value={form.password}
-                    error={!!errors.password}
-                    helperText={errors.password}
-                    onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                    InputProps={{
-                      endAdornment: (
-                        <InputAdornment position="end">
-                          <IconButton size="small" onClick={() => setShowPw((s) => !s)}>
-                            {showPw ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                          </IconButton>
-                        </InputAdornment>
-                      ),
-                    }}
-                    fullWidth
-                  />
 
-                  {form.password.length > 0 && (
-                    <>
-                      <LinearProgress
-                        variant="determinate"
-                        value={pwScore}
-                        sx={{
-                          height: 6,
-                          borderRadius: 4,
-                          "& .MuiLinearProgress-bar": (theme) => ({
-                            backgroundColor:
-                              pwScore < 40
-                                ? theme.palette.error.main
-                                : pwScore < 70
-                                ? theme.palette.warning.main
-                                : theme.palette.success.main,
-                          }),
-                        }}
-                      />
-                      <Box>
-                        <Typography variant="subtitle2" sx={{ mt: 0.5, mb: 0.25 }}>
-                          Weak password. Must contain:
-                        </Typography>
-                        <Stack spacing={0.25}>
-                          {[
-                            { ok: pwRules.len8, text: "At least 8 characters" },
-                            { ok: pwRules.num, text: "At least 1 number" },
-                            { ok: pwRules.lower, text: "At least 1 lowercase letter" },
-                            { ok: pwRules.upper, text: "At least 1 uppercase letter" },
-                            { ok: pwRules.special, text: "At least 1 special character" },
-                          ].map((r, i) => (
-                            <Stack key={i} direction="row" spacing={0.75} alignItems="center">
-                              {r.ok ? (
-                                <CheckCircleOutlineIcon fontSize="small" color="success" />
-                              ) : (
-                                <CancelOutlinedIcon fontSize="small" color="error" />
-                              )}
-                              <Typography variant="body2" color={r.ok ? "success.main" : "text.primary"}>
-                                {r.text}
-                              </Typography>
-                            </Stack>
-                          ))}
-                        </Stack>
-                      </Box>
-                    </>
-                  )}
-                </Stack>
+            {/* Password row (clickable) */}
+            <Grid container spacing={3} alignItems="center">
+              <Grid size={{ xs: 12, md: 6 }}>
+                <Paper
+                  variant="outlined"
+                  onClick={openPasswordDialog}
+                  sx={{
+                    p: 1,
+                    cursor: "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    minHeight: 46,
+                  }}
+                >
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <LockOutlinedIcon fontSize="small" />
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                        {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.25 }}>
+                        Password{rows.some((r) => String(r.employeeId) === String(form.employeeId)) ? "" : "*"}
+                        {form.password ? " (staged)" : ""}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                  <ChevronRightIcon fontSize="small" />
+                </Paper>
+                {errors.password && (
+                  <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                    {errors.password}
+                  </Typography>
+                )}
               </Grid>
 
-              {/* PIN */}
+              {/* PIN (unchanged) */}
               <Grid size={{ xs: 12, md: 6 }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                   POS PIN<span style={{ color: "#d32f2f" }}> *</span>
@@ -718,6 +726,128 @@ export default function UserManagementPage() {
         <DialogActions sx={{ p: 1.5 }}>
           <Button onClick={() => setOpen(false)} variant="outlined" size="small">Cancel</Button>
           <Button onClick={handleSave} variant="contained" size="small">Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ===== Change Password sub-dialog ===== */}
+      <Dialog
+        open={pwDialogOpen}
+        onClose={() => setPwDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ pb: 0.5 }}>Change Password</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.25}>
+            {isEditingExisting && (
+              <TextField
+                size="small"
+                type={pwShow.current ? "text" : "password"}
+                label="Current Password"
+                value={pwFields.current}
+                onChange={(e) => setPwFields((s) => ({ ...s, current: e.target.value }))}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, current: !s.current }))}>
+                        {pwShow.current ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
+              />
+            )}
+
+            {/* For both new user & edit: New + Confirm */}
+            <TextField
+              size="small"
+              type={pwShow.next ? "text" : "password"}
+              label={isEditingExisting ? "New Password" : "New Password *"}
+              value={pwFields.next}
+              onChange={(e) => setPwFields((s) => ({ ...s, next: e.target.value }))}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, next: !s.next }))}>
+                      {pwShow.next ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
+            />
+            <TextField
+              size="small"
+              type={pwShow.confirm ? "text" : "password"}
+              label={isEditingExisting ? "Confirm New Password" : "Confirm Password *"}
+              value={pwFields.confirm}
+              onChange={(e) => setPwFields((s) => ({ ...s, confirm: e.target.value }))}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, confirm: !s.confirm }))}>
+                      {pwShow.confirm ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
+            />
+
+            {pwFields.next.length > 0 && (
+              <>
+                <LinearProgress
+                  variant="determinate"
+                  value={pwScore}
+                  sx={{
+                    height: 6,
+                    borderRadius: 4,
+                    "& .MuiLinearProgress-bar": (theme) => ({
+                      backgroundColor:
+                        pwScore < 40
+                          ? theme.palette.error.main
+                          : pwScore < 70
+                          ? theme.palette.warning.main
+                          : theme.palette.success.main,
+                    }),
+                  }}
+                />
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mt: 0.5, mb: 0.25 }}>
+                    Weak password. Must contain:
+                  </Typography>
+                  <Stack spacing={0.25}>
+                    {[
+                      { ok: pwRules.len8, text: "At least 8 characters" },
+                      { ok: pwRules.num, text: "At least 1 number" },
+                      { ok: pwRules.lower, text: "At least 1 lowercase letter" },
+                      { ok: pwRules.upper, text: "At least 1 uppercase letter" },
+                      { ok: pwRules.special, text: "At least 1 special character" },
+                    ].map((r, i) => (
+                      <Stack key={i} direction="row" spacing={0.75} alignItems="center">
+                        {r.ok ? (
+                          <CheckCircleOutlineIcon fontSize="small" color="success" />
+                        ) : (
+                          <CancelOutlinedIcon fontSize="small" color="error" />
+                        )}
+                        <Typography variant="body2" color={r.ok ? "success.main" : "text.primary"}>
+                          {r.text}
+                        </Typography>
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+              </>
+            )}
+
+            {!!pwError && (
+              <Typography variant="caption" color="error">
+                {pwError}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 1.25 }}>
+          <Button onClick={() => setPwDialogOpen(false)} variant="outlined" size="small">Cancel</Button>
+          <Button onClick={savePasswordDialog} variant="contained" size="small">Save</Button>
         </DialogActions>
       </Dialog>
     </Box>

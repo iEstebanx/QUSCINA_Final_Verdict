@@ -1,4 +1,4 @@
-// src/theme/ThemeModeProvider.jsx
+// Frontend/src/theme/ThemeModeProvider.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ThemeProvider, useMediaQuery } from "@mui/material";
 import CssBaseline from "@mui/material/CssBaseline";

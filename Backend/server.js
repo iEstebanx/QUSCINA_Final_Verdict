@@ -1,22 +1,27 @@
 // Backend/server.js
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "http://localhost:5173", credentials: true })); // adjust origin
 app.use(express.json());
+app.use(cookieParser());
 
-// health stays here so it never breaks
+// health
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-// mount all route files under /api
-app.use("/api", require("./src/routes")());
+// routes
+app.use("/api/auth", require("./src/routes/auth")());
+app.use("/api", require("./src/routes")()); // your existing routes
 
 // 404 for unknown /api paths
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
-// global error handler
+// error handler
 app.use((err, _req, res, _next) => {
   console.error("[UNCAUGHT]", err);
   res.status(500).json({ error: err.message || "Internal Server Error" });

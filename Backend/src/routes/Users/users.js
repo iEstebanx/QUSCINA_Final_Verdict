@@ -1,8 +1,8 @@
-// Backend/src/routes/users.js
+// Backend/src/routes/Users/users.js
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
-const { db, FieldValue } = require("../lib/firebaseAdmin");
+const { db, FieldValue } = require("../../lib/firebaseAdmin");
 
 const SALT_ROUNDS = 12;
 

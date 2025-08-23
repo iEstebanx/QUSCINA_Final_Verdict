@@ -1,7 +1,7 @@
 // Backend/src/routes/discounts.js
 const express = require("express");
 const router = express.Router();
-const { db, FieldValue } = require("../lib/firebaseAdmin");
+const { db, FieldValue } = require("../../lib/firebaseAdmin");
 
 // helper: sequential code (DISC-000001, auto-expands)
 function formatDiscCode(n) {

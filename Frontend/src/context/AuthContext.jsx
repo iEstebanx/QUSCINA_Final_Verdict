@@ -1,58 +1,59 @@
-// src/context/AuthContext.jsx
-import { createContext, useContext, useMemo, useState, useEffect } from "react";
-import {
-  getAuth,
-  onAuthStateChanged,
-  signInAnonymously,
-  setPersistence,
-  browserLocalPersistence,
-} from "firebase/auth";
-import { app } from "@/utils/firebaseConfig"; // make sure 'app' is exported
+// Frontend/src/context/AuthContext.jsx
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+
 export function AuthProvider({ children }) {
-  const [fbUser, setFbUser] = useState(null);      // Firebase user (anonymous or real)
-  const [user, setUser] = useState(null);          // Your app user (roles/profile), optional
-  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [user, setUser] = useState(null);   // { employeeId, role, ... }
+  const [token, setToken] = useState(null); // JWT (if you keep it client-side)
+  const [ready, setReady] = useState(false);
 
+  // Bootstrap from localStorage
   useEffect(() => {
-    const auth = getAuth(app);
-
-    // Persist session so anonymous user survives refresh/offline
-    setPersistence(auth, browserLocalPersistence).then(() => {
-      const unsub = onAuthStateChanged(auth, async (u) => {
-        if (!u) {
-          try {
-            await signInAnonymously(auth); // must succeed once while online
-          } catch (e) {
-            console.error("Anonymous sign-in failed:", e);
-          }
-          return; // wait for next state change where u will exist
-        }
-        setFbUser(u);
-
-        // OPTIONAL: map Firebase user -> your app user/roles later
-        // setUser(await fetchMyProfileOrClaims(u));
-
-        setIsAuthReady(true);
-      });
-      return () => unsub();
-    });
+    const t = localStorage.getItem("qd_token");
+    const u = localStorage.getItem("qd_user");
+    if (t && u) {
+      setToken(t);
+      try { setUser(JSON.parse(u)); } catch {}
+    }
+    setReady(true);
   }, []);
 
-  // Demo login/logout still supported for your app-level identity if you keep them
-  const login = async (email, _password) => setUser({ id: "U1", email, role: "Admin" });
-  const logout = async () => setUser(null);
+  async function login(identifier, password, { remember } = {}) {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      credentials: "include", // allow cookie for remember=true
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier, password, remember }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || "Login failed");
 
-  const value = useMemo(
-    () => ({ fbUser, user, login, logout, isAuthReady }),
-    [fbUser, user, isAuthReady]
-  );
+    const u = data.user || null;
+    setUser(u);
+    setToken(data.token || null);
 
-  // Gate children until Firebase auth is ready to avoid permission-denied on first renders
-  if (!isAuthReady) return null; // or a spinner
+    if (remember) {
+      localStorage.setItem("qd_token", data.token || "");
+      localStorage.setItem("qd_user", JSON.stringify(u));
+    } else {
+      localStorage.removeItem("qd_token");
+      localStorage.removeItem("qd_user");
+    }
+    return u;
+  }
 
+  function logout() {
+    setUser(null);
+    setToken(null);
+    localStorage.removeItem("qd_token");
+    localStorage.removeItem("qd_user");
+    fetch(`${API_BASE}/api/auth/logout`, { credentials: "include" }).catch(() => {});
+  }
+
+  const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

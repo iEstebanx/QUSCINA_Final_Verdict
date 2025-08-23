@@ -1,4 +1,4 @@
-// src/context/AdminContext.jsx
+// Frontend/src/context/AdminContext.jsx
 import { createContext, useContext, useMemo, useState } from "react";
 
 const AdminCtx = createContext(null);

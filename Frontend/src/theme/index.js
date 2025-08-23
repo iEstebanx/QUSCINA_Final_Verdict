@@ -1,4 +1,4 @@
-// src/theme/index.js
+// Frontend/src/theme/index.js
 import { createTheme, responsiveFontSizes, alpha } from "@mui/material/styles";
 import { getDesignTokens } from "./tokens";
 

@@ -1,4 +1,4 @@
-// src/theme/tokens.js
+// Frontend/src/theme/tokens.js
 export const MODES = ["light", "dark", "sepia"];
 
 const warmNeutrals = {
