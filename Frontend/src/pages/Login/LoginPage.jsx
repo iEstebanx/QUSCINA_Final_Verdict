@@ -3,7 +3,8 @@ import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Typography, TextField, Button, Divider,
   FormControlLabel, Switch, InputAdornment, IconButton, Dialog,
-  AppBar, Toolbar, Slide, MenuItem, FormHelperText,
+  AppBar, Toolbar, Slide, MenuItem, FormHelperText, CircularProgress,
+  Select, FormControl, InputLabel,
 } from "@mui/material";
 import { useTheme, alpha } from "@mui/material/styles";
 import Visibility from "@mui/icons-material/Visibility";
@@ -12,7 +13,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate, useLocation } from "react-router-dom";
-import { useAlert } from "@/context/AlertContext";
+import { useAlert } from "@/context/Snackbar/AlertContext";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
 
@@ -36,13 +37,14 @@ export default function LoginPage() {
 
   // --------- Forgot Password dialog state ---------
   const [forgotOpen, setForgotOpen] = useState(false);
-  const [fpStep, setFpStep] = useState("choose"); // "choose" | "email" | "otp" | "reset"
+  // "choose" | "email" | "otp" | "reset" | "sq-identify" | "sq-answers"
+  const [fpStep, setFpStep] = useState("choose");
 
   // Step: choose
   const onOpenForgot = () => { setForgotOpen(true); setFpStep("choose"); };
   const onCloseForgot = () => { setForgotOpen(false); setTimeout(() => setFpStep("choose"), 250); };
 
-  // Step: email verification
+  // Step: email verification (OTP path)
   const [fpEmail, setFpEmail] = useState("");
   const [fpVerifyType, setFpVerifyType] = useState("employeeId");
   const [fpVerifyValue, setFpVerifyValue] = useState("");
@@ -58,6 +60,22 @@ export default function LoginPage() {
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [resetSubmitting, setResetSubmitting] = useState(false);
+
+  // --------- Security Questions (fixed 5) ---------
+  const SQ_CATALOG = [
+    { id: "pet",           prompt: "What is the name of your first pet?" },
+    { id: "school",        prompt: "What is the name of your elementary school?" },
+    { id: "city",          prompt: "In what city were you born?" },
+    { id: "mother_maiden", prompt: "What is your mother’s maiden name?" },
+    { id: "nickname",      prompt: "What was your childhood nickname?" },
+  ];
+
+  const [sqIdentifier, setSqIdentifier] = useState(""); // email/username/employeeId
+  const [sqLoading, setSqLoading] = useState(false);
+  const [sqError, setSqError] = useState("");
+  const [sqToken, setSqToken] = useState("");
+  const [sqSelectedId, setSqSelectedId] = useState(SQ_CATALOG[0].id);
+  const [sqAnswer, setSqAnswer] = useState("");
 
   // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
@@ -96,6 +114,8 @@ export default function LoginPage() {
   const goEmail = () => setFpStep("email");
   const goOtp = () => setFpStep("otp");
   const goReset = () => setFpStep("reset");
+  const goSqIdentify = () => setFpStep("sq-identify");
+  const goSqAnswers = () => setFpStep("sq-answers");
 
   // ---------- Forgot Password: choose handlers ----------
   const onChooseEmailOtp = () => {
@@ -105,20 +125,28 @@ export default function LoginPage() {
     goEmail();
   };
 
-  const onChooseSecurityQuestions = () => nav("/forgot/security");
+  const onChooseSecurityQuestions = () => {
+    setSqIdentifier("");
+    setSqLoading(false);
+    setSqError("");
+    setSqToken("");
+    setSqSelectedId(SQ_CATALOG[0].id);
+    setSqAnswer("");
+    setResetToken("");
+    setNewPw("");
+    setConfirmPw("");
+    goSqIdentify();
+  };
 
-  // ---------- Forgot Password: email verify submit ----------
+  // ---------- Forgot Password: email verify submit (OTP path) ----------
   const onEmailVerifySubmit = async (e) => {
     e.preventDefault();
     setFpEmailError("");
     const email = fpEmail.trim().toLowerCase();
-
     if (!email) {
       setFpEmailError("Email is required.");
       return;
     }
-
-    // Optional, but if user typed something in the extra field, require a minimum sanity check
     const extra = fpVerifyValue.trim();
     if (extra && fpVerifyType === "employeeId" && !/^[0-9A-Za-z\-]+$/.test(extra)) {
       setFpEmailError("Employee ID contains invalid characters.");
@@ -129,7 +157,6 @@ export default function LoginPage() {
     try {
       const payload = {
         email,
-        // send the extra info if provided
         verifyType: extra ? fpVerifyType : undefined,
         verifyValue: extra || undefined,
       };
@@ -143,7 +170,6 @@ export default function LoginPage() {
       const j = await resp.json();
       if (!resp.ok) throw new Error(j?.error || "Failed to send code");
 
-      // success
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
@@ -211,7 +237,68 @@ export default function LoginPage() {
     }
   };
 
-  // ---------- Reset password ----------
+  // ---------- Security Questions: start ----------
+  const onSqStart = async (e) => {
+    e.preventDefault();
+    setSqError("");
+    const id = (sqIdentifier || "").trim();
+    if (!id) { setSqError("Please enter your email / username / employee ID."); return; }
+
+    setSqLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/auth/forgot/sq/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ identifier: id }),
+      });
+      const j = await resp.json();
+      if (!resp.ok) throw new Error(j?.error || "Unable to start security questions");
+
+      // Backend returns only { ok, sqToken }
+      setSqToken(j.sqToken);
+      setSqSelectedId(SQ_CATALOG[0].id);
+      setSqAnswer("");
+      goSqAnswers();
+    } catch (err) {
+      setSqError(err?.message || "Unable to start security questions.");
+    } finally {
+      setSqLoading(false);
+    }
+  };
+
+  // ---------- Security Questions: verify ----------
+  const onSqVerify = async (e) => {
+    e.preventDefault();
+    if (!sqToken) return alert.error("Missing verification token.");
+    if (!sqSelectedId || !sqAnswer.trim()) {
+      return alert.error("Please choose a question and enter your answer.");
+    }
+
+    const answers = [{ id: sqSelectedId, answer: sqAnswer.trim() }];
+
+    setSqLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/api/auth/forgot/sq/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ sqToken, answers }),
+      });
+      const j = await resp.json();
+      if (!resp.ok) throw new Error(j?.error || "Verification failed");
+
+      setResetToken(j.resetToken || "");
+      alert.success("Verified! You can now reset your password.");
+      goReset();
+    } catch (err) {
+      alert.error(err?.message || "Verification failed.");
+    } finally {
+      setSqLoading(false);
+    }
+  };
+
+  // ---------- Reset password (shared) ----------
   const onResetSubmit = async (e) => {
     e.preventDefault();
     if (!resetToken) return alert.error("Missing reset token.");
@@ -343,7 +430,7 @@ export default function LoginPage() {
             </Stack>
           )}
 
-          {/* Email verify */}
+          {/* Email verify (OTP path) */}
           {fpStep === "email" && (
             <Box component="form" onSubmit={onEmailVerifySubmit} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
@@ -423,7 +510,83 @@ export default function LoginPage() {
             </Box>
           )}
 
-          {/* Reset Password */}
+          {/* Security Questions — Identify */}
+          {fpStep === "sq-identify" && (
+            <Box component="form" onSubmit={onSqStart} noValidate sx={{ mt: 1 }}>
+              <Stack spacing={2.25}>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>Verify using security questions</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Enter your <strong>email</strong>, <strong>username</strong>, or <strong>employee ID</strong> to continue.
+                </Typography>
+
+                <TextField
+                  label="Email / Username / Employee ID"
+                  value={sqIdentifier}
+                  onChange={(e) => setSqIdentifier(e.target.value)}
+                  fullWidth
+                  required
+                />
+
+                {!!sqError && <Typography color="error" variant="body2">{sqError}</Typography>}
+
+                <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
+                  <Button onClick={goChoose} variant="text" disabled={sqLoading}>Back</Button>
+                  <Box sx={{ flex: 1 }} />
+                  <Button type="submit" variant="contained" disabled={sqLoading}>
+                    {sqLoading ? <CircularProgress size={22} /> : "Continue"}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Box>
+          )}
+
+          {/* Security Questions — Answer */}
+          {fpStep === "sq-answers" && (
+            <Box component="form" onSubmit={onSqVerify} noValidate sx={{ mt: 1 }}>
+              <Stack spacing={2.25}>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  Answer your security question
+                </Typography>
+
+                <FormControl fullWidth>
+                  <InputLabel id="sq-select-label">Choose a question</InputLabel>
+                  <Select
+                    labelId="sq-select-label"
+                    label="Choose a question"
+                    value={sqSelectedId}
+                    onChange={(e) => setSqSelectedId(e.target.value)}
+                    required
+                  >
+                    {SQ_CATALOG.map((q) => (
+                      <MenuItem key={q.id} value={q.id}>
+                        {q.prompt}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <TextField
+                  label="Your answer"
+                  value={sqAnswer}
+                  onChange={(e) => setSqAnswer(e.target.value)}
+                  fullWidth
+                  required
+                />
+
+                <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
+                  <Button onClick={goSqIdentify} variant="text" disabled={sqLoading}>
+                    Back
+                  </Button>
+                  <Box sx={{ flex: 1 }} />
+                  <Button type="submit" variant="contained" disabled={sqLoading}>
+                    {sqLoading ? <CircularProgress size={22} /> : "Verify Answer"}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Box>
+          )}
+
+          {/* Reset Password (shared for OTP/SQ) */}
           {fpStep === "reset" && (
             <Box component="form" onSubmit={onResetSubmit} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
@@ -437,7 +600,7 @@ export default function LoginPage() {
                   onChange={(e) => setConfirmPw(e.target.value)} required fullWidth
                 />
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={() => setFpStep("otp")} variant="text" disabled={resetSubmitting}>Back</Button>
+                  <Button onClick={() => setFpStep("choose")} variant="text" disabled={resetSubmitting}>Back</Button>
                   <Box sx={{ flex: 1 }} />
                   <Button type="submit" variant="contained" disabled={resetSubmitting}>
                     {resetSubmitting ? "Saving..." : "Update Password"}

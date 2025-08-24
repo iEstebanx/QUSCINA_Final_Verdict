@@ -1,4 +1,4 @@
-// src/pages/Discounts/DiscountPage.jsx
+// Frontend/src/pages/Discounts/DiscountPage.jsx
 import { useEffect, useMemo, useState } from "react";
 import {
   Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -9,6 +9,7 @@ import { alpha } from "@mui/material/styles";
 import AddIcon from "@mui/icons-material/Add";
 import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import { useAlert } from "@/context/Snackbar/AlertContext";
 
 import {
   subscribeDiscounts,
@@ -24,6 +25,7 @@ function percentClamp(n) {
 
 export default function DiscountPage() {
   const [rows, setRows] = useState([]);
+  const alert = useAlert();
 
   // selection
   const [selected, setSelected] = useState([]);
@@ -93,11 +95,15 @@ export default function DiscountPage() {
     try {
       if (isEdit) {
         await updateDiscount(editingCode, { name: payload.name, value: payload.value });
+        alert.success("Discount updated.");
       } else {
         await createDiscountAuto(payload);
+        alert.success("Discount created.");
       }
       setOpen(false);
       resetForm();
+    } catch (e) {
+      alert.error(e?.message || "Failed to save discount.");
     } finally {
       setEditingCode(null);
     }
@@ -105,8 +111,13 @@ export default function DiscountPage() {
 
   const onDeleteSelected = async () => {
     if (!selected.length) return;
-    await deleteMany(selected);
-    setSelected([]);
+    try {
+      await deleteMany(selected);
+      alert.info(`Deleted ${selected.length} discount${selected.length > 1 ? "s" : ""}.`);
+      setSelected([]);
+    } catch (e) {
+      alert.error(e?.message || "Failed to delete selected discounts.");
+    }
   };
 
   // pagination

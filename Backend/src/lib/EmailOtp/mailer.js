@@ -1,4 +1,4 @@
-// Backend/src/lib/mailer.js
+// Backend/src/lib/EmailOTP/mailer.js
 // Node 18+ has global fetch; add fallback for Node <18
 const _fetch = (typeof fetch !== "undefined") ? fetch : (...args) => import("node-fetch").then(m => m.default(...args));
 

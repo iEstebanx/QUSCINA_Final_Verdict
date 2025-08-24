@@ -2,8 +2,9 @@
 import { BrowserRouter } from "react-router-dom";
 import AppRoutes from "./routes/AppRoutes";
 import { AuthProvider } from "./context/AuthContext";
-import { AlertProvider } from "./context/AlertContext";
+import { AlertProvider } from "./context/Snackbar/AlertContext";
 import { AdminProvider } from "./context/AdminContext";
+import { ConfirmProvider } from "./context/Cancel&ConfirmDialog/ConfirmContext";
 
 export default function App() {
   return (
@@ -11,7 +12,9 @@ export default function App() {
       <AuthProvider>
         <AlertProvider>
           <AdminProvider>
-            <AppRoutes />
+            <ConfirmProvider>
+              <AppRoutes />
+            </ConfirmProvider>
           </AdminProvider>
         </AlertProvider>
       </AuthProvider>

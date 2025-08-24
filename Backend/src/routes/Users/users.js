@@ -2,9 +2,19 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
-const { db, FieldValue } = require("../../lib/firebaseAdmin");
+// ⬇️ add Timestamp here
+const { db, FieldValue, Timestamp } = require("../../lib/firebaseAdmin");
 
 const SALT_ROUNDS = 12;
+
+// 🔐 Supported questions (must match frontend)
+const SQ_CATALOG = {
+  pet: "What is the name of your first pet?",
+  school: "What is the name of your elementary school?",
+  city: "In what city were you born?",
+  mother_maiden: "What is your mother’s maiden name?",
+  nickname: "What was your childhood nickname?",
+};
 
 function aliasKey(type, value) {
   return `${type}:${String(value || "").trim().toLowerCase()}`;
@@ -18,11 +28,59 @@ function pick(obj, keys) {
   return out;
 }
 
-// GET /api/users  (simple list)
+// Normalize answers (case/space-insensitive by design)
+function normalizeAnswer(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+// Build validated + hashed SQ entries
+// `when` must be a concrete Timestamp (not FieldValue.serverTimestamp())
+async function buildSQEntries(inputArr, when) {
+  if (!Array.isArray(inputArr)) return undefined; // not provided
+  // Allow clearing by providing []
+  if (inputArr.length === 0) return [];
+
+  // Validate max 2 & unique ids
+  const items = inputArr.filter((q) => q && q.id && typeof q.answer === "string");
+  if (items.length > 2) throw new Error("You can only set up to 2 security questions.");
+
+  const ids = items.map((q) => q.id);
+  const uniqueIds = new Set(ids);
+  if (uniqueIds.size !== ids.length) throw new Error("Security questions must be different.");
+
+  // Validate IDs and hash answers
+  const out = [];
+  for (const q of items) {
+    if (!SQ_CATALOG[q.id]) throw new Error("Unknown security question id.");
+    const norm = normalizeAnswer(q.answer);
+    if (!norm) throw new Error("Security question answers cannot be empty.");
+    const answerHash = await bcrypt.hash(norm, SALT_ROUNDS);
+    out.push({
+      id: q.id,
+      question: SQ_CATALOG[q.id],
+      answerHash,
+      // ✅ concrete timestamp allowed in arrays
+      updatedAt: when,
+    });
+  }
+  return out;
+}
+
+// GET /api/users  (simple list — omit answer hashes)
 router.get("/", async (_req, res) => {
   try {
     const snap = await db.collection("employees").orderBy("createdAt", "desc").get();
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const rows = snap.docs.map((d) => {
+      const data = d.data() || {};
+      const safeSQ = Array.isArray(data.securityQuestions)
+        ? data.securityQuestions.map((q) => ({ id: q.id, question: q.question }))
+        : [];
+      return {
+        id: d.id,
+        ...data,
+        securityQuestions: safeSQ, // hide hashes
+      };
+    });
     res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message || "Failed to list users" });
@@ -37,7 +95,8 @@ router.post("/", async (req, res) => {
       firstName, lastName, phone, role, status,
       username = "", email = "",
       loginVia = { employeeId: true, username: true, email: true },
-      password, pin, photoUrl = ""
+      password, pin, photoUrl = "",
+      securityQuestions = undefined, // <- NEW
     } = req.body;
 
     // Basic validation (backend must re-check)
@@ -52,7 +111,10 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "At least one login method must be enabled" });
     }
 
+    // ⬇️ use both: sentinel for doc-level, concrete for array items
     const now = FieldValue.serverTimestamp();
+    const nowTS = Timestamp.now();
+
     const employeeRef = db.collection("employees").doc(String(employeeId));
 
     const uname = String(username || "").trim().toLowerCase();
@@ -66,6 +128,9 @@ router.post("/", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
     const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
 
+    // Prepare SQ entries (may be [], undefined, or array)
+    const sqEntries = await buildSQEntries(securityQuestions, nowTS);
+
     await db.runTransaction(async (tx) => {
       const existingEmployee = await tx.get(employeeRef);
       if (existingEmployee.exists) throw new Error("Employee already exists");
@@ -77,7 +142,7 @@ router.post("/", async (req, res) => {
       }
 
       // create employee
-      tx.set(employeeRef, {
+      const doc = {
         employeeId: String(employeeId),
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
@@ -96,7 +161,13 @@ router.post("/", async (req, res) => {
         photoUrl,
         createdAt: now,
         updatedAt: now,
-      });
+      };
+
+      if (sqEntries !== undefined) {
+        doc.securityQuestions = sqEntries; // set [] or array
+      }
+
+      tx.set(employeeRef, doc);
 
       // create alias docs
       for (const { ref } of aliasDocsToCreate) {
@@ -117,7 +188,14 @@ router.patch("/:employeeId", async (req, res) => {
   try {
     const { employeeId } = req.params;
     const patch = req.body || {};
+
+    // helper to return 400s from inside the transaction path
+    const badRequest = (msg) => Object.assign(new Error(msg), { statusCode: 400 });
+
+    // ⬇️ use both timestamp types here too
     const now = FieldValue.serverTimestamp();
+    const nowTS = Timestamp.now();
+
     const employeeRef = db.collection("employees").doc(String(employeeId));
 
     // Optional sensitive updates (re-hash if provided)
@@ -128,11 +206,29 @@ router.patch("/:employeeId", async (req, res) => {
 
     const hasNewPassword = typeof patch.password === "string" && patch.password.length >= 8;
     const hasNewPin = typeof patch.pin === "string" && /^\d{6}$/.test(patch.pin);
+    const currentPassword = typeof patch.currentPassword === "string" ? patch.currentPassword : "";
+
+    // Prepare SQ entries if the field is present (replace semantics)
+    const sqProvided = Object.prototype.hasOwnProperty.call(patch, "securityQuestions");
+    const sqEntries = sqProvided ? await buildSQEntries(patch.securityQuestions, nowTS) : undefined;
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(employeeRef);
       if (!snap.exists) throw new Error("Employee not found");
       const cur = snap.data();
+
+      // 🔒 If password is being changed, require correct currentPassword
+      if (hasNewPassword) {
+        const hasExisting = !!cur.passwordHash;
+        if (hasExisting) {
+          if (!currentPassword) throw badRequest("Current password is required.");
+          const ok = await bcrypt.compare(currentPassword, cur.passwordHash);
+          if (!ok) throw badRequest("Current password is incorrect.");
+        } else {
+          // Optional: block setting password without a current one
+          // or allow it — choose one. Here we allow it.
+        }
+      }
 
       const currentLoginVia = cur.loginVia || { employeeId: true, username: true, email: true };
       const desiredLoginVia = { ...currentLoginVia, ...(next.loginVia || {}) };
@@ -186,6 +282,11 @@ router.patch("/:employeeId", async (req, res) => {
         updateDoc.pinHash = await bcrypt.hash(patch.pin, SALT_ROUNDS);
       }
 
+      // Replace/clear security questions if provided
+      if (sqProvided) {
+        updateDoc.securityQuestions = sqEntries; // [] or array
+      }
+
       // Write employee
       tx.set(employeeRef, updateDoc, { merge: true });
 
@@ -204,7 +305,8 @@ router.patch("/:employeeId", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error("[PATCH /api/users/:employeeId] fail:", e);
-    res.status(500).json({ error: e.message || "Failed to update user" });
+    const code = e.statusCode || 500;
+    res.status(code).json({ error: e.message || "Failed to update user" });
   }
 });
 

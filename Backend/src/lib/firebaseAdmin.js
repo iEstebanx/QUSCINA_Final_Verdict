@@ -13,5 +13,6 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
+const Timestamp = admin.firestore.Timestamp; // ⬅️ add this
 
-module.exports = { admin, db, FieldValue };
+module.exports = { admin, db, FieldValue, Timestamp }; // ⬅️ and export it

@@ -1,11 +1,11 @@
-// src/pages/Users/UserManagementPage.jsx
+// Frontend/src/pages/Users/UserManagementPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Button, IconButton, TextField, InputAdornment,
   Table, TableHead, TableRow, TableCell, TableBody, Chip, Typography,
   Dialog, DialogTitle, DialogContent, DialogActions,
   MenuItem, Select, FormControl, InputLabel, Tooltip, Switch,
-  LinearProgress, Grid, Divider
+  LinearProgress, Grid, Divider, CircularProgress
 } from "@mui/material";
 
 import AddIcon from "@mui/icons-material/Add";
@@ -22,6 +22,8 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import CancelOutlinedIcon from "@mui/icons-material/CancelOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import ChevronRightOutlinedIcon from "@mui/icons-material/ChevronRightOutlined";
+import HelpOutlineOutlinedIcon from "@mui/icons-material/HelpOutlineOutlined";
 import { Avatar } from "@mui/material";
 import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 
@@ -32,8 +34,20 @@ import {
   updateUser,
 } from "@/services/Users/users";
 
+import { useAlert } from "@/context/Snackbar/AlertContext";
+import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext";
+
 const ROLE_OPTIONS = ["Admin", "Manager", "Chef", "Cashier"];
 const STATUS_OPTIONS = ["Active", "Inactive"];
+
+// Same catalog as backend/auth
+const SQ_CATALOG = {
+  pet: "What is the name of your first pet?",
+  school: "What is the name of your elementary school?",
+  city: "In what city were you born?",
+  mother_maiden: "What is your mother’s maiden name?",
+  nickname: "What was your childhood nickname?",
+};
 
 const emailRe =
   /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
@@ -74,7 +88,15 @@ function formatLastChanged(val) {
 }
 
 export default function UserManagementPage() {
+  const alert = useAlert();
+  const confirm = useConfirm();
+
   const [rows, setRows] = useState([]);
+
+  // snapshots to compare for dirty checks
+  const initialMainRef = useRef(null);    // pristine state for main dialog
+  const initialSqRef = useRef(null);      // pristine state for SQ sub-dialog
+  const initialPwRef = useRef(null);      // pristine state for PW sub-dialog
 
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -86,13 +108,37 @@ export default function UserManagementPage() {
   const [pwDialogOpen, setPwDialogOpen] = useState(false);
   const [pwShow, setPwShow] = useState({ current: false, next: false, confirm: false });
   const [pwFields, setPwFields] = useState({ current: "", next: "", confirm: "" });
-  const [pwError, setPwError] = useState("");
+
+  const [pwErrors, setPwErrors] = useState({
+    current: "",
+    next: "",
+    confirm: ""
+  });
+
+  const [pwSaving, setPwSaving] = useState(false);
+
+  // === Security Questions sub-dialog state ===
+  const [sqDialogOpen, setSqDialogOpen] = useState(false);
+  const [sqFields, setSqFields] = useState([
+    { id: "", answer: "" },
+    { id: "", answer: "" },
+  ]);
+  const [sqError, setSqError] = useState("");
+  const [sqSaving, setSqSaving] = useState(false); // ⬅️ new: saving state for sub-dialog
+  // For create flow only, remember that user staged SQs
+  const [sqTouched, setSqTouched] = useState(false);
 
   const [pinHidden, setPinHidden] = useState(true);
   const pinRefs = Array.from({ length: 6 }).map(() => useRef(null));
 
   useEffect(() => {
-    const unsub = subscribeUsers(({ rows }) => setRows(rows));
+      const unsub = subscribeUsers(
+      ({ rows }) => setRows(rows),
+      {
+        intervalMs: 5000,
+        onError: (msg) => alert.error(`Users list error: ${msg}`),
+      }
+    );
     return () => unsub();
   }, []);
 
@@ -125,6 +171,8 @@ export default function UserManagementPage() {
       pinDigits: ["", "", "", "", "", ""],
       loginVia: { employeeId: true, username: true, email: true },
       photoUrl: "",
+      // staged SQ entries for display only
+      securityQuestions: [],
     };
   }
 
@@ -150,6 +198,11 @@ export default function UserManagementPage() {
 
   const openDialogFor = (row) => {
     if (row) {
+      // prefill SQ ids (without exposing hashes)
+      const existingSQ = Array.isArray(row.securityQuestions) ? row.securityQuestions : [];
+      const sqStage = existingSQ.slice(0, 2).map(q => ({ id: q.id || "", answer: "" }));
+      while (sqStage.length < 2) sqStage.push({ id: "", answer: "" });
+
       setForm({
         photoUrl: row.photoUrl || "",
         employeeId: String(row.employeeId),
@@ -160,19 +213,53 @@ export default function UserManagementPage() {
         phone: row.phone || "",
         role: row.role || "",
         status: row.status || "Active",
-        password: "", // nothing staged initially
+        password: "",
         passwordLastChanged: row.passwordLastChanged || "—",
         pinDigits: ("".padStart(6)).split(""),
         loginVia: { ...(row.loginVia || { employeeId: true, username: true, email: true }) },
+        securityQuestions: existingSQ, // for display count
       });
+
+      setSqFields(sqStage);
     } else {
-      setForm(makeBlank(rows));
+      const blank = makeBlank(rows);
+      setForm(blank);
+      setSqFields([
+        { id: "", answer: "" },
+        { id: "", answer: "" },
+      ]);
     }
     setErrors({});
     setPinHidden(true);
     setPwDialogOpen(false);
     setPwFields({ current: "", next: "", confirm: "" });
-    setPwError("");
+    setPwErrors({ current: "", next: "", confirm: "" });
+    setSqDialogOpen(false);
+    setSqError("");
+    setSqSaving(false);
+    setSqTouched(false);
+
+    // snapshot pristine state for main dialog
+    const nextMain = row
+      ? {
+          photoUrl: row.photoUrl || "",
+          employeeId: String(row.employeeId),
+          username: row.username || "",
+          email: row.email || "",
+          firstName: row.firstName || "",
+          lastName: row.lastName || "",
+          phone: row.phone || "",
+          role: row.role || "",
+          status: row.status || "Active",
+          pinDigits: ("".padStart(6)).split(""),
+          loginVia: { ...(row.loginVia || { employeeId: true, username: true, email: true }) },
+          // password is empty at open; we only stage later
+          password: "",
+          securityQuestions: Array.isArray(row.securityQuestions) ? row.securityQuestions : [],
+        }
+      : makeBlank(rows);
+    initialMainRef.current = JSON.parse(JSON.stringify(nextMain));
+
     setOpen(true);
   };
 
@@ -222,6 +309,7 @@ export default function UserManagementPage() {
   const handleSave = async () => {
     if (!validate()) return;
     const pin = form.pinDigits.join("");
+
     const payload = {
       employeeId: String(form.employeeId),
       firstName: form.firstName.trim(),
@@ -233,23 +321,37 @@ export default function UserManagementPage() {
       email: form.email.trim(),
       loginVia: { ...form.loginVia },
       photoUrl: form.photoUrl || "",
+      ...(form.password ? { password: form.password } : {}),
+      ...(/^\d{6}$/.test(pin) ? { pin } : {}),
     };
 
-    if (form.password) payload.password = form.password; // staged by password dialog
-    if (/^\d{6}$/.test(pin)) payload.pin = pin;
-
     const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
+
+    // For CREATE flow only, include any staged SQs from the SQ dialog
+    if (!isEditing && sqTouched) {
+      const filled = sqFields.filter(q => q.id && q.answer.trim()).slice(0, 2);
+      const seen = new Set();
+      const sqUnique = [];
+      for (const q of filled) {
+        if (seen.has(q.id)) continue;
+        seen.add(q.id);
+        sqUnique.push({ id: q.id, answer: q.answer.trim() });
+      }
+      payload.securityQuestions = sqUnique; // or [] if user saved "clear" during create
+    }
 
     try {
       if (isEditing) {
         await updateUser(form.employeeId, payload); // PATCH
+        alert.success("User updated.");
       } else {
         await createUser(payload); // POST
+        alert.success("User created.");
       }
       setOpen(false);
     } catch (e) {
       console.error(e);
-      // TODO: show toast/snackbar
+      alert.error(e?.message || "Failed to save user.");
     }
   };
 
@@ -258,31 +360,266 @@ export default function UserManagementPage() {
   const pwScore = scorePassword(pwFields.next);
   const pwRules = ruleChecks(pwFields.next);
 
+  function blurActive() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
   function openPasswordDialog() {
+    blurActive();
     setPwFields({ current: "", next: "", confirm: "" });
-    setPwError("");
+    setPwErrors({ current: "", next: "", confirm: "" });
     setPwShow({ current: false, next: false, confirm: false });
+    initialPwRef.current = { current: "", next: "", confirm: "" };
     setPwDialogOpen(true);
   }
 
   function savePasswordDialog() {
-    // basic client-side checks
-    if (isEditingExisting && !pwFields.current.trim()) {
-      setPwError("Please enter your current password.");
+    const errs = { current: "", next: "", confirm: "" };
+    if (isEditingExisting && !pwFields.current.trim())
+      errs.current = "Please enter your current password.";
+    if (!pwFields.next || pwFields.next.length < 8)
+      errs.next = "New password must be at least 8 characters.";
+    if (pwFields.next !== pwFields.confirm)
+      errs.confirm = "New password and confirmation do not match.";
+    setPwErrors(errs);
+    if (errs.current || errs.next || errs.confirm) return;
+
+    setPwErrors(errs);
+    if (errs.current || errs.next || errs.confirm) return;
+
+    if (!isEditingExisting) {
+      setForm((f) => ({ ...f, password: pwFields.next }));
+      setPwDialogOpen(false);
       return;
     }
-    if (!pwFields.next || pwFields.next.length < 8) {
-      setPwError("New password must be at least 8 characters.");
-      return;
-    }
-    if (pwFields.next !== pwFields.confirm) {
-      setPwError("New password and confirmation do not match.");
-      return;
-    }
-    // Stage into the main form; do not persist yet
-    setForm((f) => ({ ...f, password: pwFields.next }));
-    setPwDialogOpen(false);
+
+    // EDIT flow
+    (async () => {
+      try {
+        setPwSaving(true);
+        setPwErrors({ current: "", next: "", confirm: "" });
+        await updateUser(form.employeeId, {
+          currentPassword: pwFields.current,
+          password: pwFields.next,
+        });
+        setForm((f) => ({ ...f, password: "" }));
+        setPwDialogOpen(false);
+        alert.success("Password updated.");
+      } catch (e) {
+        // Backend case: "Current password is incorrect."
+        setPwErrors((prev) => ({
+          ...prev,
+          current: e?.message || "Failed to update password.",
+        }));
+      } finally {
+        setPwSaving(false);
+      }
+    })();
   }
+
+  // ===== Security Questions dialog handlers =====
+  function openSqDialog() {
+    blurActive();
+    setSqError("");
+    initialSqRef.current = JSON.parse(JSON.stringify(sqFields));
+    setSqDialogOpen(true);
+  }
+
+  function resetSqToInitial() {
+    const fallback = [{ id: "", answer: "" }, { id: "", answer: "" }];
+    const base = Array.isArray(initialSqRef.current) ? initialSqRef.current : fallback;
+    setSqFields(JSON.parse(JSON.stringify(base)));
+  }
+
+  function shallowEqualObj(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) {
+      if (typeof a[k] === "object" && typeof b[k] === "object") {
+        if (!shallowEqualObj(a[k], b[k])) return false;
+      } else if (a[k] !== b[k]) return false;
+    }
+    return true;
+  }
+
+  function hasMainChanges() {
+    const base = initialMainRef.current;
+    if (!base) return false;
+    // fields we care about for dirty check
+    const cur = {
+      photoUrl: form.photoUrl || "",
+      employeeId: String(form.employeeId),
+      username: form.username || "",
+      email: form.email || "",
+      firstName: form.firstName || "",
+      lastName: form.lastName || "",
+      phone: form.phone || "",
+      role: form.role || "",
+      status: form.status || "Active",
+      pinDigits: form.pinDigits || [],
+      loginVia: form.loginVia || {},
+      password: form.password || "", // staged password counts as dirty
+      // for display only, but still a user-visible change in the dialog
+      securityQuestions: form.securityQuestions || [],
+    };
+    return !shallowEqualObj(cur, base);
+  }
+
+  function hasSqChanges() {
+    if (!initialSqRef.current) return false;
+    return JSON.stringify(sqFields) !== JSON.stringify(initialSqRef.current);
+  }
+
+  function hasPwChanges() {
+    if (!initialPwRef.current) return false;
+    return JSON.stringify(pwFields) !== JSON.stringify(initialPwRef.current);
+  }
+
+  // ⬇️ Save SQs directly here for existing users. For new users, just stage.
+  async function saveSqDialog() {
+    setSqError("");
+
+    const filled = sqFields.filter(q => q.id && q.answer.trim());
+    // Validations
+    if (filled.length > 2) {
+      setSqError("You can save up to 2 questions.");
+      return;
+    }
+    const ids = filled.map(f => f.id);
+    if (new Set(ids).size !== ids.length) {
+      setSqError("Please choose different questions.");
+      return;
+    }
+
+    const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
+
+    // Clear all if nothing filled
+    if (filled.length === 0) {
+      if (isEditing) {
+        try {
+          setSqSaving(true);
+          await updateUser(form.employeeId, { securityQuestions: [] });
+          setForm((f) => ({ ...f, securityQuestions: [] }));
+          setSqFields([{ id: "", answer: "" }, { id: "", answer: "" }]);
+          setSqDialogOpen(false);
+          alert.success("Security questions cleared.");
+        } catch (e) {
+          console.error(e);
+          setSqError("Failed to save. Please try again.");
+          alert.error(e?.message || "Failed to clear security questions.");
+        } finally {
+          setSqSaving(false);
+        }
+      } else {
+        // create flow: stage as cleared
+        setForm((f) => ({ ...f, securityQuestions: [] }));
+        setSqFields([{ id: "", answer: "" }, { id: "", answer: "" }]);
+        setSqTouched(true);
+        setSqDialogOpen(false);
+        alert.info("Security questions will be cleared on Save.");
+      }
+      return;
+    }
+
+    // Build payload with answers (backend hashes & stamps)
+    const seen = new Set();
+    const sqUnique = [];
+    for (const q of filled) {
+      if (seen.has(q.id)) continue;
+      seen.add(q.id);
+      sqUnique.push({ id: q.id, answer: q.answer.trim() });
+    }
+
+    if (isEditing) {
+      // ✅ save immediately via PATCH
+      try {
+        setSqSaving(true);
+        await updateUser(form.employeeId, { securityQuestions: sqUnique });
+        // Update the display summary (no answers)
+        setForm((f) => ({
+          ...f,
+          securityQuestions: sqUnique.map(q => ({ id: q.id, question: SQ_CATALOG[q.id] || "Security question" }))
+        }));
+        // clear answers but keep selected IDs for next open
+        const cleared = sqUnique.map(q => ({ id: q.id, answer: "" }));
+        while (cleared.length < 2) cleared.push({ id: "", answer: "" });
+        setSqFields(cleared);
+        initialSqRef.current = JSON.parse(JSON.stringify(cleared));
+        setSqDialogOpen(false);
+        alert.success("Security questions saved.");
+      } catch (e) {
+        console.error(e);
+        setSqError("Failed to save. Please try again.");
+        alert.error(e?.message || "Failed to save security questions.");
+      } finally {
+        setSqSaving(false);
+      }
+    } else {
+      // create flow: stage and close (will be sent on main Save)
+      setForm((f) => ({
+        ...f,
+        securityQuestions: sqUnique.map(q => ({ id: q.id, question: SQ_CATALOG[q.id] || "Security question" }))
+      }));
+      setSqTouched(true);
+      // clear answers but keep selected IDs
+      const cleared = sqUnique.map(q => ({ id: q.id, answer: "" }));
+      while (cleared.length < 2) cleared.push({ id: "", answer: "" });
+      setSqFields(cleared);
+      initialSqRef.current = JSON.parse(JSON.stringify(cleared));
+      setSqDialogOpen(false);
+      alert.info("Security questions will be saved on Create.");
+    }
+  }
+
+  const selectedSqIds = sqFields.map(f => f.id);
+
+  // ── close handlers using ConfirmContext
+  const requestCloseMain = async () => {
+    if (hasMainChanges()) {
+      const ok = await confirm({
+        title: "Discard changes?",
+        content: "You have unsaved changes. If you leave now, your changes will be lost.",
+        confirmLabel: "Discard",
+        confirmColor: "error",
+      });
+      if (!ok) return;
+    }
+    setOpen(false);
+  };
+
+  const requestClosePw = async () => {
+    if (hasPwChanges()) {
+      const ok = await confirm({
+        title: "Discard password changes?",
+        content: "Any text you entered here will be lost.",
+        confirmLabel: "Discard",
+        confirmColor: "error",
+      });
+      if (!ok) return;
+    }
+    setPwDialogOpen(false);
+  };
+
+  const requestCloseSq = async () => {
+    if (sqSaving) return; // block while saving
+    if (hasSqChanges()) {
+      const ok = await confirm({
+        title: "Discard changes?",
+        content: "Your edits to security questions will be lost.",
+        confirmLabel: "Discard",
+        confirmColor: "error",
+      });
+      if (!ok) return;
+        // ⬅️ restore inputs back to snapshot
+        resetSqToInitial();
+        setSqTouched(false); // nothing staged anymore
+      }
+    setSqDialogOpen(false);
+  };
 
   return (
     <Box p={2}>
@@ -374,9 +711,10 @@ export default function UserManagementPage() {
       {/* main dialog */}
       <Dialog
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={requestCloseMain}
         maxWidth="md"
         fullWidth
+        disableRestoreFocus
         PaperProps={{ sx: { overflow: "hidden" } }}
       >
         <DialogTitle sx={{ pb: 0.5, fontSize: 18 }}>
@@ -478,7 +816,7 @@ export default function UserManagementPage() {
                       value={form.username}
                       error={!!errors.username}
                       helperText={errors.username || "Optional — unique (lowercased)"}
-                      onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
+                      onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))} 
                       disabled={!form.loginVia.username}
                       InputProps={{
                         startAdornment: (
@@ -630,8 +968,8 @@ export default function UserManagementPage() {
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Credentials</Typography>
 
-            {/* Password row (clickable) */}
             <Grid container spacing={3} alignItems="center">
+              {/* Password row */}
               <Grid size={{ xs: 12, md: 6 }}>
                 <Paper
                   variant="outlined"
@@ -658,7 +996,7 @@ export default function UserManagementPage() {
                       </Typography>
                     </Box>
                   </Stack>
-                  <ChevronRightIcon fontSize="small" />
+                  <ChevronRightOutlinedIcon fontSize="small" />
                 </Paper>
                 {errors.password && (
                   <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
@@ -667,7 +1005,44 @@ export default function UserManagementPage() {
                 )}
               </Grid>
 
-              {/* PIN (unchanged) */}
+              {/* Security Questions row */}
+              <Grid size={{ xs: 12, md: 6 }}>
+                <Paper
+                  variant="outlined"
+                  onClick={openSqDialog}
+                  sx={{
+                    p: 1,
+                    cursor: "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    minHeight: 46,
+                  }}
+                >
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <HelpOutlineOutlinedIcon fontSize="small" />
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                        {Array.isArray(form.securityQuestions) && form.securityQuestions.length > 0
+                          ? `${form.securityQuestions.length} configured`
+                          : "None configured"}
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.25 }}>
+                        Security Questions (up to 2)
+                      </Typography>
+                    </Box>
+                  </Stack>
+                  <ChevronRightOutlinedIcon fontSize="small" />
+                </Paper>
+                {!!sqError && (
+                  <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                    {sqError}
+                  </Typography>
+                )}
+              </Grid>
+
+              {/* PIN */}
               <Grid size={{ xs: 12, md: 6 }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                   POS PIN<span style={{ color: "#d32f2f" }}> *</span>
@@ -724,18 +1099,13 @@ export default function UserManagementPage() {
         </DialogContent>
 
         <DialogActions sx={{ p: 1.5 }}>
-          <Button onClick={() => setOpen(false)} variant="outlined" size="small">Cancel</Button>
+          <Button onClick={requestCloseMain} variant="outlined" size="small">Cancel</Button>
           <Button onClick={handleSave} variant="contained" size="small">Save</Button>
         </DialogActions>
       </Dialog>
 
       {/* ===== Change Password sub-dialog ===== */}
-      <Dialog
-        open={pwDialogOpen}
-        onClose={() => setPwDialogOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
+      <Dialog open={pwDialogOpen} onClose={requestClosePw} maxWidth="xs" fullWidth disableAutoFocus disableRestoreFocus  TransitionProps={{ onEnter: blurActive }}>
         <DialogTitle sx={{ pb: 0.5 }}>Change Password</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1.25}>
@@ -745,7 +1115,13 @@ export default function UserManagementPage() {
                 type={pwShow.current ? "text" : "password"}
                 label="Current Password"
                 value={pwFields.current}
-                onChange={(e) => setPwFields((s) => ({ ...s, current: e.target.value }))}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setPwFields((s) => ({ ...s, current: v }));
+                  if (pwErrors.current) setPwErrors((p) => ({ ...p, current: "" }));
+                }}
+                error={!!pwErrors.current}
+                helperText={pwErrors.current}
                 InputProps={{
                   endAdornment: (
                     <InputAdornment position="end">
@@ -758,13 +1134,19 @@ export default function UserManagementPage() {
               />
             )}
 
-            {/* For both new user & edit: New + Confirm */}
+            {/* New + Confirm */}
             <TextField
               size="small"
               type={pwShow.next ? "text" : "password"}
               label={isEditingExisting ? "New Password" : "New Password *"}
               value={pwFields.next}
-              onChange={(e) => setPwFields((s) => ({ ...s, next: e.target.value }))}
+              onChange={(e) => {
+                const v = e.target.value;
+                setPwFields((s) => ({ ...s, next: v }));
+                if (pwErrors.next) setPwErrors((p) => ({ ...p, next: "" }));
+              }}
+              error={!!pwErrors.next}
+              helperText={pwErrors.next}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
@@ -780,7 +1162,13 @@ export default function UserManagementPage() {
               type={pwShow.confirm ? "text" : "password"}
               label={isEditingExisting ? "Confirm New Password" : "Confirm Password *"}
               value={pwFields.confirm}
-              onChange={(e) => setPwFields((s) => ({ ...s, confirm: e.target.value }))}
+              onChange={(e) => {
+                const v = e.target.value;
+                setPwFields((s) => ({ ...s, confirm: v }));
+                if (pwErrors.confirm) setPwErrors((p) => ({ ...p, confirm: "" }));
+              }}
+              error={!!pwErrors.confirm}
+              helperText={pwErrors.confirm}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
@@ -837,17 +1225,81 @@ export default function UserManagementPage() {
                 </Box>
               </>
             )}
-
-            {!!pwError && (
-              <Typography variant="caption" color="error">
-                {pwError}
-              </Typography>
-            )}
           </Stack>
         </DialogContent>
-        <DialogActions sx={{ p: 1.25 }}>
-          <Button onClick={() => setPwDialogOpen(false)} variant="outlined" size="small">Cancel</Button>
-          <Button onClick={savePasswordDialog} variant="contained" size="small">Save</Button>
+        <DialogActions sx={{ p: 1.25, gap: 1 }}>
+          <Button onClick={requestClosePw} variant="outlined" size="small" disabled={pwSaving}>Cancel</Button>
+          <Button onClick={savePasswordDialog} variant="contained" size="small" disabled={pwSaving}>
+            {pwSaving ? "Saving..." : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ===== Security Questions sub-dialog ===== */}
+      <Dialog open={sqDialogOpen} onClose={requestCloseSq} maxWidth="sm" fullWidth disableAutoFocus disableRestoreFocus  TransitionProps={{ onEnter: blurActive }}>
+        <DialogTitle sx={{ pb: 0.5 }}>Security Questions (up to 2)</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            {[0,1].map((idx) => (
+              <Grid key={idx} container spacing={1.5} alignItems="center">
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <FormControl fullWidth size="small" disabled={sqSaving}>
+                    <InputLabel>Question {idx+1}</InputLabel>
+                    <Select
+                      label={`Question ${idx+1}`}
+                      value={sqFields[idx].id}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setSqFields((arr) => {
+                          const next = [...arr];
+                          next[idx] = { ...next[idx], id };
+                          return next;
+                        });
+                      }}
+                    >
+                      {Object.entries(SQ_CATALOG).map(([id, text]) => {
+                        const takenByOther = selectedSqIds.includes(id) && sqFields[idx].id !== id;
+                        return (
+                          <MenuItem key={id} value={id} disabled={takenByOther}>
+                            {text}
+                          </MenuItem>
+                        );
+                      })}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField
+                    size="small"
+                    label={`Answer ${idx+1}`}
+                    value={sqFields[idx].answer}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSqFields((arr) => {
+                        const next = [...arr];
+                        next[idx] = { ...next[idx], answer: v };
+                        return next;
+                      });
+                    }}
+                    fullWidth
+                    helperText="Not case-sensitive (we normalize)"
+                    disabled={sqSaving}
+                  />
+                </Grid>
+              </Grid>
+            ))}
+
+            {!!sqError && <Typography variant="caption" color="error">{sqError}</Typography>}
+
+            <Typography variant="caption" color="text.secondary">
+              Tip: set two distinct questions. Answers are securely hashed and never shown again.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 1.25, gap: 1 }}>
+          {sqSaving && <CircularProgress size={18} />}
+          <Button onClick={requestCloseSq} variant="outlined" size="small" disabled={sqSaving}>Cancel</Button>
+          <Button onClick={saveSqDialog} variant="contained" size="small" disabled={sqSaving}>Save</Button>
         </DialogActions>
       </Dialog>
     </Box>

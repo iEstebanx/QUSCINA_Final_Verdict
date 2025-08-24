@@ -1,4 +1,4 @@
-// src/context/AlertContext.jsx
+// Frontend/src/context/Snackbar/AlertContext.jsx
 import { createContext, useContext } from "react";
 import { SnackbarProvider, useSnackbar } from "notistack";
 

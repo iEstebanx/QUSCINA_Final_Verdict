@@ -17,7 +17,10 @@ async function safeJson(res) {
  *   const unsub = subscribeUsers(({ rows }) => setRows(rows), { intervalMs: 5000 });
  *   return () => unsub();
  */
-export function subscribeUsers(cb, { intervalMs = 5000 } = {}) {
+export function subscribeUsers(
+  cb,
+  { intervalMs = 5000, onError } = {}
+) {
   let active = true;
   let timer = null;
 
@@ -28,10 +31,13 @@ export function subscribeUsers(cb, { intervalMs = 5000 } = {}) {
       if (res.ok && active && Array.isArray(data)) {
         cb({ rows: data });
       } else if (!res.ok) {
-        console.error("GET /api/users failed:", data?.error || res.statusText);
+        const msg = data?.error || res.statusText || "GET /api/users failed";
+        console.error(msg);
+        if (typeof onError === "function") onError(msg);
       }
     } catch (e) {
       console.error("users poll failed", e);
+      if (typeof onError === "function") onError(e?.message || "Users poll failed");
     } finally {
       if (active) timer = setTimeout(tick, intervalMs);
     }

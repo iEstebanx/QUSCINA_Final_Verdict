@@ -4,8 +4,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const { db } = require("../lib/firebaseAdmin");
-const { createEmailOtp, getLatestPendingOtp } = require("../lib/otp");
-const { sendOtpEmail } = require("../lib/mailer");
+const { createEmailOtp, getLatestPendingOtp } = require("../lib/EmailOtp/otp");
+const { sendOtpEmail } = require("../lib/EmailOtp/mailer");
 
 const router = express.Router();
 const DEBUG = process.env.DEBUG_AUTH === "1";
@@ -49,32 +49,32 @@ async function tryProbes(probes) {
 async function findUserByIdentifier(identifierRaw) {
   const raw = String(identifierRaw || "").trim();
   const primary = detectType(raw);
-  const lower = raw.toLowerCase();
+  const lowerVal = raw.toLowerCase();
   const looksNumeric = /^\d+$/.test(raw);
   const asNumber = looksNumeric ? Number(raw) : null;
 
   let probes = [];
   if (primary === "email") {
     probes = [
-      ["emailLower", lower],
-      ["email", lower],
+      ["emailLower", lowerVal],
+      ["email", lowerVal],
       ["email", raw],
-      ["usernameLower", lower],
+      ["usernameLower", lowerVal],
       ["username", raw],
     ];
   } else if (primary === "employeeId") {
     probes = [
       ["employeeId", raw],
       ["employeeId", asNumber],
-      ["usernameLower", lower],
-      ["emailLower", lower],
+      ["usernameLower", lowerVal],
+      ["emailLower", lowerVal],
       ["email", raw],
     ];
   } else {
     probes = [
-      ["usernameLower", lower],
+      ["usernameLower", lowerVal],
       ["username", raw],
-      ["emailLower", lower],
+      ["emailLower", lowerVal],
       ["email", raw],
       ["employeeId", asNumber],
       ["employeeId", raw],
@@ -91,6 +91,44 @@ async function findUserByIdentifier(identifierRaw) {
     (via.email !== false && via.username !== false && via.employeeId !== false);
 
   return ok ? user : null;
+}
+
+// Less strict finder for security-questions (ignore loginVia toggles)
+async function findEmployeeByAnyIdentifier(identifierRaw) {
+  const raw = String(identifierRaw || "").trim();
+  const primary = detectType(raw);
+  const lowerVal = raw.toLowerCase();
+  const looksNumeric = /^\d+$/.test(raw);
+  const asNumber = looksNumeric ? Number(raw) : null;
+
+  let probes = [];
+  if (primary === "email") {
+    probes = [
+      ["emailLower", lowerVal],
+      ["email", lowerVal],
+      ["email", raw],
+      ["usernameLower", lowerVal],
+      ["username", raw],
+    ];
+  } else if (primary === "employeeId") {
+    probes = [
+      ["employeeId", raw],
+      ["employeeId", asNumber],
+      ["usernameLower", lowerVal],
+      ["emailLower", lowerVal],
+      ["email", raw],
+    ];
+  } else {
+    probes = [
+      ["usernameLower", lowerVal],
+      ["username", raw],
+      ["emailLower", lowerVal],
+      ["email", raw],
+      ["employeeId", asNumber],
+      ["employeeId", raw],
+    ];
+  }
+  return await tryProbes(probes);
 }
 
 function sanitizePassword(pw) {
@@ -169,9 +207,6 @@ router.get("/me", (req, res) => {
 });
 
 // -------------------- Forgot Password (Email OTP) --------------------
-// Policy: Prefer not to reveal whether an email exists.
-// But if extra info (employeeId/username) is supplied and mismatches, return a generic 400 so the UI can block.
-
 // Config
 const OTP_TTL_SEC = Number(process.env.OTP_TTL_SEC || 10 * 60); // 10 minutes
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
@@ -179,7 +214,7 @@ const RESEND_MIN_INTERVAL_SEC = Number(process.env.OTP_RESEND_MIN_INTERVAL_SEC |
 const RESET_TOKEN_TTL = String(process.env.RESET_TOKEN_TTL || "15m");
 const RESET_JWT_SECRET = process.env.JWT_RESET_SECRET || process.env.JWT_SECRET;
 
-// helper: normalize & lookup employee by email (lowercase and fallback to email field)
+// helper: normalize & lookup employee by email
 async function findEmployeeByEmail(emailRaw) {
   const emailLower = String(emailRaw || "").trim().toLowerCase();
   if (!emailLower) return null;
@@ -227,7 +262,7 @@ function verifyExtraInfo(emp, verifyType, verifyValueRaw) {
   return false;
 }
 
-// POST /api/auth/forgot/start
+// POST /api/auth/forgot/start  (OTP)
 router.post("/forgot/start", async (req, res, next) => {
   try {
     const email = lower(req.body?.email);
@@ -237,11 +272,9 @@ router.post("/forgot/start", async (req, res, next) => {
 
     const employee = await findEmployeeByEmail(email);
 
-    // If user supplied extra info, it MUST match this employee; otherwise, deny with a generic 400.
     if (employee && (verifyType || verifyValue)) {
       const ok = verifyExtraInfo(employee, verifyType, verifyValue);
       if (!ok) {
-        // generic error (doesn't say whether email exists or not)
         return res.status(400).json({ error: "We couldn't verify your details. Please check and try again." });
       }
     }
@@ -262,12 +295,9 @@ router.post("/forgot/start", async (req, res, next) => {
         });
       } catch (mailErr) {
         console.error("[forgot/start] Email send failed:", mailErr?.message || mailErr);
-        // still return generic success to avoid leakage
       }
     }
 
-    // If no extra info was provided, we keep your original behavior: generic 200
-    // If extra info was provided and matched, also generic 200
     return res.json({ ok: true, message: "If that email exists, we’ve sent a code." });
   } catch (e) {
     next(e);
@@ -282,7 +312,6 @@ router.post("/forgot/resend", async (req, res, next) => {
 
     const employee = await findEmployeeByEmail(email);
 
-    // Throttle resends based on latest pending OTP timestamp
     if (employee) {
       const latest = await getLatestPendingOtp(email);
       const now = Date.now();
@@ -319,7 +348,7 @@ router.post("/forgot/resend", async (req, res, next) => {
   }
 });
 
-// POST /api/auth/forgot/verify
+// POST /api/auth/forgot/verify  (OTP -> resetToken)
 router.post("/forgot/verify", async (req, res, next) => {
   try {
     const email = lower(req.body?.email);
@@ -366,7 +395,7 @@ router.post("/forgot/verify", async (req, res, next) => {
         otpId: latest.id,
       },
       RESET_JWT_SECRET,
-      { expiresIn: RESET_TOKEN_TTL } // e.g., 15m
+      { expiresIn: RESET_TOKEN_TTL }
     );
 
     if (DEBUG) console.log("[forgot/verify] success for", email);
@@ -377,7 +406,120 @@ router.post("/forgot/verify", async (req, res, next) => {
   }
 });
 
-// POST /api/auth/forgot/reset
+// -------------------- Security Questions (NEW) --------------------
+const SQ_TOKEN_TTL = String(process.env.SQ_TOKEN_TTL || "10m");
+
+// Fixed catalog — do NOT reveal per-user configuration
+const SQ_CATALOG = {
+  pet: "What is the name of your first pet?",
+  school: "What is the name of your elementary school?",
+  city: "In what city were you born?",
+  mother_maiden: "What is your mother’s maiden name?",
+  nickname: "What was your childhood nickname?",
+};
+
+// normalize for hashing/compare
+const norm = (s) => String(s || "").trim().toLowerCase();
+
+// POST /api/auth/forgot/sq/start
+// body: { identifier: string }
+// response: { ok, sqToken }
+router.post("/forgot/sq/start", async (req, res, next) => {
+  try {
+    const identifier = String(req.body?.identifier || "").trim();
+    if (!identifier) return res.status(400).json({ error: "identifier is required" });
+
+    const emp = await findEmployeeByAnyIdentifier(identifier);
+    if (!emp) return res.status(404).json({ error: "Account not found" });
+
+    // Do NOT leak which questions the user configured.
+    // Just issue a token with the set of allowed IDs (the 5 hardcoded ones).
+    const allowedIds = Object.keys(SQ_CATALOG);
+
+    const sqToken = jwt.sign(
+      {
+        purpose: "security-questions",
+        employeeRefPath: `employees/${emp.id}`,
+        allowedIds,
+      },
+      RESET_JWT_SECRET,
+      { expiresIn: SQ_TOKEN_TTL }
+    );
+
+    // Return only the token; no questions array.
+    return res.json({ ok: true, sqToken });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/auth/forgot/sq/verify
+// body: { sqToken, answers: [{id, answer}] }  // exactly one
+// response: { ok, resetToken }
+router.post("/forgot/sq/verify", async (req, res, next) => {
+  try {
+    const { sqToken, answers } = req.body || {};
+    const fail = () =>
+      res.status(400).json({ error: "The details you entered don’t match our records." });
+
+    // Basic input validation
+    if (!sqToken || !Array.isArray(answers) || answers.length !== 1) {
+      return fail();
+    }
+
+    // Validate token
+    let payload;
+    try {
+      payload = jwt.verify(sqToken, RESET_JWT_SECRET);
+    } catch {
+      return fail();
+    }
+    if (payload?.purpose !== "security-questions") return fail();
+
+    const employeeRefPath = String(payload.employeeRefPath || "");
+    const allowedIds = Array.isArray(payload.allowedIds) ? payload.allowedIds : [];
+    if (!employeeRefPath || !allowedIds.length) return fail();
+
+    // Validate answer input
+    const { id, answer } = answers[0] || {};
+    if (!id || typeof answer !== "string" || !allowedIds.includes(id)) {
+      return fail();
+    }
+
+    // Load employee
+    const docRef = db.doc(employeeRefPath);
+    const snap = await docRef.get();
+    if (!snap.exists) return fail();
+    const emp = { id: snap.id, ...snap.data() };
+
+    // Check stored security questions
+    const configured = Array.isArray(emp.securityQuestions) ? emp.securityQuestions : [];
+    const stored = configured.find((q) => q && q.id === id);
+    if (!stored || !(stored.answerHash || stored.answerhash)) return fail();
+
+    // Compare hashes
+    const storedHash = stored.answerHash || stored.answerhash;
+    const ok = await bcrypt.compare(norm(answer), storedHash);
+    if (!ok) return fail();
+
+    // Success -> issue resetToken compatible with /forgot/reset
+    const resetToken = jwt.sign(
+      {
+        purpose: "password-reset",
+        employeeRefPath,
+        via: "security-questions",
+      },
+      RESET_JWT_SECRET,
+      { expiresIn: RESET_TOKEN_TTL }
+    );
+
+    return res.json({ ok: true, resetToken });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// -------------------- POST /api/auth/forgot/reset (shared) --------------------
 router.post("/forgot/reset", async (req, res, next) => {
   try {
     const { resetToken, newPassword } = req.body || {};
@@ -395,10 +537,24 @@ router.post("/forgot/reset", async (req, res, next) => {
       return res.status(400).json({ error: "Invalid reset token" });
     }
 
-    const emailLower = String(payload.emailLower || "").trim().toLowerCase();
-    if (!emailLower) return res.status(400).json({ error: "Invalid reset token" });
+    const employeeRefPath = String(payload.employeeRefPath || "");
+    let employee = null;
 
-    const employee = await findEmployeeByEmail(emailLower);
+    if (employeeRefPath) {
+      const snap = await db.doc(employeeRefPath).get();
+      if (snap.exists) {
+        employee = { id: snap.id, ...snap.data() };
+      }
+    }
+
+    if (!employee) {
+      // Fallback path for OTP token (which carries emailLower)
+      const emailLower = String(payload.emailLower || "").trim().toLowerCase();
+      if (emailLower) {
+        employee = await findEmployeeByEmail(emailLower);
+      }
+    }
+
     if (!employee) {
       return res.status(400).json({ error: "Unable to reset password" });
     }
@@ -410,7 +566,7 @@ router.post("/forgot/reset", async (req, res, next) => {
       passwordUpdatedAt: new Date(),
     });
 
-    if (DEBUG) console.log("[forgot/reset] password updated for", emailLower);
+    if (DEBUG) console.log("[forgot/reset] password updated for", employee.id);
 
     return res.json({ ok: true, message: "Password updated" });
   } catch (e) {

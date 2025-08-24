@@ -1,6 +1,6 @@
-// Backend/src/lib/otp.js
+// Backend/src/lib/EmailOtp/otp.js
 const bcrypt = require("bcryptjs");
-const { db, FieldValue } = require("./firebaseAdmin");
+const { db, FieldValue } = require("../firebaseAdmin");
 
 /** 6-digit numeric code */
 function genCode() {
