@@ -1,5 +1,6 @@
 // src/components/Sidebar/Sidebar.jsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import PropTypes from "prop-types";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Box,
@@ -47,23 +48,21 @@ function NavLeaf({ to, label, icon: Icon, collapsed }) {
   };
 
   return (
-    <NavLink
-      to={to}
-      style={{ textDecoration: "none" }}
-      children={({ isActive }) => (
+    <NavLink to={to} style={{ textDecoration: "none" }}>
+      {({ isActive }) => (
         <ButtonBase
           sx={(theme) => {
             const isDark = theme.palette.mode === "dark";
-            const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.10); // selected bg (primary tint)
-            const hovBg = alpha(theme.palette.text.primary, isDark ? 0.10 : 0.06); // neutral hover for inactive
-            const selHov = alpha(theme.palette.text.primary, isDark ? 0.16 : 0.08); // neutral hover for active (inverse)
+            const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.1);
+            const hovBg = alpha(theme.palette.text.primary, isDark ? 0.1 : 0.06);
+            const selHov = alpha(theme.palette.text.primary, isDark ? 0.16 : 0.08);
             return {
               ...base,
               justifyContent: collapsed ? "center" : "flex-start",
-              color: theme.palette.text.primary, // keep readable on tinted bg
+              color: theme.palette.text.primary,
               bgcolor: isActive ? selBg : "transparent",
               fontWeight: isActive ? 600 : 500,
-              "&:hover": { bgcolor: isActive ? selHov : hovBg }, // inverse hover when selected
+              "&:hover": { bgcolor: isActive ? selHov : hovBg },
               "&:focus-visible": {
                 outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
                 outlineOffset: 2,
@@ -75,9 +74,16 @@ function NavLeaf({ to, label, icon: Icon, collapsed }) {
           {!collapsed && <span>{label}</span>}
         </ButtonBase>
       )}
-    />
+    </NavLink>
   );
 }
+
+NavLeaf.propTypes = {
+  to: PropTypes.string.isRequired,
+  label: PropTypes.string.isRequired,
+  icon: PropTypes.elementType.isRequired,
+  collapsed: PropTypes.bool.isRequired,
+};
 
 function NavGroup({ label, icon: Icon, collapsed, children, open, onToggle, active }) {
   return (
@@ -86,8 +92,8 @@ function NavGroup({ label, icon: Icon, collapsed, children, open, onToggle, acti
         onClick={onToggle}
         sx={(theme) => {
           const isDark = theme.palette.mode === "dark";
-          const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.10);
-          const hovBg = alpha(theme.palette.text.primary, isDark ? 0.10 : 0.06);
+          const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.1);
+          const hovBg = alpha(theme.palette.text.primary, isDark ? 0.1 : 0.06);
           const selHov = alpha(theme.palette.text.primary, isDark ? 0.16 : 0.08);
 
           return {
@@ -130,6 +136,16 @@ function NavGroup({ label, icon: Icon, collapsed, children, open, onToggle, acti
   );
 }
 
+NavGroup.propTypes = {
+  label: PropTypes.string.isRequired,
+  icon: PropTypes.elementType.isRequired,
+  collapsed: PropTypes.bool.isRequired,
+  children: PropTypes.node,
+  open: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+  active: PropTypes.bool.isRequired,
+};
+
 function SidebarContent({ collapsed }) {
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -143,7 +159,8 @@ function SidebarContent({ collapsed }) {
   const [openInv, setOpenInv] = useState(isInventoryActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
-  useMemo(() => {
+  // useEffect (not useMemo) for state sync side-effects
+  useEffect(() => {
     setOpenMenu(isMenuActive);
     setOpenInv(isInventoryActive);
     setOpenSettings(isSettingsActive);
@@ -231,7 +248,7 @@ function SidebarContent({ collapsed }) {
               borderRadius: 1.5,
               color: theme.palette.text.primary,
               "&:hover": {
-                bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.10 : 0.06),
+                bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.1 : 0.06),
               },
               typography: "body2",
             })}
@@ -244,6 +261,10 @@ function SidebarContent({ collapsed }) {
   );
 }
 
+SidebarContent.propTypes = {
+  collapsed: PropTypes.bool.isRequired,
+};
+
 export default function Sidebar({
   collapsed,
   width = 240,
@@ -254,7 +275,6 @@ export default function Sidebar({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  // Neutral surface (not a big block of primary color)
   const skin = {
     bgcolor: "background.paper",
     color: "text.primary",
@@ -301,3 +321,11 @@ export default function Sidebar({
     </Box>
   );
 }
+
+Sidebar.propTypes = {
+  collapsed: PropTypes.bool.isRequired,
+  width: PropTypes.number,
+  collapsedWidth: PropTypes.number,
+  mobileOpen: PropTypes.bool,
+  onMobileClose: PropTypes.func,
+};

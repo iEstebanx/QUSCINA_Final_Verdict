@@ -1,5 +1,6 @@
 // Frontend/src/context/ConfirmContext.jsx
-import { createContext, useCallback, useContext, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useRef, useState, useMemo } from "react";
+import PropTypes from "prop-types";
 import {
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   Button, Stack
@@ -41,6 +42,8 @@ export function ConfirmProvider({ children }) {
     });
   }, []);
 
+  const ctxValue = useMemo(() => ({ confirm }), [confirm]);
+
   // Ensure no focused element remains inside the dialog as it unmounts
   const blurActive = () => {
     const el = document.activeElement;
@@ -59,7 +62,7 @@ export function ConfirmProvider({ children }) {
   const handleConfirm = () => closeWithResult(true);
 
   return (
-    <ConfirmCtx.Provider value={{ confirm }}>
+    <ConfirmCtx.Provider value={ctxValue}>
       {children}
 
       <Dialog
@@ -118,3 +121,7 @@ export function ConfirmProvider({ children }) {
     </ConfirmCtx.Provider>
   );
 }
+
+ConfirmProvider.propTypes = {
+  children: PropTypes.node.isRequired,
+};

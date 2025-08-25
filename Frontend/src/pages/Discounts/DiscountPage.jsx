@@ -1,5 +1,5 @@
 // Frontend/src/pages/Discounts/DiscountPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box, Button, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
   Divider, IconButton, InputAdornment, Paper, Stack, Table, TableBody,
@@ -32,13 +32,19 @@ export default function DiscountPage() {
   const allChecked = rows.length > 0 && selected.length === rows.length;
   const someChecked = selected.length > 0 && selected.length < rows.length;
 
-  useEffect(() => {
-    const unsub = subscribeDiscounts(({ rows }) => {
-      setRows(rows);
-      setSelected((sel) => sel.filter((id) => rows.some(r => r.id === id)));
-    });
-    return () => unsub();
+  // ⬇️ Flattened + memoized subscriber (avoids deep nesting)
+  const handleDiscounts = useCallback(({ rows: nextRows }) => {
+    setRows(nextRows);
+
+    // keep only selected ids that still exist
+    const validIds = new Set(nextRows.map((r) => r.id));
+    setSelected((prev) => prev.filter((id) => validIds.has(id)));
   }, []);
+
+  useEffect(() => {
+    const unsub = subscribeDiscounts(handleDiscounts);
+    return unsub; // same as () => unsub()
+  }, [handleDiscounts]);
 
   const toggleAll = () => {
     setSelected((s) => (s.length === rows.length ? [] : rows.map((r) => r.id)));
@@ -219,7 +225,9 @@ export default function DiscountPage() {
           page={page}
           onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
           rowsPerPage={rowsPerPage}
-          onRowsPerPageChange={(e) => setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })}
+          onRowsPerPageChange={(e) =>
+            setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })
+          }
           rowsPerPageOptions={[5, 10, 25]}
         />
       </TableContainer>

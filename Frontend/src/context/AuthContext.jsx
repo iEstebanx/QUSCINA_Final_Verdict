@@ -1,5 +1,6 @@
 // Frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import PropTypes from "prop-types";
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
@@ -57,3 +58,7 @@ export function AuthProvider({ children }) {
   const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
+
+AuthProvider.propTypes = {
+  children: PropTypes.node.isRequired,
+};

@@ -1,5 +1,6 @@
 // src/components/Header/AppHeader.jsx
 import { useMemo, useState } from "react";
+import PropTypes from "prop-types";
 import { useLocation, Link as RouterLink, useNavigate } from "react-router-dom";
 import {
   AppBar,
@@ -217,3 +218,10 @@ export default function AppHeader({
     </AppBar>
   );
 }
+
+AppHeader.propTypes = {
+  collapsed: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+  width: PropTypes.number,
+  collapsedWidth: PropTypes.number,
+};

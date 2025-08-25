@@ -10,6 +10,8 @@ const { sendOtpEmail } = require("../lib/EmailOtp/mailer");
 const router = express.Router();
 const DEBUG = process.env.DEBUG_AUTH === "1";
 
+const OTP_ENUMERATION_PROTECTION = process.env.OTP_ENUMERATION_PROTECTION !== "0";
+
 // -------------------- helpers --------------------
 function makeToken(user) {
   const payload = {
@@ -262,43 +264,63 @@ function verifyExtraInfo(emp, verifyType, verifyValueRaw) {
   return false;
 }
 
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
+  const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || "")
+  .split(",")
+  .map(s => s.trim().toLowerCase())
+  .filter(Boolean);
+
+  function isEmailAllowed(email) {
+    if (!EMAIL_RE.test(email)) return false;
+    if (!ALLOWED_EMAIL_DOMAINS.length) return true;
+    const domain = email.split("@")[1].toLowerCase();
+    return ALLOWED_EMAIL_DOMAINS.includes(domain);
+  }
+
+
 // POST /api/auth/forgot/start  (OTP)
 router.post("/forgot/start", async (req, res, next) => {
   try {
     const email = lower(req.body?.email);
-    const verifyType = req.body?.verifyType;   // 'employeeId' | 'username' | undefined
-    const verifyValue = req.body?.verifyValue; // string | undefined
+    const verifyType  = req.body?.verifyType;   // 'employeeId' | 'username' | undefined
+    const verifyValue = req.body?.verifyValue;  // string | undefined
+
     if (!email) return res.status(400).json({ error: "Email is required" });
+    if (!isEmailAllowed(email)) {
+      return res.status(400).json({ error: "Enter a valid email address." });
+    }
 
     const employee = await findEmployeeByEmail(email);
+    if (!employee) {
+      // STRICT: do not send, do not pretend; hard error
+      return res.status(404).json({ error: "That email is not registered." });
+    }
 
-    if (employee && (verifyType || verifyValue)) {
+    if (verifyType || verifyValue) {
       const ok = verifyExtraInfo(employee, verifyType, verifyValue);
-      if (!ok) {
-        return res.status(400).json({ error: "We couldn't verify your details. Please check and try again." });
-      }
+      if (!ok) return res.status(400).json({ error: "We couldn't verify your details. Please check and try again." });
     }
 
-    if (employee) {
-      const { otpId, code, expiresAt } = await createEmailOtp({
-        employeeRefPath: `employees/${employee.id}`,
-        emailLower: email,
-        ttlSec: OTP_TTL_SEC,
+    const { otpId, code, expiresAt } = await createEmailOtp({
+      employeeRefPath: `employees/${employee.id}`,
+      emailLower: email,
+      ttlSec: OTP_TTL_SEC,
+    });
+
+    if (DEBUG) console.log("[forgot/start] OTP created", { otpId, email, expiresAt });
+
+    try {
+      await sendOtpEmail(email, code, {
+        appName: "Quscina",
+        expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
       });
-
-      if (DEBUG) console.log("[forgot/start] OTP created", { otpId, email, expiresAt });
-
-      try {
-        await sendOtpEmail(email, code, {
-          appName: "Quscina",
-          expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
-        });
-      } catch (mailErr) {
-        console.error("[forgot/start] Email send failed:", mailErr?.message || mailErr);
-      }
+    } catch (mailErr) {
+      console.error("[forgot/start] Email send failed:", mailErr?.message || mailErr);
+      // Optional: consider rolling back OTP doc or marking it failed if send fails
     }
 
-    return res.json({ ok: true, message: "If that email exists, we’ve sent a code." });
+    return res.json({ ok: true, message: "We’ve sent a 6-digit code to your email." });
   } catch (e) {
     next(e);
   }
@@ -309,37 +331,40 @@ router.post("/forgot/resend", async (req, res, next) => {
   try {
     const email = lower(req.body?.email);
     if (!email) return res.status(400).json({ error: "Email is required" });
+    if (!isEmailAllowed(email)) {
+      return res.status(400).json({ error: "Enter a valid email address." });
+    }
 
     const employee = await findEmployeeByEmail(email);
+    if (!employee) return res.status(404).json({ error: "That email is not registered." });
 
-    if (employee) {
-      const latest = await getLatestPendingOtp(email);
-      const now = Date.now();
+    const latest = await getLatestPendingOtp(email);
+    const now = Date.now();
 
-      if (latest?.data?.createdAt?.toMillis) {
-        const lastMs = latest.data.createdAt.toMillis();
-        if ((now - lastMs) / 1000 < RESEND_MIN_INTERVAL_SEC) {
-          if (DEBUG) console.log("[forgot/resend] throttled for", email);
-          return res.json({ ok: true, message: "A new code has been sent." });
-        }
+    if (latest?.data?.createdAt?.toMillis) {
+      const lastMs = latest.data.createdAt.toMillis();
+      if ((now - lastMs) / 1000 < RESEND_MIN_INTERVAL_SEC) {
+        if (DEBUG) console.log("[forgot/resend] throttled for", email);
+        // Still respond OK but do NOT send again
+        return res.status(429).json({ error: "Please wait before requesting another code." });
       }
+    }
 
-      const { otpId, code, expiresAt } = await createEmailOtp({
-        employeeRefPath: `employees/${employee.id}`,
-        emailLower: email,
-        ttlSec: OTP_TTL_SEC,
+    const { otpId, code, expiresAt } = await createEmailOtp({
+      employeeRefPath: `employees/${employee.id}`,
+      emailLower: email,
+      ttlSec: OTP_TTL_SEC,
+    });
+
+    if (DEBUG) console.log("[forgot/resend] OTP created", { otpId, email, expiresAt });
+
+    try {
+      await sendOtpEmail(email, code, {
+        appName: "Quscina",
+        expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
       });
-
-      if (DEBUG) console.log("[forgot/resend] OTP created", { otpId, email, expiresAt });
-
-      try {
-        await sendOtpEmail(email, code, {
-          appName: "Quscina",
-          expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
-        });
-      } catch (mailErr) {
-        console.error("[forgot/resend] Email send failed:", mailErr?.message || mailErr);
-      }
+    } catch (mailErr) {
+      console.error("[forgot/resend] Email send failed:", mailErr?.message || mailErr);
     }
 
     return res.json({ ok: true, message: "A new code has been sent." });

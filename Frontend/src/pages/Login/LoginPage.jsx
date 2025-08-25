@@ -14,6 +14,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAlert } from "@/context/Snackbar/AlertContext";
+import { ALNUM_DASH_RE } from "@/utils/patterns";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
 
@@ -148,7 +149,7 @@ export default function LoginPage() {
       return;
     }
     const extra = fpVerifyValue.trim();
-    if (extra && fpVerifyType === "employeeId" && !/^[0-9A-Za-z\-]+$/.test(extra)) {
+    if (extra && fpVerifyType === "employeeId" && !ALNUM_DASH_RE.test(extra)) {
       setFpEmailError("Employee ID contains invalid characters.");
       return;
     }
@@ -169,7 +170,8 @@ export default function LoginPage() {
       });
       const j = await resp.json();
       if (!resp.ok) throw new Error(j?.error || "Failed to send code");
-
+      
+      // success -> go OTP
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
