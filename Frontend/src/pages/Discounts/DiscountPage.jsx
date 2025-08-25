@@ -268,11 +268,13 @@ export default function DiscountPage() {
                 setValue(raw);
               }}
               type="number"
-              inputProps={{ min: 0, max: 100, step: 1 }}
               error={valueError}
               helperText={valueError ? "Enter a number from 0 to 100." : " "}
               fullWidth
-              slotProps={{ input: { endAdornment: <InputAdornment position="end">%</InputAdornment> } }}
+              slotProps={{
+                htmlInput: { min: 0, max: 100, step: 1, inputMode: "numeric", "aria-label": "Percent value" },
+                input: { endAdornment: <InputAdornment position="end">%</InputAdornment> },
+              }}
               onKeyDown={(e) => { if (e.key === "Enter") onSave(); }}
             />
           </Stack>

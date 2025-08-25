@@ -640,7 +640,15 @@ export default function UserManagementPage() {
           onChange={(e) => { setQuery(e.target.value); setPage(1); }}
           sx={{ width: 320, maxWidth: "100%" }}
           size="small"
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            },
+          }}
         />
       </Stack>
 
@@ -783,26 +791,28 @@ export default function UserManagementPage() {
                       label="Employee ID"
                       value={form.employeeId}
                       disabled={!form.loginVia.employeeId}
-                      InputProps={{
-                        readOnly: true,
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <BadgeOutlinedIcon fontSize="small" />
-                          </InputAdornment>
-                        ),
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <Switch
-                              size="small"
-                              checked={form.loginVia.employeeId}
-                              onChange={(_, c) => {
-                                const next = { ...form.loginVia, employeeId: c };
-                                if (!next.employeeId && !next.username && !next.email) return;
-                                setForm((f) => ({ ...f, loginVia: next }));
-                              }}
-                            />
-                          </InputAdornment>
-                        ),
+                      slotProps={{
+                        htmlInput: { readOnly: true },
+                        input: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <BadgeOutlinedIcon fontSize="small" />
+                            </InputAdornment>
+                          ),
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Switch
+                                size="small"
+                                checked={form.loginVia.employeeId}
+                                onChange={(_, c) => {
+                                  const next = { ...form.loginVia, employeeId: c };
+                                  if (!next.employeeId && !next.username && !next.email) return;
+                                  setForm((f) => ({ ...f, loginVia: next }));
+                                }}
+                              />
+                            </InputAdornment>
+                          ),
+                        },
                       }}
                     />
                   </Grid>
@@ -816,27 +826,39 @@ export default function UserManagementPage() {
                       value={form.username}
                       error={!!errors.username}
                       helperText={errors.username || "Optional — unique (lowercased)"}
-                      onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))} 
-                      disabled={!form.loginVia.username}
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <AccountCircleOutlinedIcon fontSize="small" />
-                          </InputAdornment>
-                        ),
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <Switch
-                              size="small"
-                              checked={form.loginVia.username}
-                              onChange={(_, c) => {
-                                const next = { ...form.loginVia, username: c };
-                                if (!next.employeeId && !next.username && !next.email) return;
-                                setForm((f) => ({ ...f, loginVia: next }));
-                              }}
-                            />
-                          </InputAdornment>
-                        ),
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))
+                      }
+                      slotProps={{
+                        htmlInput: {
+                          readOnly: !form.loginVia.username,
+                          autoComplete: "username",
+                          inputMode: "text",
+                          "aria-label": "Username",
+                        },
+                        input: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <AccountCircleOutlinedIcon fontSize="small" />
+                            </InputAdornment>
+                          ),
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Switch
+                                size="small"
+                                checked={form.loginVia.username}
+                                onChange={(_, c) => {
+                                  const next = { ...form.loginVia, username: c };
+                                  if (!next.employeeId && !next.username && !next.email) return; // keep at least one
+                                  setForm((f) => ({ ...f, loginVia: next }));
+                                }}
+                              />
+                            </InputAdornment>
+                          ),
+                          sx: !form.loginVia.username
+                            ? { bgcolor: "action.disabledBackground" }
+                            : undefined,
+                        },
                       }}
                     />
                   </Grid>
@@ -847,30 +869,41 @@ export default function UserManagementPage() {
                       sx={{ width: 300 }}
                       size="small"
                       label="Email"
+                      type="email"
                       value={form.email}
                       error={!!errors.email}
                       helperText={errors.email || "Optional — unique, valid email format"}
                       onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                      disabled={!form.loginVia.email}
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <MailOutlineIcon fontSize="small" />
-                          </InputAdornment>
-                        ),
-                        endAdornment: (
-                          <InputAdornment position="end">
-                            <Switch
-                              size="small"
-                              checked={form.loginVia.email}
-                              onChange={(_, c) => {
-                                const next = { ...form.loginVia, email: c };
-                                if (!next.employeeId && !next.username && !next.email) return;
-                                setForm((f) => ({ ...f, loginVia: next }));
-                              }}
-                            />
-                          </InputAdornment>
-                        ),
+                      slotProps={{
+                        htmlInput: {
+                          readOnly: !form.loginVia.email,
+                          autoComplete: "email",
+                          inputMode: "email",
+                          "aria-label": "Email",
+                        },
+                        input: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <MailOutlineIcon fontSize="small" />
+                            </InputAdornment>
+                          ),
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Switch
+                                size="small"
+                                checked={form.loginVia.email}
+                                onChange={(_, c) => {
+                                  const next = { ...form.loginVia, email: c };
+                                  if (!next.employeeId && !next.username && !next.email) return; // keep at least one method
+                                  setForm((f) => ({ ...f, loginVia: next }));
+                                }}
+                              />
+                            </InputAdornment>
+                          ),
+                          sx: !form.loginVia.email
+                            ? { bgcolor: "action.disabledBackground" }
+                            : undefined,
+                        },
                       }}
                     />
                   </Grid>
@@ -885,13 +918,29 @@ export default function UserManagementPage() {
               <Grid size={{ xs: 12, md: 6 }}>
                 <TextField
                   size="small"
-                  label={<>First Name<span style={{ color: "#d32f2f" }}> *</span></>}
+                  label={
+                    <>
+                      First Name<span style={{ color: "#d32f2f" }}> *</span>
+                    </>
+                  }
                   value={form.firstName}
                   error={!!errors.firstName}
                   helperText={errors.firstName}
                   onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
                   fullWidth
-                  InputProps={{ startAdornment: <InputAdornment position="start"><PersonOutlineIcon fontSize="small" /></InputAdornment> }}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <PersonOutlineIcon fontSize="small" />
+                        </InputAdornment>
+                      ),
+                    },
+                    htmlInput: {
+                      autoComplete: "given-name",
+                      "aria-label": "First name",
+                    },
+                  }}
                 />
               </Grid>
               <Grid size={{ xs: 12, md: 6 }}>
@@ -1070,11 +1119,14 @@ export default function UserManagementPage() {
                             pinRefs[i - 1].current?.focus();
                           }
                         }}
-                        inputProps={{
-                          inputMode: "numeric",
-                          pattern: "[0-9]*",
-                          maxLength: 1,
-                          style: { textAlign: "center", width: 28 }
+                        slotProps={{
+                          htmlInput: {
+                            inputMode: "numeric",
+                            pattern: "[0-9]*",
+                            maxLength: 1,
+                            style: { textAlign: "center", width: 28 },
+                            "aria-label": `PIN digit ${i + 1}`,
+                          },
                         }}
                         sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
                       />
@@ -1122,14 +1174,24 @@ export default function UserManagementPage() {
                 }}
                 error={!!pwErrors.current}
                 helperText={pwErrors.current}
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, current: !s.current }))}>
-                        {pwShow.current ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                      </IconButton>
-                    </InputAdornment>
-                  ),
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          size="small"
+                          onClick={() => setPwShow((s) => ({ ...s, current: !s.current }))}
+                          aria-label={pwShow.current ? "Hide password" : "Show password"}
+                        >
+                          {pwShow.current ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  },
+                  htmlInput: {
+                    autoComplete: "current-password",
+                    "aria-label": "Current password",
+                  },
                 }}
               />
             )}
@@ -1138,7 +1200,8 @@ export default function UserManagementPage() {
             <TextField
               size="small"
               type={pwShow.next ? "text" : "password"}
-              label={isEditingExisting ? "New Password" : "New Password *"}
+              label="New Password"
+              required={!isEditingExisting}
               value={pwFields.next}
               onChange={(e) => {
                 const v = e.target.value;
@@ -1147,20 +1210,31 @@ export default function UserManagementPage() {
               }}
               error={!!pwErrors.next}
               helperText={pwErrors.next}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, next: !s.next }))}>
-                      {pwShow.next ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        size="small"
+                        onClick={() => setPwShow((s) => ({ ...s, next: !s.next }))}
+                        aria-label={pwShow.next ? "Hide new password" : "Show new password"}
+                      >
+                        {pwShow.next ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
+                htmlInput: {
+                  autoComplete: "new-password",
+                  "aria-label": "New password",
+                },
               }}
             />
             <TextField
               size="small"
               type={pwShow.confirm ? "text" : "password"}
-              label={isEditingExisting ? "Confirm New Password" : "Confirm Password *"}
+              label={isEditingExisting ? "Confirm New Password" : "Confirm Password"}
+              required={!isEditingExisting}
               value={pwFields.confirm}
               onChange={(e) => {
                 const v = e.target.value;
@@ -1169,14 +1243,24 @@ export default function UserManagementPage() {
               }}
               error={!!pwErrors.confirm}
               helperText={pwErrors.confirm}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton size="small" onClick={() => setPwShow((s) => ({ ...s, confirm: !s.confirm }))}>
-                      {pwShow.confirm ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        size="small"
+                        onClick={() => setPwShow((s) => ({ ...s, confirm: !s.confirm }))}
+                        aria-label={pwShow.confirm ? "Hide confirm password" : "Show confirm password"}
+                      >
+                        {pwShow.confirm ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
+                htmlInput: {
+                  autoComplete: "new-password",
+                  "aria-label": "Confirm password",
+                },
               }}
             />
 

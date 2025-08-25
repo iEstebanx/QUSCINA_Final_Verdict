@@ -25,19 +25,6 @@ function ensureConfigured() {
 async function sendOtpEmail(to, code, { appName = "Quscina", expiresMinutes = 10 } = {}) {
   ensureConfigured();
 
-  const body = {
-    service_id: SERVICE_ID,
-    template_id: TEMPLATE_ID,
-    user_id: PUBLIC_KEY,
-    accessToken: ACCESS_TOKEN || undefined,
-    template_params: {
-      to_email: to,
-      passcode: code,                    // <— matches {{passcode}}
-      time: `${expiresMinutes} minutes`, // <— matches {{time}}
-      app_name: appName,
-    },
-  };
-
   const res = await _fetch(EMAILJS_API, {
     method: "POST",
     headers: {

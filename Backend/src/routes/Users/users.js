@@ -2,7 +2,6 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
-// ⬇️ add Timestamp here
 const { db, FieldValue, Timestamp } = require("../../lib/firebaseAdmin");
 
 const SALT_ROUNDS = 12;
@@ -23,7 +22,7 @@ function aliasKey(type, value) {
 function pick(obj, keys) {
   const out = {};
   keys.forEach((k) => {
-    if (obj[k] !== undefined) out[k] = obj[k];
+    if (obj?.[k] !== undefined) out[k] = obj[k];
   });
   return out;
 }
@@ -37,53 +36,157 @@ function normalizeAnswer(s) {
 // `when` must be a concrete Timestamp (not FieldValue.serverTimestamp())
 async function buildSQEntries(inputArr, when) {
   if (!Array.isArray(inputArr)) return undefined; // not provided
-  // Allow clearing by providing []
-  if (inputArr.length === 0) return [];
+  if (inputArr.length === 0) return []; // allow clearing
 
-  // Validate max 2 & unique ids
-  const items = inputArr.filter((q) => q && q.id && typeof q.answer === "string");
+  const items = (inputArr ?? []).filter(
+    (q) => !!q?.id && typeof q?.answer === "string" && q.answer.trim().length > 0
+  );
   if (items.length > 2) throw new Error("You can only set up to 2 security questions.");
 
   const ids = items.map((q) => q.id);
-  const uniqueIds = new Set(ids);
-  if (uniqueIds.size !== ids.length) throw new Error("Security questions must be different.");
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("Security questions must be different.");
+  }
 
-  // Validate IDs and hash answers
   const out = [];
   for (const q of items) {
     if (!SQ_CATALOG[q.id]) throw new Error("Unknown security question id.");
     const norm = normalizeAnswer(q.answer);
     if (!norm) throw new Error("Security question answers cannot be empty.");
     const answerHash = await bcrypt.hash(norm, SALT_ROUNDS);
-    out.push({
-      id: q.id,
-      question: SQ_CATALOG[q.id],
-      answerHash,
-      // ✅ concrete timestamp allowed in arrays
-      updatedAt: when,
-    });
+    out.push({ id: q.id, question: SQ_CATALOG[q.id], answerHash, updatedAt: when });
   }
   return out;
 }
+
+/* ===========================
+   Helpers to reduce complexity
+   =========================== */
+
+function mergeLoginVia(currentLoginVia = { employeeId: true, username: true, email: true }, nextLoginVia = {}) {
+  return {
+    employeeId: !!(nextLoginVia.employeeId ?? currentLoginVia.employeeId),
+    username: !!(nextLoginVia.username ?? currentLoginVia.username),
+    email: !!(nextLoginVia.email ?? currentLoginVia.email),
+  };
+}
+
+function makeAliases(loginVia, username, email, employeeId) {
+  const keys = [];
+  if (loginVia.employeeId) keys.push(aliasKey("employee_id", employeeId));
+  if (loginVia.username && username) keys.push(aliasKey("username", username));
+  if (loginVia.email && email) keys.push(aliasKey("email", email));
+  return keys;
+}
+
+function ensureAtLeastOneMethod(loginVia) {
+  if (!loginVia.employeeId && !loginVia.username && !loginVia.email) {
+    throw new Error("At least one login method must be enabled");
+  }
+}
+
+async function requireCurrentPasswordIfNeeded(curDoc, hasNewPassword, currentPassword) {
+  if (!hasNewPassword) return;
+  const hasExisting = !!curDoc?.passwordHash;
+  if (!hasExisting) return; // allow set if none before
+  if (!currentPassword) {
+    const err = new Error("Current password is required.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const ok = await bcrypt.compare(currentPassword, curDoc.passwordHash);
+  if (!ok) {
+    const err = new Error("Current password is incorrect.");
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+function diffAliases(currentKeys, desiredKeys) {
+  return {
+    toDelete: currentKeys.filter((k) => !desiredKeys.includes(k)),
+    toCreate: desiredKeys.filter((k) => !currentKeys.includes(k)),
+  };
+}
+
+async function assertAliasUniquenessTx(tx, keysToCreate, employeeId) {
+  for (const key of keysToCreate) {
+    const aref = db.collection("aliases").doc(key);
+    const a = await tx.get(aref);
+    if (a.exists && a.data()?.employeeId !== String(employeeId)) {
+      throw new Error("Credential (alias) already in use");
+    }
+  }
+}
+
+async function buildUpdateDoc({
+  cur,
+  next,
+  newUsername,
+  newEmail,
+  desiredLoginVia,
+  hasNewPassword,
+  hasNewPin,
+  patch,
+  now, // serverTimestamp sentinel
+  sqProvided,
+  sqEntries, // [] or array or undefined
+}) {
+  const updateDoc = {
+    ...next,
+    username: newUsername,
+    email: newEmail,
+    loginVia: desiredLoginVia,
+    updatedAt: now,
+  };
+
+  if (hasNewPassword) {
+    updateDoc.passwordHash = await bcrypt.hash(patch.password, SALT_ROUNDS);
+    updateDoc.passwordLastChanged = now;
+  }
+  if (hasNewPin) {
+    updateDoc.pinHash = await bcrypt.hash(patch.pin, SALT_ROUNDS);
+  }
+  if (sqProvided) {
+    updateDoc.securityQuestions = sqEntries; // replace with [] or array
+  }
+  return { ...cur, ...updateDoc };
+}
+
+function applyAliasWritesTx(tx, { toDelete, toCreate }, now, employeeId) {
+  for (const key of toDelete) {
+    tx.delete(db.collection("aliases").doc(key));
+  }
+  for (const key of toCreate) {
+    const [type, valueLower] = key.split(":");
+    tx.set(db.collection("aliases").doc(key), {
+      type,
+      valueLower,
+      employeeId: String(employeeId),
+      createdAt: now,
+    });
+  }
+}
+
+/* ===========================
+   Routes
+   =========================== */
 
 // GET /api/users  (simple list — omit answer hashes)
 router.get("/", async (_req, res) => {
   try {
     const snap = await db.collection("employees").orderBy("createdAt", "desc").get();
     const rows = snap.docs.map((d) => {
-      const data = d.data() || {};
+      const data = d.data() ?? {};
       const safeSQ = Array.isArray(data.securityQuestions)
         ? data.securityQuestions.map((q) => ({ id: q.id, question: q.question }))
         : [];
-      return {
-        id: d.id,
-        ...data,
-        securityQuestions: safeSQ, // hide hashes
-      };
+      return { id: d.id, ...data, securityQuestions: safeSQ };
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message || "Failed to list users" });
+    console.error("[GET /api/users] fail:", e);
+    res.status(500).json({ error: e?.message ?? "Failed to list users" });
   }
 });
 
@@ -96,7 +199,7 @@ router.post("/", async (req, res) => {
       username = "", email = "",
       loginVia = { employeeId: true, username: true, email: true },
       password, pin, photoUrl = "",
-      securityQuestions = undefined, // <- NEW
+      securityQuestions = undefined,
     } = req.body;
 
     // Basic validation (backend must re-check)
@@ -111,10 +214,8 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "At least one login method must be enabled" });
     }
 
-    // ⬇️ use both: sentinel for doc-level, concrete for array items
     const now = FieldValue.serverTimestamp();
     const nowTS = Timestamp.now();
-
     const employeeRef = db.collection("employees").doc(String(employeeId));
 
     const uname = String(username || "").trim().toLowerCase();
@@ -179,7 +280,7 @@ router.post("/", async (req, res) => {
     res.status(201).json({ ok: true });
   } catch (e) {
     console.error("[POST /api/users] fail:", e);
-    res.status(500).json({ error: e.message || "Failed to create user" });
+    res.status(500).json({ error: e?.message ?? "Failed to create user" });
   }
 });
 
@@ -187,21 +288,16 @@ router.post("/", async (req, res) => {
 router.patch("/:employeeId", async (req, res) => {
   try {
     const { employeeId } = req.params;
-    const patch = req.body || {};
+    const patch = req.body ?? {};
 
-    // helper to return 400s from inside the transaction path
-    const badRequest = (msg) => Object.assign(new Error(msg), { statusCode: 400 });
-
-    // ⬇️ use both timestamp types here too
     const now = FieldValue.serverTimestamp();
     const nowTS = Timestamp.now();
-
     const employeeRef = db.collection("employees").doc(String(employeeId));
 
     // Optional sensitive updates (re-hash if provided)
     const next = pick(patch, [
       "firstName", "lastName", "phone", "role", "status",
-      "username", "email", "loginVia", "photoUrl"
+      "username", "email", "loginVia", "photoUrl",
     ]);
 
     const hasNewPassword = typeof patch.password === "string" && patch.password.length >= 8;
@@ -209,7 +305,7 @@ router.patch("/:employeeId", async (req, res) => {
     const currentPassword = typeof patch.currentPassword === "string" ? patch.currentPassword : "";
 
     // Prepare SQ entries if the field is present (replace semantics)
-    const sqProvided = Object.prototype.hasOwnProperty.call(patch, "securityQuestions");
+    const sqProvided = patch != null && Object.hasOwn(patch, "securityQuestions");
     const sqEntries = sqProvided ? await buildSQEntries(patch.securityQuestions, nowTS) : undefined;
 
     await db.runTransaction(async (tx) => {
@@ -217,96 +313,47 @@ router.patch("/:employeeId", async (req, res) => {
       if (!snap.exists) throw new Error("Employee not found");
       const cur = snap.data();
 
-      // 🔒 If password is being changed, require correct currentPassword
-      if (hasNewPassword) {
-        const hasExisting = !!cur.passwordHash;
-        if (hasExisting) {
-          if (!currentPassword) throw badRequest("Current password is required.");
-          const ok = await bcrypt.compare(currentPassword, cur.passwordHash);
-          if (!ok) throw badRequest("Current password is incorrect.");
-        } else {
-          // Optional: block setting password without a current one
-          // or allow it — choose one. Here we allow it.
-        }
-      }
+      // 🔒 Current-password check (extracted)
+      await requireCurrentPasswordIfNeeded(cur, hasNewPassword, currentPassword);
 
-      const currentLoginVia = cur.loginVia || { employeeId: true, username: true, email: true };
-      const desiredLoginVia = { ...currentLoginVia, ...(next.loginVia || {}) };
-
-      // Compute current & desired aliases
-      const curAliases = [];
-      if (currentLoginVia.employeeId) curAliases.push(aliasKey("employee_id", employeeId));
-      if (currentLoginVia.username && cur.username) curAliases.push(aliasKey("username", cur.username));
-      if (currentLoginVia.email && cur.email) curAliases.push(aliasKey("email", cur.email));
+      const desiredLoginVia = mergeLoginVia(cur.loginVia, next.loginVia);
+      ensureAtLeastOneMethod(desiredLoginVia);
 
       const newUsername = (next.username ?? cur.username ?? "").trim().toLowerCase();
       const newEmail = (next.email ?? cur.email ?? "").trim();
 
-      const desiredAliases = [];
-      if (desiredLoginVia.employeeId) desiredAliases.push(aliasKey("employee_id", employeeId));
-      if (desiredLoginVia.username && newUsername) desiredAliases.push(aliasKey("username", newUsername));
-      if (desiredLoginVia.email && newEmail) desiredAliases.push(aliasKey("email", newEmail));
+      const curAliases = makeAliases(cur.loginVia ?? { employeeId: true, username: true, email: true }, cur.username, cur.email, employeeId);
+      const desiredAliases = makeAliases(desiredLoginVia, newUsername, newEmail, employeeId);
 
-      if (!desiredLoginVia.employeeId && !desiredLoginVia.username && !desiredLoginVia.email) {
-        throw new Error("At least one login method must be enabled");
-      }
+      const { toDelete, toCreate } = diffAliases(curAliases, desiredAliases);
+      await assertAliasUniquenessTx(tx, toCreate, employeeId);
 
-      // Aliases to delete/create
-      const toDelete = curAliases.filter((k) => !desiredAliases.includes(k));
-      const toCreate = desiredAliases.filter((k) => !curAliases.includes(k));
-
-      // Uniqueness checks for toCreate
-      for (const key of toCreate) {
-        const aref = db.collection("aliases").doc(key);
-        const a = await tx.get(aref);
-        if (a.exists && a.data().employeeId !== String(employeeId)) {
-          throw new Error("Credential (alias) already in use");
-        }
-      }
-
-      const updateDoc = {
-        ...cur,
-        ...next,
-        username: newUsername,
-        email: newEmail,
-        loginVia: desiredLoginVia,
-        updatedAt: now,
-      };
-
-      // Handle password / pin changes
-      if (hasNewPassword) {
-        updateDoc.passwordHash = await bcrypt.hash(patch.password, SALT_ROUNDS);
-        updateDoc.passwordLastChanged = now;
-      }
-      if (hasNewPin) {
-        updateDoc.pinHash = await bcrypt.hash(patch.pin, SALT_ROUNDS);
-      }
-
-      // Replace/clear security questions if provided
-      if (sqProvided) {
-        updateDoc.securityQuestions = sqEntries; // [] or array
-      }
+      const updateDoc = await buildUpdateDoc({
+        cur,
+        next,
+        newUsername,
+        newEmail,
+        desiredLoginVia,
+        hasNewPassword,
+        hasNewPin,
+        patch,
+        now,
+        sqProvided,
+        sqEntries,
+      });
 
       // Write employee
       tx.set(employeeRef, updateDoc, { merge: true });
 
       // Delete/Write alias docs
-      for (const key of toDelete) {
-        tx.delete(db.collection("aliases").doc(key));
-      }
-      for (const key of toCreate) {
-        const [type, valueLower] = key.split(":");
-        tx.set(db.collection("aliases").doc(key), {
-          type, valueLower, employeeId: String(employeeId), createdAt: now
-        });
-      }
+      applyAliasWritesTx(tx, { toDelete, toCreate }, now, employeeId);
     });
 
     res.json({ ok: true });
   } catch (e) {
     console.error("[PATCH /api/users/:employeeId] fail:", e);
-    const code = e.statusCode || 500;
-    res.status(code).json({ error: e.message || "Failed to update user" });
+    const code = e.statusCode ?? 500;
+    res.status(code).json({ error: e?.message ?? "Failed to update user" });
   }
 });
 
@@ -319,7 +366,8 @@ router.delete("/:employeeId", async (req, res) => {
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(employeeRef);
       if (!snap.exists) return; // idempotent
-      const cur = snap.data();
+
+      const cur = snap.data() ?? {};
       const aliasKeys = [];
       if (cur.loginVia?.employeeId) aliasKeys.push(aliasKey("employee_id", employeeId));
       if (cur.loginVia?.username && cur.username) aliasKeys.push(aliasKey("username", cur.username));
@@ -331,7 +379,8 @@ router.delete("/:employeeId", async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message || "Failed to delete user" });
+    console.error("[DELETE /api/users/:employeeId] fail:", e);
+    res.status(500).json({ error: e?.message ?? "Failed to delete user" });
   }
 });
 

@@ -367,19 +367,23 @@ export default function LoginPage() {
               type={showPw ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onInput={(e) => setPassword(e.currentTarget.value)}
               autoComplete="current-password"
               required
               fullWidth
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton onClick={() => setShowPw((v) => !v)} edge="end"
-                      aria-label={showPw ? "Hide password" : "Show password"}>
-                      {showPw ? <VisibilityOff /> : <Visibility />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        onClick={() => setShowPw((v) => !v)}
+                        edge="end"
+                        aria-label={showPw ? "Hide password" : "Show password"}
+                      >
+                        {showPw ? <VisibilityOff /> : <Visibility />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
               }}
             />
 
@@ -484,14 +488,18 @@ export default function LoginPage() {
                   {otpValues.map((val, idx) => (
                     <TextField
                       key={idx}
-                      inputRef={(el) => (otpRefs.current[idx] = el)}
                       value={val}
                       onChange={(e) => onChangeOtp(idx, e.target.value)}
                       onKeyDown={(e) => onKeyDownOtp(idx, e)}
-                      inputProps={{
-                        inputMode: "numeric", pattern: "[0-9]*", maxLength: 1,
-                        style: { textAlign: "center", fontSize: 24, width: 44 },
-                        "aria-label": `Digit ${idx + 1}`,
+                      inputRef={(el) => (otpRefs.current[idx] = el)}
+                      slotProps={{
+                        htmlInput: {
+                          inputMode: "numeric",
+                          pattern: "[0-9]*",
+                          maxLength: 1,
+                          style: { textAlign: "center", fontSize: 24, width: 44 },
+                          "aria-label": `Digit ${idx + 1}`,
+                        },
                       }}
                     />
                   ))}
