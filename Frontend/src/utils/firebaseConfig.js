@@ -1,4 +1,4 @@
-// src/utils/firebaseConfig.js
+// Frontend/src/utils/firebaseConfig.js
 import { initializeApp } from "firebase/app";
 import {
   initializeFirestore,

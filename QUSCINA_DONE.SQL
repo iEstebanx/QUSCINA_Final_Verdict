@@ -1,4 +1,4 @@
--- Lookup
+-- ACCOUNT INFORMATION
 CREATE TABLE IF NOT EXISTS credential_types (
   type_code VARCHAR(32) PRIMARY KEY  -- 'employee_id','username','email'
 ) ENGINE=InnoDB;
