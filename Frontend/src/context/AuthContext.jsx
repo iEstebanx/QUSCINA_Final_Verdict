@@ -5,7 +5,7 @@ import PropTypes from "prop-types";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);   // { employeeId, role, ... }

@@ -5,7 +5,7 @@ import {
   Table, TableHead, TableRow, TableCell, TableBody, Chip, Typography,
   Dialog, DialogTitle, DialogContent, DialogActions,
   MenuItem, Select, FormControl, InputLabel, Tooltip, Switch,
-  LinearProgress, Grid, Divider, CircularProgress
+  LinearProgress, Grid, Divider, CircularProgress, TableContainer,
 } from "@mui/material";
 
 import AddIcon from "@mui/icons-material/Add";
@@ -623,79 +623,133 @@ export default function UserManagementPage() {
 
   return (
     <Box p={2}>
-      {/* top bar */}
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        alignItems={{ sm: "center" }}
-        justifyContent="space-between"
-        spacing={1}
-        mb={1.5}
-      >
-        <Button variant="contained" startIcon={<AddIcon />} size="small" onClick={() => openDialogFor(null)}>
-          Add User
-        </Button>
-        <TextField
-          placeholder="Search"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setPage(1); }}
-          sx={{ width: 320, maxWidth: "100%" }}
-          size="small"
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" />
-                </InputAdornment>
-              ),
-            },
-          }}
-        />
-      </Stack>
+      {/* LIST CARD — header + table, same structure as ItemListPage */}
+      <Paper sx={{ overflow: "hidden" }}>
+        {/* header */}
+        <Box p={2}>
+          <Stack
+            direction="row"
+            useFlexGap
+            alignItems="center"
+            flexWrap="wrap"
+            rowGap={1.5}
+            columnGap={2}
+            sx={{ minWidth: 0 }}
+          >
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              size="small"
+              onClick={() => openDialogFor(null)}
+              sx={{ flexShrink: 0 }}
+            >
+              Add User
+            </Button>
 
-      {/* table */}
-      <Paper sx={{ p: 0.5 }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ width: 120 }}>Employee ID</TableCell>
-              <TableCell sx={{ width: 140 }}>Username</TableCell>
-              <TableCell sx={{ width: 220 }}>Email</TableCell>
-              <TableCell sx={{ width: 160 }}>First Name</TableCell>
-              <TableCell sx={{ width: 160 }}>Last Name</TableCell>
-              <TableCell sx={{ width: 140 }}>Phone</TableCell>
-              <TableCell sx={{ width: 110 }}>Role</TableCell>
-              <TableCell sx={{ width: 110 }}>Status</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {slice.map((r) => (
-              <TableRow key={r.id || r.employeeId} hover onClick={() => openDialogFor(r)} sx={{ cursor: "pointer" }}>
-                <TableCell>{r.employeeId}</TableCell>
-                <TableCell>{r.username}</TableCell>
-                <TableCell>{r.email}</TableCell>
-                <TableCell>{r.firstName}</TableCell>
-                <TableCell>{r.lastName}</TableCell>
-                <TableCell>{r.phone}</TableCell>
-                <TableCell>{r.role}</TableCell>
-                <TableCell>
-                  <Chip
-                    size="small"
-                    label={r.status}
-                    color={r.status === "Active" ? "success" : "default"}
-                    variant={r.status === "Active" ? "filled" : "outlined"}
-                  />
-                </TableCell>
-              </TableRow>
-            ))}
-            {slice.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={8}>
-                  <Typography color="text.secondary" align="center" py={3}>No users found</Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+            {/* spacer */}
+            <Box sx={{ flexGrow: 1, minWidth: 0 }} />
+
+            {/* search */}
+            <TextField
+              placeholder="Search"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+              size="small"
+              sx={{
+                // full width on phones, fixed width from sm+
+                flex: { xs: "1 1 240px", sm: "0 0 auto" },
+                width: { xs: "100%", sm: 320 },
+                minWidth: 0,
+              }}
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                },
+              }}
+            />
+          </Stack>
+        </Box>
+
+        <Divider />
+
+        {/* table */}
+        <Box p={2} sx={{ minWidth: 0 }}>
+          <TableContainer
+            component={Paper}
+            elevation={0}
+            className="scroll-x"
+            sx={{ width: "100%", borderRadius: 1, maxHeight: 520 }}
+          >
+            <Table
+              stickyHeader
+              aria-label="users table"
+              className="table-auto nowrap-cells"
+              sx={{ minWidth: 1024 }}
+            >
+              <TableHead>
+                <TableRow>
+                  <TableCell>Employee ID</TableCell>
+                  <TableCell>Username</TableCell>
+                  <TableCell>Email</TableCell>
+                  <TableCell>First Name</TableCell>
+                  <TableCell>Last Name</TableCell>
+                  <TableCell>Phone</TableCell>
+                  <TableCell>Role</TableCell>
+                  <TableCell>Status</TableCell>
+                </TableRow>
+              </TableHead>
+
+              <TableBody>
+                {slice.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2" color="text.secondary">
+                          No users found
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  slice.map((r) => (
+                    <TableRow
+                      key={r.id || r.employeeId}
+                      hover
+                      onClick={() => openDialogFor(r)}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell>{r.employeeId}</TableCell>
+                      <TableCell>{r.username}</TableCell>
+                      {/* optionally clip super-long emails so rows stay tidy */}
+                      <TableCell sx={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {r.email}
+                      </TableCell>
+                      <TableCell>{r.firstName}</TableCell>
+                      <TableCell>{r.lastName}</TableCell>
+                      <TableCell>{r.phone}</TableCell>
+                      <TableCell>{r.role}</TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          label={r.status}
+                          color={r.status === "Active" ? "success" : "default"}
+                          variant={r.status === "Active" ? "filled" : "outlined"}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Box>
       </Paper>
 
       {/* footer */}

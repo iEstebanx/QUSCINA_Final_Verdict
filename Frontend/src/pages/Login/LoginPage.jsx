@@ -16,7 +16,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useAlert } from "@/context/Snackbar/AlertContext";
 import { ALNUM_DASH_RE } from "@/utils/patterns";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
 
 const Transition = forwardRef(function Transition(props, ref) {
   return <Slide direction="up" ref={ref} {...props} />;
