@@ -1,7 +1,7 @@
 // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE 
 // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE // TABLE TEMPLATE
 
-// src/pages/ItemList/ItemlistPage.jsx 
+// Frontend/src/pages/ItemList/ItemlistPage.jsx 
 import { useState } from "react";
 import {
   Box, Paper, Stack, Button, FormControl, InputLabel, Select, MenuItem,
@@ -105,7 +105,6 @@ export default function ItemlistPage() {
             <Table
               stickyHeader
               aria-label="items table"
-              // Responsive baseline width; grow as needed
               sx={{ minWidth: { xs: 600, sm: 760, md: 880 } }}
             >
               <TableHead>

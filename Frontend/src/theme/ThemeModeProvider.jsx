@@ -1,6 +1,7 @@
 // Frontend/src/theme/ThemeModeProvider.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ThemeProvider, useMediaQuery, GlobalStyles } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { makeTheme } from "./index";
 import { MODES } from "./tokens";
@@ -40,38 +41,59 @@ export default function ThemeModeProvider({ children }) {
 
         {/* 🔒 Global “no horizontal page scroll” guard (incl. iOS) */}
         <GlobalStyles
-          styles={{
-            html: {
-              width: "100%",
-              maxWidth: "100vw",
-              overflowX: "clip",               // better than hidden (prevents layout overflow)
-              WebkitTextSizeAdjust: "100%",
-            },
-            body: {
-              width: "100%",
-              maxWidth: "100vw",
-              overflowX: "clip",
-              overscrollBehaviorX: "none",     // stop iOS rubber-banding from pushing content sideways
-              touchAction: "pan-y",            // only vertical panning at page level
-            },
-            "#root": {
-              width: "100%",
-              maxWidth: "100vw",
-              minHeight: "100dvh",
-              overflowX: "clip",
-              position: "relative",
+          styles={(theme) => ({
+            /* ⬇️ Replace your current `.scroll-x` block with this */
+            ".scroll-x": {
+              overflowX: "auto",
+              overflowY: "hidden",
+              WebkitOverflowScrolling: "touch",
+              overscrollBehaviorX: "contain",
+              scrollbarGutter: "stable both-edges",
+
+              /* Firefox */
+              scrollbarWidth: "thin",
+              scrollbarColor: `${alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === "dark" ? 0.7 : 0.5
+              )} ${alpha(
+                theme.palette.text.primary,
+                theme.palette.mode === "dark" ? 0.2 : 0.1
+              )}`,
             },
 
-            /* ✅ sensible defaults so wide content scrolls INSIDE its container, not the page */
-            ".scroll-x": { overflowX: "auto", overflowY: "hidden", WebkitOverflowScrolling: "touch" },
-
-            /* Tables: encourage inner scrolling + predictable sizing app-wide */
-            "table": { tableLayout: "fixed" },
-            ".table-max-content": { width: "max-content" },
-
-            /* Prevent accidental min-content overflow from flex/grid children */
-            "*, *::before, *::after": { boxSizing: "border-box" },
-          }}
+            /* Chrome / Edge / Safari */
+            ".scroll-x::-webkit-scrollbar": {
+              height: 15,      // horizontal bar height
+              width: 15,       // (covers vertical if present)
+            },
+            ".scroll-x::-webkit-scrollbar-track": {
+              backgroundColor: alpha(
+                theme.palette.text.primary,
+                theme.palette.mode === "dark" ? 0.18 : 0.08
+              ),
+              borderRadius: 9999,
+            },
+            ".scroll-x::-webkit-scrollbar-thumb": {
+              backgroundColor: alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === "dark" ? 0.65 : 0.5
+              ),
+              borderRadius: 9999,
+              border: `3px solid ${theme.palette.background.paper}`, // inset "pill" look
+            },
+            ".scroll-x:hover::-webkit-scrollbar-thumb": {
+              backgroundColor: alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === "dark" ? 0.8 : 0.65
+              ),
+            },
+            ".scroll-x::-webkit-scrollbar-thumb:active": {
+              backgroundColor: alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === "dark" ? 0.95 : 0.8
+              ),
+            },
+          })}
         />
 
         {children}

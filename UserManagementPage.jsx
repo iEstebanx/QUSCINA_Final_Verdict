@@ -622,7 +622,7 @@ export default function UserManagementPage() {
   };
 
   return (
-    <Box p={2} display="grid" gap={2}>
+    <Box p={2}>
       {/* LIST CARD — header + table, same structure as ItemListPage */}
       <Paper sx={{ overflow: "hidden" }}>
         {/* header */}
@@ -685,12 +685,13 @@ export default function UserManagementPage() {
             component={Paper}
             elevation={0}
             className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, maxHeight: 520, overflowX: "auto" }}
+            sx={{ width: "100%", borderRadius: 1, maxHeight: 520 }}
           >
             <Table
               stickyHeader
-              aria-label="items table"
-              sx={{ minWidth: { xs: 600, sm: 760, md: 880 } }}
+              aria-label="users table"
+              className="table-auto nowrap-cells"
+              sx={{ minWidth: 1024 }}
             >
               <TableHead>
                 <TableRow>
@@ -748,26 +749,26 @@ export default function UserManagementPage() {
               </TableBody>
             </Table>
           </TableContainer>
-
-          {/* footer */}
-          <Stack direction="row" alignItems="center" spacing={1.25} mt={1} flexWrap="wrap">
-            <Paper variant="outlined" sx={{ p: 0.25, display: "inline-flex", alignItems: "center" }}>
-              <IconButton size="small" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}><ChevronLeftIcon fontSize="small" /></IconButton>
-              <IconButton size="small" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}><ChevronRightIcon fontSize="small" /></IconButton>
-            </Paper>
-            <Typography variant="body2">Page:</Typography>
-            <Paper variant="outlined" sx={{ px: 1, py: 0.25, display: "inline-flex", alignItems: "center", gap: 0.75 }}>
-              <Typography variant="body2">{page}</Typography>
-              <Typography variant="body2" color="text.secondary">of</Typography>
-              <Typography variant="body2">{totalPages}</Typography>
-            </Paper>
-            <Typography variant="body2" sx={{ ml: { xs: 0, sm: 1 } }}>Rows per page:</Typography>
-            <TextField select size="small" value={rowsPerPage} onChange={(e) => { setRowsPerPage(Number(e.target.value)); setPage(1); }} sx={{ width: 76 }}>
-              {[5, 10, 25, 50].map((n) => (<MenuItem key={n} value={n}>{n}</MenuItem>))}
-            </TextField>
-          </Stack>
         </Box>
       </Paper>
+
+      {/* footer */}
+      <Stack direction="row" alignItems="center" spacing={1.25} mt={1} flexWrap="wrap">
+        <Paper variant="outlined" sx={{ p: 0.25, display: "inline-flex", alignItems: "center" }}>
+          <IconButton size="small" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}><ChevronLeftIcon fontSize="small" /></IconButton>
+          <IconButton size="small" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}><ChevronRightIcon fontSize="small" /></IconButton>
+        </Paper>
+        <Typography variant="body2">Page:</Typography>
+        <Paper variant="outlined" sx={{ px: 1, py: 0.25, display: "inline-flex", alignItems: "center", gap: 0.75 }}>
+          <Typography variant="body2">{page}</Typography>
+          <Typography variant="body2" color="text.secondary">of</Typography>
+          <Typography variant="body2">{totalPages}</Typography>
+        </Paper>
+        <Typography variant="body2" sx={{ ml: { xs: 0, sm: 1 } }}>Rows per page:</Typography>
+        <TextField select size="small" value={rowsPerPage} onChange={(e) => { setRowsPerPage(Number(e.target.value)); setPage(1); }} sx={{ width: 76 }}>
+          {[5, 10, 25, 50].map((n) => (<MenuItem key={n} value={n}>{n}</MenuItem>))}
+        </TextField>
+      </Stack>
 
       {/* main dialog */}
       <Dialog
