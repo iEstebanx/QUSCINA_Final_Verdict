@@ -3,6 +3,7 @@ import { createTheme, responsiveFontSizes, alpha } from "@mui/material/styles";
 import { getDesignTokens } from "./tokens";
 
 export function makeTheme({ mode, density = "comfortable" }) {
+  // getDesignTokens will return a Sepia-looking palette with palette.mode = "light"
   const tokens = getDesignTokens(mode);
 
   let theme = createTheme({

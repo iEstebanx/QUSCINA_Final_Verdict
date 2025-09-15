@@ -329,19 +329,39 @@ export default function LoginPage() {
 
   return (
     <>
-      <Paper elevation={3} sx={{ width: "100%", maxWidth: 440, borderRadius: 3, overflow: "hidden" }}>
+      <Paper
+        elevation={3}
+        sx={{
+          width: "100%",
+          maxWidth: { xs: 420, sm: 440, md: 480 },
+          borderRadius: 3,
+          overflow: "hidden",
+        }}
+      >
         {/* Header */}
-        <Box sx={{
-          px: { xs: 3, sm: 4 }, py: { xs: 2.5, sm: 3 },
-          background: `linear-gradient(180deg,
-            ${alpha(theme.palette.primary.main, 0.18)} 0%,
-            ${alpha(theme.palette.primary.main, 0.10)} 60%,
-            ${alpha(theme.palette.primary.main, 0.06)} 100%)`,
-        }}>
-          <Typography variant="h5" align="center" sx={{ fontWeight: 800, letterSpacing: 0.2 }}>
+        <Box
+          sx={{
+            px: { xs: 2.5, sm: 3.5, md: 4 },
+            py: { xs: 2, sm: 2.5, md: 3 },
+            background: (theme) => `linear-gradient(180deg,
+              ${alpha(theme.palette.primary.main, 0.18)} 0%,
+              ${alpha(theme.palette.primary.main, 0.10)} 60%,
+              ${alpha(theme.palette.primary.main, 0.06)} 100%)`,
+          }}
+        >
+          <Typography
+            variant="h5"
+            align="center"
+            sx={{ fontWeight: 800, letterSpacing: 0.2, fontSize: { xs: 20, sm: 22, md: 24 } }}
+          >
             Sign in
           </Typography>
-          <Typography variant="body2" align="center" color="text.secondary" sx={{ mt: 0.5 }}>
+          <Typography
+            variant="body2"
+            align="center"
+            color="text.secondary"
+            sx={{ mt: 0.5, fontSize: { xs: 12.5, sm: 13 } }}
+          >
             Admin Dashboard (Admin/Manager only)
           </Typography>
         </Box>
@@ -349,18 +369,22 @@ export default function LoginPage() {
         <Divider />
 
         {/* Form */}
-        <Box component="form" onSubmit={onSubmit} noValidate sx={{ p: { xs: 3, sm: 4 } }}>
-          <Stack spacing={2.25}>
+        <Box
+          component="form"
+          onSubmit={onSubmit}
+          noValidate
+          sx={{ p: { xs: 2.5, sm: 3, md: 4 } }}
+        >
+          <Stack spacing={{ xs: 1.75, sm: 2, md: 2.25 }}>
             <TextField
               name="identifier"
               label="Employee ID / Username / Email"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              onInput={(e) => setIdentifier(e.currentTarget.value)}
               autoComplete="username"
               required
               fullWidth
-              placeholder="e.g. 202500001  ·  ced  ·  ced@domain.com"
+              placeholder="e.g. 202500001 · ced · ced@domain.com"
             />
 
             <TextField
@@ -376,11 +400,7 @@ export default function LoginPage() {
                 input: {
                   endAdornment: (
                     <InputAdornment position="end">
-                      <IconButton
-                        onClick={() => setShowPw((v) => !v)}
-                        edge="end"
-                        aria-label={showPw ? "Hide password" : "Show password"}
-                      >
+                      <IconButton onClick={() => setShowPw((v) => !v)} edge="end">
                         {showPw ? <VisibilityOff /> : <Visibility />}
                       </IconButton>
                     </InputAdornment>
@@ -390,6 +410,7 @@ export default function LoginPage() {
             />
 
             <FormControlLabel
+              sx={{ ml: 0 }}
               control={<Switch checked={remember} onChange={(e) => setRemember(e.target.checked)} />}
               label="Remember me"
             />
@@ -398,7 +419,7 @@ export default function LoginPage() {
               {submitting ? "Signing in..." : "Sign In"}
             </Button>
 
-            <Divider sx={{ my: 0.5 }}>or</Divider>
+            <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 
             <Button onClick={onOpenForgot} variant="outlined" size="large" fullWidth disabled={submitting}>
               Forgot Password

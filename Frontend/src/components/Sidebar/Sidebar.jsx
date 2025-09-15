@@ -30,6 +30,8 @@ import PercentIcon from "@mui/icons-material/Percent";
 import BackupIcon from "@mui/icons-material/Backup";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import TableRestaurantIcon from "@mui/icons-material/TableRestaurant";
+import TimelineIcon from "@mui/icons-material/Timeline";
 
 import { useAuth } from "@/context/AuthContext";
 import logo from "@/assets/LOGO.png";
@@ -219,6 +221,7 @@ function SidebarContent({ collapsed }) {
 
         <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} />
         <NavLeaf to="/users" label="User Management" icon={PeopleIcon} collapsed={collapsed} />
+        <NavLeaf to="/audit-trail" label="Audit Trail" icon={TimelineIcon} collapsed={collapsed} />
 
         <NavGroup
           label="Settings"
@@ -230,6 +233,7 @@ function SidebarContent({ collapsed }) {
         >
           <NavLeaf to="/settings/payment-types" label="Payment Types" icon={PaymentIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/taxes" label="Taxes" icon={PercentIcon} collapsed={collapsed} />
+          <NavLeaf to="/settings/table-management" label="Table Management" icon={TableRestaurantIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/backup-restore" label="Backup & Restore" icon={BackupIcon} collapsed={collapsed} />
         </NavGroup>
       </Box>

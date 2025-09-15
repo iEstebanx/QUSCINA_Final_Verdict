@@ -20,14 +20,6 @@ build/
 .cache/
 *.cache
 
-# ---- Env & secrets (very important)
-.env
-.env.*
-!.env.example
-**/.env
-**/.env.*
-!**/.env.example
-
 # ---- Logs
 logs/
 **/logs/
@@ -51,6 +43,7 @@ Thumbs.db
 # If you keep service account keys locally, never commit them:
 serviceAccount*.json
 **/serviceAccount*.json
+backend/firebase-account.json
 
 # ---- Test coverage
 coverage/

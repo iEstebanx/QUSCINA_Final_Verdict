@@ -16,10 +16,6 @@ import {
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import MenuIcon from "@mui/icons-material/Menu";
-import DarkModeIcon from "@mui/icons-material/DarkMode";
-import WbSunnyIcon from "@mui/icons-material/WbSunny";
-import ContrastIcon from "@mui/icons-material/Contrast";
-import { useThemeMode } from "@/theme/ThemeModeProvider";
 
 // export once and reuse everywhere
 export const APPBAR_HEIGHT = 64;
@@ -33,8 +29,6 @@ export default function AppHeader({
   const location = useLocation();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
-
-  const { mode, cycleMode } = useThemeMode();
 
   // Readable labels per path segment
   const labelMap = {
@@ -111,17 +105,6 @@ export default function AppHeader({
   const onSubmit = (e) => {
     e.preventDefault();
     navigate(`/reports?search=${encodeURIComponent(query)}`);
-  };
-
-  const renderThemeIcon = () => {
-    switch (mode) {
-      case "light":
-        return <WbSunnyIcon />;
-      case "dark":
-        return <DarkModeIcon />;
-      default:
-        return <ContrastIcon />;
-    }
   };
 
   return (
@@ -207,13 +190,7 @@ export default function AppHeader({
             }}
           />
         </Box>
-
-        {/* Theme Toggle */}
-        <Tooltip title={`Switch theme (current: ${mode})`}>
-          <IconButton onClick={cycleMode} edge="end" sx={{ ml: 1 }}>
-            {renderThemeIcon()}
-          </IconButton>
-        </Tooltip>
+        
       </Toolbar>
     </AppBar>
   );

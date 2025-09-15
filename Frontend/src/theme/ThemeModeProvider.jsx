@@ -1,20 +1,22 @@
-// Frontend/src/theme/ThemeModeProvider.jsx
+// Frontend/src/theme/themeModeProvider.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ThemeProvider, useMediaQuery, GlobalStyles } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { makeTheme } from "./index";
-import { MODES } from "./tokens";
 
 const ThemeCtx = createContext(null);
 export const useThemeMode = () => useContext(ThemeCtx);
 
-const LS_KEY = "ui-color-mode";
 const LS_DENSITY = "ui-density";
 
 export default function ThemeModeProvider({ children }) {
-  const [mode, setMode] = useState(() => localStorage.getItem(LS_KEY) || "sepia");
-  const [density, setDensity] = useState(() => localStorage.getItem(LS_DENSITY) || "comfortable");
+  // App-level mode label (for your own logic/UI); MUI palette.mode remains "light".
+  const mode = "sepia";
+
+  const [density, setDensity] = useState(
+    () => localStorage.getItem(LS_DENSITY) || "comfortable"
+  );
 
   const isSmall = useMediaQuery("(max-width: 640px)");
   const effectiveDensity = useMemo(() => {
@@ -22,17 +24,26 @@ export default function ThemeModeProvider({ children }) {
     return manual ? density : isSmall ? "compact" : density;
   }, [density, isSmall]);
 
-  useEffect(() => localStorage.setItem(LS_KEY, mode), [mode]);
-  useEffect(() => localStorage.setItem(LS_DENSITY, density), [density]);
+  useEffect(() => {
+    localStorage.setItem(LS_DENSITY, density);
+  }, [density]);
 
-  const theme = useMemo(() => makeTheme({ mode, density: effectiveDensity }), [mode, effectiveDensity]);
+  const theme = useMemo(
+    () => makeTheme({ mode, density: effectiveDensity }),
+    [mode, effectiveDensity]
+  );
 
-  const cycleMode = () => {
-    const idx = MODES.indexOf(mode);
-    setMode(MODES[(idx + 1) % MODES.length]);
-  };
-
-  const value = useMemo(() => ({ mode, setMode, cycleMode, density, setDensity }), [mode, density]);
+  // Keep API surface for compatibility, but make mode setters no-ops.
+  const value = useMemo(
+    () => ({
+      mode,              // "sepia" (app-level)
+      setMode: () => {}, // no-op
+      cycleMode: () => {}, // no-op
+      density,
+      setDensity,
+    }),
+    [mode, density]
+  );
 
   return (
     <ThemeCtx.Provider value={value}>
@@ -42,7 +53,6 @@ export default function ThemeModeProvider({ children }) {
         {/* 🔒 Global “no horizontal page scroll” guard (incl. iOS) */}
         <GlobalStyles
           styles={(theme) => ({
-            /* ⬇️ Replace your current `.scroll-x` block with this */
             ".scroll-x": {
               overflowX: "auto",
               overflowY: "hidden",
@@ -63,8 +73,8 @@ export default function ThemeModeProvider({ children }) {
 
             /* Chrome / Edge / Safari */
             ".scroll-x::-webkit-scrollbar": {
-              height: 15,      // horizontal bar height
-              width: 15,       // (covers vertical if present)
+              height: 15,
+              width: 15,
             },
             ".scroll-x::-webkit-scrollbar-track": {
               backgroundColor: alpha(
@@ -79,7 +89,7 @@ export default function ThemeModeProvider({ children }) {
                 theme.palette.mode === "dark" ? 0.65 : 0.5
               ),
               borderRadius: 9999,
-              border: `3px solid ${theme.palette.background.paper}`, // inset "pill" look
+              border: `3px solid ${theme.palette.background.paper}`,
             },
             ".scroll-x:hover::-webkit-scrollbar-thumb": {
               backgroundColor: alpha(

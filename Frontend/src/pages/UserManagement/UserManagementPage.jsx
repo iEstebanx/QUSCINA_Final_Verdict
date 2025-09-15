@@ -1211,7 +1211,9 @@ export default function UserManagementPage() {
 
       {/* ===== Change Password sub-dialog ===== */}
       <Dialog open={pwDialogOpen} onClose={requestClosePw} maxWidth="xs" fullWidth disableAutoFocus disableRestoreFocus  TransitionProps={{ onEnter: blurActive }}>
-        <DialogTitle sx={{ pb: 0.5 }}>Change Password</DialogTitle>
+        <DialogTitle sx={{ pb: 0.5 }}>
+          {isEditingExisting ? "Change Password" : "New Password"}
+        </DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1.25}>
             {isEditingExisting && (
