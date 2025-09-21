@@ -1,5 +1,5 @@
-// Frontend/src/pages/Reports/ReportsPage.jsx
+// Frontend/src/pages/Inventory/InventoryPage.jsx
 import { Typography } from "@mui/material";
-export default function ReportsPage() {
+export default function InventoryPage() {
   return <Typography variant="h5">.</Typography>;
 }

@@ -55,7 +55,7 @@ export default function EmptyLayout() {
           <Typography
             sx={{ fontWeight: 800, fontSize: { xs: 28, sm: 32, md: 36, lg: 40 }, letterSpacing: 0.2 }}
           >
-            QUSCINA Admin
+            QUSCINA Backoffice
           </Typography>
           <Typography sx={{ mt: 1 }} color="text.secondary" variant="body2">
             Manage menu, inventory, and reports with ease.

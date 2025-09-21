@@ -9,6 +9,7 @@ import {
   Divider,
   Collapse,
   Drawer,
+  Popover,
   useTheme,
   useMediaQuery,
 } from "@mui/material";
@@ -22,7 +23,6 @@ import ListAltIcon from "@mui/icons-material/ListAlt";
 import CategoryIcon from "@mui/icons-material/Category";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
-import TuneIcon from "@mui/icons-material/Tune";
 import HistoryIcon from "@mui/icons-material/History";
 import SettingsIcon from "@mui/icons-material/Settings";
 import PaymentIcon from "@mui/icons-material/Payment";
@@ -37,7 +37,8 @@ import { useAuth } from "@/context/AuthContext";
 import logo from "@/assets/LOGO.png";
 import { alpha } from "@mui/material/styles";
 
-function NavLeaf({ to, label, icon: Icon, collapsed }) {
+/* --------------------- Small leaf button --------------------- */
+function NavLeaf({ to, label, icon: Icon, collapsed, end = false, onClick }) {
   const base = {
     display: "flex",
     alignItems: "center",
@@ -50,7 +51,7 @@ function NavLeaf({ to, label, icon: Icon, collapsed }) {
   };
 
   return (
-    <NavLink to={to} style={{ textDecoration: "none" }}>
+    <NavLink to={to} end={end} style={{ textDecoration: "none" }} onClick={onClick}>
       {({ isActive }) => (
         <ButtonBase
           sx={(theme) => {
@@ -85,13 +86,37 @@ NavLeaf.propTypes = {
   label: PropTypes.string.isRequired,
   icon: PropTypes.elementType.isRequired,
   collapsed: PropTypes.bool.isRequired,
+  end: PropTypes.bool,
+  onClick: PropTypes.func,
 };
 
-function NavGroup({ label, icon: Icon, collapsed, children, open, onToggle, active }) {
+/* --------------------- Group with popover when collapsed --------------------- */
+function NavGroup({
+  label,
+  icon: Icon,
+  collapsed,
+  children,
+  open,
+  onToggle,
+  active,
+}) {
+  const [anchorEl, setAnchorEl] = useState(null);
+
+  const handleHeaderClick = (e) => {
+    if (collapsed) {
+      setAnchorEl(e.currentTarget);
+    } else {
+      onToggle();
+    }
+  };
+
+  const closePopover = () => setAnchorEl(null);
+  const popoverOpen = Boolean(anchorEl);
+
   return (
     <Box>
       <ButtonBase
-        onClick={onToggle}
+        onClick={handleHeaderClick}
         sx={(theme) => {
           const isDark = theme.palette.mode === "dark";
           const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.1);
@@ -129,10 +154,58 @@ function NavGroup({ label, icon: Icon, collapsed, children, open, onToggle, acti
         )}
       </ButtonBase>
 
+      {/* Full-width sidebar: normal collapse */}
       {!collapsed && (
         <Collapse in={open} unmountOnExit>
           <Box sx={{ display: "grid", gap: 0.35, mt: 0.25, pl: 4 }}>{children}</Box>
         </Collapse>
+      )}
+
+      {/* Collapsed sidebar: floating popover menu */}
+      {collapsed && (
+        <Popover
+          open={popoverOpen}
+          anchorEl={anchorEl}
+          onClose={closePopover}
+          anchorOrigin={{ vertical: "center", horizontal: "right" }}
+          transformOrigin={{ vertical: "center", horizontal: "left" }}
+          PaperProps={{
+            sx: (theme) => ({
+              p: 0.5,
+              borderRadius: 2,
+              minWidth: 220,
+              border: `1px solid ${alpha(theme.palette.text.primary, 0.12)}`,
+              boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.18)}`,
+            }),
+          }}
+        >
+          <Box sx={{ display: "grid", gap: 0.35, p: 0.5 }}>
+            {/* clone children to inject onClick that closes popover */}
+            {Array.isArray(children)
+              ? children.map((child, i) =>
+                  child
+                    ? {
+                        ...child,
+                        props: {
+                          ...child.props,
+                          collapsed: false, // show labels inside popover
+                          onClick: () => setAnchorEl(null),
+                        },
+                      }
+                    : null
+                )
+              : children
+              ? {
+                  ...children,
+                  props: {
+                    ...children.props,
+                    collapsed: false,
+                    onClick: () => setAnchorEl(null),
+                  },
+                }
+              : null}
+          </Box>
+        </Popover>
       )}
     </Box>
   );
@@ -148,25 +221,37 @@ NavGroup.propTypes = {
   active: PropTypes.bool.isRequired,
 };
 
+/* --------------------- Sidebar Content --------------------- */
 function SidebarContent({ collapsed }) {
   const { user, logout } = useAuth();
   const location = useLocation();
 
   const path = location.pathname;
   const isMenuActive = useMemo(() => path.startsWith("/menu"), [path]);
-  const isInventoryActive = useMemo(() => path.startsWith("/inventory"), [path]);
+  const isAuditActive = useMemo(() => path.startsWith("/audit-trail"), [path]);
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
   const [openMenu, setOpenMenu] = useState(isMenuActive);
-  const [openInv, setOpenInv] = useState(isInventoryActive);
+  const [openAudit, setOpenAudit] = useState(isAuditActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
-  // useEffect (not useMemo) for state sync side-effects
+  // Keep groups in sync with route on initial mount / route change when expanded.
   useEffect(() => {
-    setOpenMenu(isMenuActive);
-    setOpenInv(isInventoryActive);
-    setOpenSettings(isSettingsActive);
-  }, [isMenuActive, isInventoryActive, isSettingsActive]);
+    if (!collapsed) {
+      setOpenMenu(isMenuActive);
+      setOpenAudit(isAuditActive);
+      setOpenSettings(isSettingsActive);
+    }
+  }, [collapsed, isMenuActive, isAuditActive, isSettingsActive]);
+
+  // IMPORTANT: When sidebar collapses via hamburger, close all groups.
+  useEffect(() => {
+    if (collapsed) {
+      setOpenMenu(false);
+      setOpenAudit(false);
+      setOpenSettings(false);
+    }
+  }, [collapsed]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -183,7 +268,7 @@ function SidebarContent({ collapsed }) {
         <Box component="img" src={logo} alt="Quscina logo" sx={{ width: 28, height: 28, flexShrink: 0, borderRadius: 1 }} />
         {!collapsed && (
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            QUSCINA Admin
+            QUSCINA Backoffice
           </Typography>
         )}
       </Box>
@@ -207,21 +292,25 @@ function SidebarContent({ collapsed }) {
           <NavLeaf to="/menu/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
         </NavGroup>
 
+        {/* Inventory is a simple button to its dashboard */}
+        <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} />
+
+        {/* Audit Trail: Audit + Inventory History + Shift History */}
         <NavGroup
-          label="Inventory"
-          icon={Inventory2Icon}
+          label="Audit Trail"
+          icon={TimelineIcon}
           collapsed={collapsed}
-          open={openInv}
-          onToggle={() => setOpenInv((v) => !v)}
-          active={isInventoryActive}
+          open={openAudit}
+          onToggle={() => setOpenAudit((v) => !v)}
+          active={isAuditActive}
         >
-          <NavLeaf to="/inventory/adjustment" label="Stock Adjustment" icon={TuneIcon} collapsed={collapsed} />
-          <NavLeaf to="/inventory/history" label="Inventory History" icon={HistoryIcon} collapsed={collapsed} />
+          <NavLeaf to="/audit-trail" label="Audit" icon={TimelineIcon} collapsed={collapsed} end />
+          <NavLeaf to="/audit-trail/inventory-history" label="Inventory History" icon={HistoryIcon} collapsed={collapsed} />
+          <NavLeaf to="/audit-trail/shift-history" label="Shift History" icon={HistoryIcon} collapsed={collapsed} />
         </NavGroup>
 
         <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} />
         <NavLeaf to="/users" label="User Management" icon={PeopleIcon} collapsed={collapsed} />
-        <NavLeaf to="/audit-trail" label="Audit Trail" icon={TimelineIcon} collapsed={collapsed} />
 
         <NavGroup
           label="Settings"
@@ -269,6 +358,7 @@ SidebarContent.propTypes = {
   collapsed: PropTypes.bool.isRequired,
 };
 
+/* --------------------- Shell --------------------- */
 export default function Sidebar({
   collapsed,
   width = 240,

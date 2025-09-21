@@ -1,11 +1,11 @@
-// Backend/src/routes/auth.js
+// Backend/src/auth/auth.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-const { db } = require("../lib/firebaseAdmin");
-const { createEmailOtp, getLatestPendingOtp } = require("../lib/EmailOtp/otp");
-const { sendOtpEmail } = require("../lib/EmailOtp/mailer");
+const { db } = require("../shared/firebase/firebaseAdmin");
+const { createEmailOtp, getLatestPendingOtp } = require("../shared/OTP/EmailOTP/otp");
+const { sendOtpEmail } = require("../shared/email/mailer");
 
 const router = express.Router();
 const DEBUG = process.env.DEBUG_AUTH === "1";
@@ -194,17 +194,31 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
-// -------------------- /me --------------------
+// -------------------- /me (soft) --------------------
 router.get("/me", (req, res) => {
+  // add a soft mode via query (?soft=1) or header (x-auth-optional: 1)
+  const soft =
+    req.query.soft === "1" ||
+    String(req.get("x-auth-optional") || "").toLowerCase() === "1";
+
   const auth = req.headers.authorization || "";
   const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   const token = bearer || req.cookies?.qd_token || null;
-  if (!token) return res.status(401).json({ error: "No token" });
+
+  if (!token) {
+    // no token
+    return soft
+      ? res.json({ ok: true, authenticated: false, user: null })
+      : res.status(401).json({ error: "No token" });
+  }
+
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    return res.json({ ok: true, user: payload });
+    return res.json({ ok: true, authenticated: true, user: payload, token });
   } catch {
-    return res.status(401).json({ error: "Invalid token" });
+    return soft
+      ? res.json({ ok: true, authenticated: false, user: null })
+      : res.status(401).json({ error: "Invalid token" });
   }
 });
 

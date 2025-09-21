@@ -1,4 +1,4 @@
-// src/layouts/MainLayout.jsx
+// Frontend/src/layouts/MainLayout.jsx
 import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Box, useMediaQuery, useTheme } from "@mui/material";

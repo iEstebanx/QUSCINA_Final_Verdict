@@ -1,4 +1,4 @@
-// src/components/Header/AppHeader.jsx
+// Frontend.src/components/Header/AppHeader.jsx
 import { useMemo, useState } from "react";
 import PropTypes from "prop-types";
 import { useLocation, Link as RouterLink, useNavigate } from "react-router-dom";

@@ -41,7 +41,7 @@ app.use(
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // Routes
-app.use("/api/auth", require("./src/routes/auth")());
+app.use("/api/auth", require("./src/auth/auth")());
 app.use("/api", require("./src/routes")());
 
 // 404 for unknown /api paths

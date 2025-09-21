@@ -264,18 +264,21 @@ export default function DiscountPage() {
             component={Paper}
             elevation={0}
             className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, maxHeight: 520, overflowX: "auto" }}
+            sx={{
+              mx: "auto",
+              width: { xs: "100%", sm: "auto" }, // full width on phones, shrink/cap above
+              maxWidth: 720,                     // cap the table width (adjust to taste)
+            }}
           >
             <Table
               stickyHeader
               aria-label="discounts table"
-              sx={{ tableLayout: "fixed", minWidth: { xs: 600, sm: 760, md: 880 } }}
+              sx={{ tableLayout: "fixed", minWidth: 520 }} // shrink min content width
             >
-              {/* 56px checkbox column, then 50% / 50% */}
               <colgroup>
-                <col style={{ width: 56 }} />
-                <col style={{ width: "50%" }} />
-                <col style={{ width: "50%" }} />
+                <col style={{width:56}}/>
+                <col style={{minWidth:240}}/>
+                <col style={{minWidth:120,width:"auto"}}/>
               </colgroup>
 
               <TableHead>

@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
-const { db, FieldValue, Timestamp } = require("../../lib/firebaseAdmin");
+const { db, FieldValue, Timestamp } = require("../../shared/firebase/firebaseAdmin");
 
 const SALT_ROUNDS = 12;
 
