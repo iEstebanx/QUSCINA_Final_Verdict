@@ -1,4 +1,4 @@
-// src/components/Sidebar/Sidebar.jsx
+// Frontend/src/components/Sidebar/Sidebar.jsx
 import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
 import { NavLink, useLocation } from "react-router-dom";
@@ -30,7 +30,7 @@ import PercentIcon from "@mui/icons-material/Percent";
 import BackupIcon from "@mui/icons-material/Backup";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import TableRestaurantIcon from "@mui/icons-material/TableRestaurant";
+import NotificationsIcon from "@mui/icons-material/Notifications";
 import TimelineIcon from "@mui/icons-material/Timeline";
 
 import { useAuth } from "@/context/AuthContext";
@@ -180,7 +180,6 @@ function NavGroup({
           }}
         >
           <Box sx={{ display: "grid", gap: 0.35, p: 0.5 }}>
-            {/* clone children to inject onClick that closes popover */}
             {Array.isArray(children)
               ? children.map((child, i) =>
                   child
@@ -188,7 +187,7 @@ function NavGroup({
                         ...child,
                         props: {
                           ...child.props,
-                          collapsed: false, // show labels inside popover
+                          collapsed: false,
                           onClick: () => setAnchorEl(null),
                         },
                       }
@@ -228,26 +227,28 @@ function SidebarContent({ collapsed }) {
 
   const path = location.pathname;
   const isMenuActive = useMemo(() => path.startsWith("/menu"), [path]);
+  const isInventoryActive = useMemo(() => path.startsWith("/inventory"), [path]);
   const isAuditActive = useMemo(() => path.startsWith("/audit-trail"), [path]);
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
   const [openMenu, setOpenMenu] = useState(isMenuActive);
+  const [openInventory, setOpenInventory] = useState(isInventoryActive);
   const [openAudit, setOpenAudit] = useState(isAuditActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
-  // Keep groups in sync with route on initial mount / route change when expanded.
   useEffect(() => {
     if (!collapsed) {
       setOpenMenu(isMenuActive);
+      setOpenInventory(isInventoryActive);
       setOpenAudit(isAuditActive);
       setOpenSettings(isSettingsActive);
     }
-  }, [collapsed, isMenuActive, isAuditActive, isSettingsActive]);
+  }, [collapsed, isMenuActive, isInventoryActive, isAuditActive, isSettingsActive]);
 
-  // IMPORTANT: When sidebar collapses via hamburger, close all groups.
   useEffect(() => {
     if (collapsed) {
       setOpenMenu(false);
+      setOpenInventory(false);
       setOpenAudit(false);
       setOpenSettings(false);
     }
@@ -292,8 +293,18 @@ function SidebarContent({ collapsed }) {
           <NavLeaf to="/menu/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
         </NavGroup>
 
-        {/* Inventory is a simple button to its dashboard */}
-        <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} />
+        {/* Inventory group with two entries */}
+        <NavGroup
+          label="Inventory"
+          icon={Inventory2Icon}
+          collapsed={collapsed}
+          open={openInventory}
+          onToggle={() => setOpenInventory((v) => !v)}
+          active={isInventoryActive}
+        >
+          <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} end />
+          <NavLeaf to="/inventory/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
+        </NavGroup>
 
         {/* Audit Trail: Audit + Inventory History + Shift History */}
         <NavGroup
@@ -322,7 +333,7 @@ function SidebarContent({ collapsed }) {
         >
           <NavLeaf to="/settings/payment-types" label="Payment Types" icon={PaymentIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/taxes" label="Taxes" icon={PercentIcon} collapsed={collapsed} />
-          <NavLeaf to="/settings/table-management" label="Table Management" icon={TableRestaurantIcon} collapsed={collapsed} />
+          <NavLeaf to="/settings/notifications" label="Notifications" icon={NotificationsIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/backup-restore" label="Backup & Restore" icon={BackupIcon} collapsed={collapsed} />
         </NavGroup>
       </Box>

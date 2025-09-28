@@ -1,7 +1,7 @@
-// Frontend.src/components/Header/AppHeader.jsx
-import { useMemo, useState } from "react";
+// Frontend/src/components/Header/AppHeader.jsx
+import { useMemo } from "react";
 import PropTypes from "prop-types";
-import { useLocation, Link as RouterLink, useNavigate } from "react-router-dom";
+import { useLocation, Link as RouterLink } from "react-router-dom";
 import {
   AppBar,
   Toolbar,
@@ -9,12 +9,8 @@ import {
   Breadcrumbs,
   Link,
   Typography,
-  TextField,
-  InputAdornment,
   IconButton,
-  Tooltip,
 } from "@mui/material";
-import SearchIcon from "@mui/icons-material/Search";
 import MenuIcon from "@mui/icons-material/Menu";
 
 // export once and reuse everywhere
@@ -27,8 +23,6 @@ export default function AppHeader({
   collapsedWidth = 72,
 }) {
   const location = useLocation();
-  const navigate = useNavigate();
-  const [query, setQuery] = useState("");
 
   // Readable labels per path segment
   const labelMap = {
@@ -43,8 +37,6 @@ export default function AppHeader({
   };
 
   // NEW: For any "group" segment, where should clicking the crumb go?
-  // Add more groups by mapping segment -> its default first child.
-  // Keep inventory/settings commented until their routes exist.
   const groupFirstChild = {
     menu: "items",
     // inventory: "stock-adjustment",
@@ -62,7 +54,6 @@ export default function AppHeader({
       pathAcc += `/${seg}`;
       const isLast = idx === segments.length - 1;
 
-      // Label (with capitalization + special cases)
       let label = labelMap[seg] || seg.replace(/-/g, " ");
       label = label.charAt(0).toUpperCase() + label.slice(1);
 
@@ -74,8 +65,6 @@ export default function AppHeader({
         );
       }
 
-      // If this crumb is a "group", clicking it should go to its first child
-      // e.g. "/menu" -> "/menu/items"
       let target = pathAcc;
       const firstChild = groupFirstChild[seg];
       if (firstChild) {
@@ -96,15 +85,9 @@ export default function AppHeader({
     });
   }, [segments]);
 
-  // Left offset only matters on sm+ (when sidebar is fixed).
   const leftOffset = {
     xs: 0,
     sm: collapsed ? `${collapsedWidth}px` : `${width}px`,
-  };
-
-  const onSubmit = (e) => {
-    e.preventDefault();
-    navigate(`/reports?search=${encodeURIComponent(query)}`);
   };
 
   return (
@@ -164,33 +147,6 @@ export default function AppHeader({
         </Breadcrumbs>
 
         <Box sx={{ flexGrow: 1 }} />
-
-        {/* Search */}
-        <Box
-          component="form"
-          onSubmit={onSubmit}
-          sx={{ width: { xs: 180, sm: 280, md: 360 } }}
-        >
-          <TextField
-            size="small"
-            fullWidth
-            placeholder="Search…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            slotProps={{
-              input: {
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton edge="end" type="submit" aria-label="Search">
-                      <SearchIcon />
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              },
-            }}
-          />
-        </Box>
-        
       </Toolbar>
     </AppBar>
   );

@@ -22,10 +22,11 @@ import ShiftHistoryPage from "@/pages/AuditTrail/ShiftHistoryPage.jsx";
 
 import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
 import TaxesPage from "@/pages/Settings/Taxes/TaxesPage.jsx";
-import TableManagementPage from "@/pages/Settings/TableManagement/TableManagementPage.jsx";
+import NotificationsPage from "@/pages/Settings/Notifications/Notifications.jsx";
 import BackupAndRestorePage from "@/pages/Settings/BackupAndRestore/BackupAndRestorePage.jsx";
 
 import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
+import InvCategoriePage from "@/pages/Inventory/InvCategoriePage.jsx";
 
 export default function AppRoutes() {
   return (
@@ -47,8 +48,9 @@ export default function AppRoutes() {
           <Route path="/menu/categories" element={<CategoriePage />} />
           <Route path="/menu/discounts" element={<DiscountPage />} />
 
-          {/* Inventory (dashboard) */}
+          {/* Inventory */}
           <Route path="/inventory" element={<InventoryPage />} />
+          <Route path="/inventory/categories" element={<InvCategoriePage />} />
 
           {/* Audit Trail */}
           <Route path="/audit-trail" element={<AuditTrailPage />} />
@@ -63,7 +65,7 @@ export default function AppRoutes() {
           {/* Settings */}
           <Route path="/settings/payment-types" element={<PaymentTypePage />} />
           <Route path="/settings/taxes" element={<TaxesPage />} />
-          <Route path="/settings/table-management" element={<TableManagementPage />} />
+          <Route path="/settings/notifications" element={<NotificationsPage />} />
           <Route path="/settings/backup-restore" element={<BackupAndRestorePage />} />
         </Route>
       </Route>
