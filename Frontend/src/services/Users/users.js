@@ -85,12 +85,22 @@ export async function updateUser(employeeId, patch) {
   return data;
 }
 
-export async function deleteUser(employeeId) {
+
+
+export async function deleteUser(employeeId, { signal } = {}) {
+  if (!employeeId) throw new Error("employeeId is required");
+
   const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(employeeId)}`, {
     method: "DELETE",
     credentials: "include",
+    headers: { Accept: "application/json" },
+    signal,
   });
+
+  // Treat 404 as already-gone = success
+  if (res.ok || res.status === 404) return { ok: true };
+
   const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.error || "Delete user failed");
-  return data;
+  throw new Error(data.error || "Delete user failed");
 }
+

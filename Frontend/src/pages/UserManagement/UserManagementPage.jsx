@@ -32,6 +32,7 @@ import {
   subscribeUsers,
   createUser,
   updateUser,
+  deleteUser,
 } from "@/services/Users/users";
 
 import { useAlert } from "@/context/Snackbar/AlertContext";
@@ -132,7 +133,7 @@ export default function UserManagementPage() {
   const pinRefs = Array.from({ length: 6 }).map(() => useRef(null));
 
   useEffect(() => {
-      const unsub = subscribeUsers(
+    const unsub = subscribeUsers(
       ({ rows }) => setRows(rows),
       {
         intervalMs: 5000,
@@ -355,7 +356,7 @@ export default function UserManagementPage() {
     }
   };
 
-  // ===== Password dialog handlers =====
+  // ===== Password dialog helpers =====
   const isEditingExisting = rows.some((r) => String(r.employeeId) === String(form.employeeId));
   const pwScore = scorePassword(pwFields.next);
   const pwRules = ruleChecks(pwFields.next);
@@ -386,9 +387,6 @@ export default function UserManagementPage() {
     setPwErrors(errs);
     if (errs.current || errs.next || errs.confirm) return;
 
-    setPwErrors(errs);
-    if (errs.current || errs.next || errs.confirm) return;
-
     if (!isEditingExisting) {
       setForm((f) => ({ ...f, password: pwFields.next }));
       setPwDialogOpen(false);
@@ -408,7 +406,6 @@ export default function UserManagementPage() {
         setPwDialogOpen(false);
         alert.success("Password updated.");
       } catch (e) {
-        // Backend case: "Current password is incorrect."
         setPwErrors((prev) => ({
           ...prev,
           current: e?.message || "Failed to update password.",
@@ -419,7 +416,7 @@ export default function UserManagementPage() {
     })();
   }
 
-  // ===== Security Questions dialog handlers =====
+  // ===== Security Questions dialog helpers =====
   function openSqDialog() {
     blurActive();
     setSqError("");
@@ -614,12 +611,65 @@ export default function UserManagementPage() {
         confirmColor: "error",
       });
       if (!ok) return;
-        // ⬅️ restore inputs back to snapshot
-        resetSqToInitial();
-        setSqTouched(false); // nothing staged anymore
-      }
+      // ⬅️ restore inputs back to snapshot
+      resetSqToInitial();
+      setSqTouched(false); // nothing staged anymore
+    }
     setSqDialogOpen(false);
   };
+
+  async function handleRowDelete(row) {
+    if (rows.length <= 1) {
+      alert.info("You must keep at least one user account.");
+      return;
+    }
+    const ok = await confirm({
+      title: "Delete this user?",
+      content: `This will permanently remove ${row.firstName || ""} ${row.lastName || ""} (${row.employeeId}).`,
+      confirmLabel: "Delete",
+      confirmColor: "error",
+    });
+    if (!ok) return;
+
+    try {
+      await deleteUser(row.employeeId);
+      alert.success("User deleted.");
+    } catch (e) {
+      console.error(e);
+      alert.error(e?.message || "Failed to delete user.");
+    }
+  }
+
+  /* ============================
+     🔴 DELETE helpers (dialog)
+     ============================ */
+  const isOnlyRemaining = rows.length <= 1;
+  const canDeleteAny = rows.length > 1;
+
+  async function handleDelete() {
+    if (!isEditingExisting) return;
+    if (!canDeleteAny) {
+      alert.info("You must keep at least one user account.");
+      return;
+    }
+    const ok = await confirm({
+      title: "Delete this user?",
+      content:
+        "This will permanently remove the account and its login aliases. This action cannot be undone.",
+      confirmLabel: "Delete",
+      confirmColor: "error",
+    });
+    if (!ok) return;
+
+    try {
+      await deleteUser(form.employeeId);
+      alert.success("User deleted.");
+      setOpen(false);
+    } catch (e) {
+      console.error(e);
+      alert.error(e?.message || "Failed to delete user.");
+    }
+  }
 
   return (
     <Box p={2} display="grid" gap={2}>
@@ -1204,6 +1254,22 @@ export default function UserManagementPage() {
         </DialogContent>
 
         <DialogActions sx={{ p: 1.5 }}>
+          {isEditingExisting && (
+            <Tooltip title={isOnlyRemaining ? "You must keep at least one user" : "Delete this user"}>
+              <span>
+                <Button
+                  onClick={handleDelete}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                  disabled={isOnlyRemaining}
+                  sx={{ mr: "auto" }} // pushes the others to the right
+                >
+                  Delete
+                </Button>
+              </span>
+            </Tooltip>
+          )}
           <Button onClick={requestCloseMain} variant="outlined" size="small">Cancel</Button>
           <Button onClick={handleSave} variant="contained" size="small">Save</Button>
         </DialogActions>
