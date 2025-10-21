@@ -8,12 +8,10 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const admin = require("firebase-admin");
 
 const app = express();
 
-// Initialize Firebase Admin SDK
-if (!admin.apps.length) admin.initializeApp();
+require("./src/shared/firebase/firebaseAdmin"); // ensure module runs and initializes admin
 
 app.use(express.json());
 app.use(cookieParser());

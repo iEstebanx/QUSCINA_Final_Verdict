@@ -26,16 +26,33 @@ const MAX_RAW_IMAGE_BYTES = 600 * 1024;
 // GET /api/categories
 router.get("/", async (_req, res, next) => {
   try {
-    const snap = await db.collection("categories").get();
+    // Order by updatedAt descending so newest updated/created rows come first
+    const snap = await db.collection("categories").orderBy("updatedAt", "desc").get();
+
     const rows = snap.docs.map((d) => {
       const x = d.data() || {};
+
+      // Firestore Timestamp -> JS Date -> ISO string (safe to send over JSON)
+      const updatedAtIso =
+        x.updatedAt && typeof x.updatedAt.toDate === "function"
+          ? x.updatedAt.toDate().toISOString()
+          : x.updatedAt || null;
+
+      const createdAtIso =
+        x.createdAt && typeof x.createdAt.toDate === "function"
+          ? x.createdAt.toDate().toISOString()
+          : x.createdAt || null;
+
       return {
         id: d.id,
         name: x.name || "",
         imageUrl: x.imageUrl || x.imageDataUrl || "",
+        createdAt: createdAtIso,
+        updatedAt: updatedAtIso,
       };
     });
-    rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    // No client-side sorting necessary because query already ordered
     res.json({ ok: true, categories: rows });
   } catch (e) {
     next(e);
