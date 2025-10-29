@@ -27,6 +27,7 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { alpha } from "@mui/material/styles";
+import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext.jsx";
 
 /* -------------------------- Name validation helpers -------------------------- */
 const NAME_MAX = 60;
@@ -50,6 +51,7 @@ function blurActive() {
 }
 
 export default function CategoriePage() {
+  const confirm = useConfirm();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -62,7 +64,7 @@ export default function CategoriePage() {
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
   const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
 
-  // dialog
+  // create/edit dialog
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null); // null=create, string=edit
   const isEdit = Boolean(editingId);
@@ -72,6 +74,9 @@ export default function CategoriePage() {
   const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
+
+  // Blocked-delete modal
+  const [blockDialog, setBlockDialog] = useState({ open: false, message: "" });
 
   // Keep track of blob URLs to revoke
   const [objectUrls, setObjectUrls] = useState([]);
@@ -164,7 +169,9 @@ export default function CategoriePage() {
 
     const clean = normalizeName(name);
     if (!isValidName(clean)) {
-      setSaveErr("Please enter a valid category name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /).");
+      setSaveErr(
+        "Please enter a valid category name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /)."
+      );
       return;
     }
 
@@ -202,10 +209,55 @@ export default function CategoriePage() {
     }
   }
 
+  function showBlockedModal(message) {
+    setBlockDialog({ open: true, message });
+  }
+
+  async function onDeleteOne(row) {
+    const ok = await confirm({
+      title: "Delete category?",
+      content: `Delete "${row.name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      confirmColor: "error",
+    });
+    if (!ok) return;
+
+    try {
+      const res = await fetch(`/api/categories/${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        if (res.status === 409) {
+          showBlockedModal("Cannot delete category: items are still assigned to this category.");
+          setSelected((s) => s.filter((id) => id !== row.id)); // uncheck it
+        } else {
+          throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+        }
+      } else {
+        setSelected((s) => s.filter((id) => id !== row.id));
+      }
+
+      await load();
+    } catch (e) {
+      setErr(e?.message || "Delete failed");
+    }
+  }
+
   async function onDeleteSelected() {
     if (!selected.length) return;
     const plural = selected.length > 1 ? "categories" : "category";
-    if (!window.confirm(`Delete ${selected.length} ${plural}? This cannot be undone.`)) return;
+
+    const ok = await confirm({
+      title: `Delete ${selected.length} ${plural}?`,
+      content: "This cannot be undone.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      confirmColor: "error",
+    });
+    if (!ok) return;
 
     try {
       const res = await fetch(`/api/categories`, {
@@ -214,10 +266,25 @@ export default function CategoriePage() {
         body: JSON.stringify({ ids: selected }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok !== true) {
-        throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+
+      if (!res.ok) {
+        if (res.status === 409 && data?.error) {
+          showBlockedModal("Cannot delete category: items are still assigned to this category.");
+        } else {
+          throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+        }
+      } else {
+        if (Array.isArray(data.blocked) && data.blocked.length) {
+          const namesById = new Map(rows.map((r) => [r.id, r.name]));
+          const sample = data.blocked.slice(0, 5).map((b) => namesById.get(b.id) || b.id).join(", ");
+          const more = data.blocked.length > 5 ? ` and ${data.blocked.length - 5} more` : "";
+          showBlockedModal(`Some categories were not deleted because items are still assigned: ${sample}${more}.`);
+          setSelected((prev) => prev.filter((id) => !selected.includes(id)));
+        } else {
+          setSelected([]);
+        }
       }
-      setSelected([]);
+
       await load();
     } catch (e) {
       setErr(e?.message || "Delete failed");
@@ -279,9 +346,12 @@ export default function CategoriePage() {
           >
             <Table stickyHeader aria-label="categories table" sx={{ tableLayout: "fixed", minWidth: 520 }}>
               <colgroup>
-                <col style={{ width: 56 }} />
-                <col style={{ width: 120 }} />
-                <col style={{ minWidth: 240 }} />
+                {[
+                  <col key="c1" style={{ width: 56 }} />,
+                  <col key="c2" style={{ width: 120 }} />,
+                  <col key="c3" style={{ minWidth: 240 }} />,
+                  <col key="c4" style={{ width: 72 }} />,
+                ]}
               </colgroup>
 
               <TableHead>
@@ -295,76 +365,58 @@ export default function CategoriePage() {
                   <TableCell>
                     <Typography fontWeight={600}>Name</Typography>
                   </TableCell>
+                  <TableCell align="right">
+                    <Typography fontWeight={600}>Actions</Typography> {/* NEW */}
+                  </TableCell>
                 </TableRow>
               </TableHead>
 
               <TableBody>
-                {loading ? (
-                  <TableRow>
-                    <TableCell colSpan={3}>
-                      <Box py={6} textAlign="center">
-                        Loading…
-                      </Box>
+                {/* ...existing states (loading, err, empty) stay the same... */}
+                {paged.map((r) => (
+                  <TableRow
+                    key={r.id}
+                    hover
+                    onClick={() => openEdit(r)}
+                    sx={(theme) => ({
+                      cursor: "pointer",
+                      "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) },
+                    })}
+                  >
+                    <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
                     </TableCell>
-                  </TableRow>
-                ) : err ? (
-                  <TableRow>
-                    <TableCell colSpan={3}>
-                      <Box py={6} textAlign="center">
-                        <Typography variant="body2" color="error">
-                          {err}
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ) : rows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3}>
-                      <Box py={6} textAlign="center">
-                        <Typography variant="body2" color="text.secondary">
-                          No categories yet. Click <strong>Add Category</strong> to create one.
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  paged.map((r) => (
-                    <TableRow
-                      key={r.id}
-                      hover
-                      onClick={() => openEdit(r)}
-                      sx={(theme) => ({
-                        cursor: "pointer",
-                        "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) },
-                      })}
-                    >
-                      <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
-                      </TableCell>
 
-                      <TableCell>
-                        {r.imageUrl ? (
-                          <Avatar
-                            src={r.imageUrl}
-                            alt={r.name}
-                            sx={{ width: 56, height: 56, borderRadius: 1 }}
-                            variant="rounded"
-                          />
-                        ) : (
-                          <Avatar variant="rounded" sx={{ width: 56, height: 56, borderRadius: 1 }}>
-                            {r.name?.[0]?.toUpperCase() || "?"}
-                          </Avatar>
-                        )}
-                      </TableCell>
+                    <TableCell>
+                      {r.imageUrl ? (
+                        <Avatar src={r.imageUrl} alt={r.name} sx={{ width: 56, height: 56, borderRadius: 1 }} variant="rounded" />
+                      ) : (
+                        <Avatar variant="rounded" sx={{ width: 56, height: 56, borderRadius: 1 }}>
+                          {r.name?.[0]?.toUpperCase() || "?"}
+                        </Avatar>
+                      )}
+                    </TableCell>
 
-                      <TableCell sx={{ overflow: "hidden" }}>
-                        <Typography noWrap title={r.name}>
-                          {r.name}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
+                    <TableCell sx={{ overflow: "hidden" }}>
+                      <Typography noWrap title={r.name}>{r.name}</Typography>
+                    </TableCell>
+
+                    {/* NEW actions cell */}
+                    <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                      <Tooltip title="Delete">
+                        <span>
+                          <IconButton
+                            aria-label={`Delete ${r.name}`}
+                            onClick={() => onDeleteOne(r)}
+                            size="small"
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </TableContainer>
@@ -478,6 +530,26 @@ export default function CategoriePage() {
             disabled={saving || normalizeName(name).length === 0}
           >
             {saving ? "Saving..." : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Blocked-delete Modal */}
+      <Dialog
+        open={blockDialog.open}
+        onClose={() => setBlockDialog({ open: false, message: "" })}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Cannot delete category</DialogTitle>
+        <DialogContent>
+          <Typography>
+            {blockDialog.message || "Cannot delete category: items are still assigned to this category."}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBlockDialog({ open: false, message: "" })} variant="contained" autoFocus>
+            OK
           </Button>
         </DialogActions>
       </Dialog>

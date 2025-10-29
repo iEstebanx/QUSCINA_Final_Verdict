@@ -5,8 +5,9 @@ import {
   Table, TableHead, TableBody, TableRow, TableCell, TableContainer,
   Typography, Divider, CircularProgress, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, Avatar, TablePagination,
-  Checkbox, IconButton, Tooltip, InputAdornment
+  Checkbox, IconButton, Tooltip, InputAdornment, useMediaQuery
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import AddIcon from "@mui/icons-material/Add";
 import { useAlert } from "@/context/Snackbar/AlertContext";
@@ -39,6 +40,19 @@ function getMs(u) {
 }
 
 export default function ItemlistPage() {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
+
+  // dialog state for discard confirmation
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const [discardTarget, setDiscardTarget] = useState(null); // "create" or "edit"
+
+  function hasUnsavedChanges() {
+    const isEmptyF = JSON.stringify(f) === JSON.stringify(emptyForm);
+    const hasIngredients = itemIngredients.length > 0;
+    return !isEmptyF || hasIngredients;
+  }
+
   // table filter
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -59,6 +73,9 @@ export default function ItemlistPage() {
   const [openEdit, setOpenEdit] = useState(false);
   const [editingId, setEditingId] = useState("");
 
+  // confirm delete selected dialog
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
   const emptyForm = {
     name: "",
     description: "",
@@ -71,11 +88,11 @@ export default function ItemlistPage() {
 
   const [f, setF] = useState(emptyForm);
 
-  // ingredients from inventory (for ingredient selector inside Add Item modal)
+  // ingredients from inventory (for ingredient selector inside Add/Edit)
   const [inventory, setInventory] = useState([]); // {id,name,category,type,currentStock,price}
   const [ingLoading, setIngLoading] = useState(false);
 
-  // ingredients used in new item
+  // ingredients used in item (create/edit)
   const [itemIngredients, setItemIngredients] = useState([]); // each: { id, ingredientId, name, category, unit, currentStock, qty, price, cost }
 
   // selection
@@ -97,7 +114,7 @@ export default function ItemlistPage() {
   async function loadCategories() {
     try {
       const res = await fetch(`/api/categories`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
       const list = (res.ok && data?.ok && Array.isArray(data.categories)) ? data.categories : [];
       setCats(list.map(c => ({ id: c.id, name: c.name })));
     } catch {
@@ -221,7 +238,7 @@ export default function ItemlistPage() {
         category: selectedIng.category,
         unit: selectedIng.unit,
         currentStock: selectedIng.currentStock,
-        price: priceNum, // store as number
+        price: priceNum,
         qty: r.qty || "",
         cost: (Number(r.qty || 0) * priceNum) || 0,
       };
@@ -241,7 +258,6 @@ export default function ItemlistPage() {
       const qtyN = parseFloat(newRow.qty) || 0;
       const priceN = parseFloat(newRow.price) || 0;
 
-      // cost auto-calculates when typing qty or price
       newRow.cost = +(qtyN * priceN).toFixed(2);
 
       return newRow;
@@ -274,7 +290,6 @@ export default function ItemlistPage() {
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
       const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
 
-      // build ingredients payload (only include meaningful fields)
       const ingPayload = itemIngredients
         .filter(r => r.ingredientId && (String(r.qty).trim() || String(r.price).trim()))
         .map(r => ({
@@ -298,7 +313,6 @@ export default function ItemlistPage() {
         form.append("categoryName", cleanCatName);
       }
       if (f.imageFile) form.append("image", f.imageFile);
-      // ingredients as JSON string
       form.append("ingredients", JSON.stringify(ingPayload));
       form.append("costOverall", String(costOverall));
 
@@ -328,20 +342,26 @@ export default function ItemlistPage() {
       categoryName: row.categoryName || "",
       price: row.price != null ? String(row.price) : "",
       imageFile: null,
-      imagePreview: row.imageUrl || "", // show current image
+      imagePreview: row.imageUrl || "",
     });
-    // If editing existing item and it has ingredients, prefill itemIngredients
-    const initialIngredients = Array.isArray(row.ingredients) ? row.ingredients.map((x, idx) => ({
-      id: x.ingredientId ? x.ingredientId : `e-${idx}-${Date.now()}`,
-      ingredientId: x.ingredientId || "",
-      name: x.name || "",
-      category: x.category || "",
-      unit: x.unit || "",
-      currentStock: x.currentStock || 0,
-      qty: x.qty != null ? String(x.qty) : "",
-      price: x.price != null ? String(x.price) : "",
-      cost: x.cost != null ? Number(x.cost) : (Number(x.qty || 0) * Number(x.price || 0)),
-    })) : [];
+
+    const initialIngredients = Array.isArray(row.ingredients) ? row.ingredients.map((x, idx) => {
+      const inventoryItem = inventory.find(inv => inv.id === x.ingredientId);
+      const currentStock = inventoryItem ? inventoryItem.currentStock : 0;
+
+      return {
+        id: x.ingredientId ? x.ingredientId : `e-${idx}-${Date.now()}`,
+        ingredientId: x.ingredientId || "",
+        name: x.name || "",
+        category: x.category || "",
+        unit: x.unit || "",
+        currentStock,
+        qty: x.qty != null ? String(x.qty) : "",
+        price: x.price != null ? String(x.price) : "",
+        cost: x.cost != null ? Number(x.cost) : (Number(x.qty || 0) * Number(x.price || 0)),
+      };
+    }) : [];
+
     setItemIngredients(initialIngredients);
     setSaveErr("");
     setOpenEdit(true);
@@ -511,7 +531,7 @@ export default function ItemlistPage() {
               <span>
                 <IconButton
                   aria-label="Delete selected"
-                  onClick={onDeleteSelected}
+                  onClick={() => setDeleteOpen(true)}
                   disabled={!selected.length}
                   sx={{ flexShrink: 0 }}
                 >
@@ -529,9 +549,18 @@ export default function ItemlistPage() {
             component={Paper}
             elevation={0}
             className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, maxHeight: 520, overflowX: "auto" }}
+            sx={{
+              width: "100%",
+              borderRadius: 1,
+              maxHeight: { xs: 420, md: 520 },
+              overflowX: "auto"
+            }}
           >
-            <Table stickyHeader aria-label="items table" sx={{ minWidth: { xs: 820, sm: 960, md: 1200 } }}>
+            <Table
+              stickyHeader
+              aria-label="items table"
+              sx={{ minWidth: { xs: 720, sm: 900, md: 1080 } }}
+            >
               <TableHead>
                 <TableRow>
                   <TableCell padding="checkbox">
@@ -554,7 +583,7 @@ export default function ItemlistPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={7}>
+                    <TableCell colSpan={6}>
                       <Box py={6} textAlign="center">
                         <CircularProgress size={24} />
                       </Box>
@@ -562,7 +591,7 @@ export default function ItemlistPage() {
                   </TableRow>
                 ) : err ? (
                   <TableRow>
-                    <TableCell colSpan={7}>
+                    <TableCell colSpan={6}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="error">{err}</Typography>
                       </Box>
@@ -570,7 +599,7 @@ export default function ItemlistPage() {
                   </TableRow>
                 ) : rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7}>
+                    <TableCell colSpan={6}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           No items yet. Click <strong>Add Item</strong> to create your first product.
@@ -639,17 +668,53 @@ export default function ItemlistPage() {
         </Box>
       </Paper>
 
-      {/* Create Dialog */}
-      <Dialog open={openCreate} onClose={() => (!saving && setOpenCreate(false))} fullWidth maxWidth="md">
-        <DialogTitle>
+      {/* Create Dialog (Responsive) */}
+      <Dialog
+        open={openCreate}
+        onClose={() => {
+          if (!saving && hasUnsavedChanges()) {
+            setDiscardTarget("create");
+            setDiscardOpen(true);
+          } else if (!saving) {
+            setOpenCreate(false);
+            resetForm();
+          }
+        }}
+        fullWidth
+        fullScreen={fullScreen}
+        maxWidth="md"
+        PaperProps={{
+          sx: {
+            width: { xs: "100%", sm: "92%", md: "80%" },
+            m: { xs: 0, sm: 2 },
+            maxHeight: { xs: "100dvh", sm: "calc(100dvh - 64px)" },
+            overflow: "hidden",             // ✅ keep children inside
+            display: "flex",                // ✅ stack title/content/actions
+            flexDirection: "column",
+          }
+        }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
           <Typography component="div" variant="h5" fontWeight={800}>
             Add Item
           </Typography>
         </DialogTitle>
-        <DialogContent dividers sx={{ display: "grid", gap: 2, pt: 2 }}>
+
+        <DialogContent
+          dividers
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            pt: 2,
+            flexGrow: 1,            // ✅ fill remaining height
+            overflowY: "auto",      // ✅ vertical scroll inside modal
+            overflowX: "hidden",
+            px: { xs: 2, sm: 3 },
+          }}
+        >
           {/* Section 1: item info */}
           <Stack spacing={2}>
-            {/* Item Name + Category in one row */}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <TextField
                 label="Item Name"
@@ -691,7 +756,6 @@ export default function ItemlistPage() {
               </FormControl>
             </Stack>
 
-            {/* Description */}
             <TextField
               label="Description (optional)"
               value={f.description}
@@ -705,7 +769,6 @@ export default function ItemlistPage() {
               helperText={`${f.description.length}/${DESC_MAX}`}
             />
 
-            {/* Image Picker */}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
               <Button component="label" variant="outlined">
                 Choose Image
@@ -723,28 +786,84 @@ export default function ItemlistPage() {
 
           {/* Section 2: Ingredients */}
           <Stack spacing={1}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} flexWrap="wrap">
               <Typography fontWeight={700}>Ingredients</Typography>
               <Button size="small" onClick={addIngredientRow} startIcon={<AddIcon />}>Add Ingredient</Button>
             </Stack>
 
-            <TableContainer component={Paper} elevation={0} sx={{ maxHeight: 320 }}>
-              <Table stickyHeader size="small">
+            <TableContainer
+              component={Paper}
+              elevation={0}
+              sx={{
+                maxHeight: { xs: 300, sm: 400 },
+                overflowY: "auto",          // ✅ vertical scroll only
+                overflowX: "hidden",        // ✅ prevent side overflow
+                "& table": {
+                  width: "100%",
+                  tableLayout: "fixed",
+                  wordWrap: "break-word",
+                },
+                // ▼▼ Scoped compact padding just for INGREDIENTS table ▼▼
+                "& th, & td": {
+                  px: 1,         // 8px left/right
+                  py: 0.5,       // 4px top/bottom
+                },
+                "& .MuiInputBase-root": { height: 36 },              // compact Select/TextField height
+                "& .MuiSelect-select": { py: 0.75, px: 1 },          // compact select inner padding
+                "& .MuiInputAdornment-root": { m: 0 },               // tighten adornments
+                // ✅ Mobile-friendly stacked table (unchanged)
+                "@media (max-width:600px)": {
+                  "& thead": { display: "none" }, // hide headers
+                  "& tr": {
+                    display: "block",
+                    borderBottom: "1px solid rgba(0,0,0,0.1)",
+                    marginBottom: "8px",
+                    padding: "8px 4px",
+                  },
+                  "& td": {
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: "4px",
+                    fontSize: "0.9rem",
+                    padding: "8px 6px !important",
+                    border: "none !important",
+                    "&::before": {
+                      content: "attr(data-label)",  // use table headers as labels
+                      fontWeight: 600,
+                      color: "rgba(0,0,0,0.6)",
+                      fontSize: "0.8rem",
+                    },
+                  },
+                },
+              }}
+            >
+              <Table
+                stickyHeader
+                size="small"
+                sx={{
+                  // vertical padding (top/bottom) for ALL cells
+                  "& .MuiTableCell-root": { py: 1.25 },
+                  // header can be a bit tighter (or same as body if you want)
+                  "& .MuiTableCell-head": { py: 1 },
+                  // avoid MUI’s fixed small-row height
+                  "& .MuiTableRow-root": { height: "auto" },
+                }}
+              >
                 <TableHead>
                   <TableRow>
-                    <TableCell>Ingredient</TableCell>
-                    <TableCell>Category</TableCell>
-                    <TableCell>Unit / In stock</TableCell>
-                    <TableCell>Qty</TableCell>
-                    <TableCell>Price per Unit</TableCell>
-                    <TableCell>Cost</TableCell>
-                    <TableCell />
+                    <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
+                    <TableCell data-label="Category" align="center">Category</TableCell>
+                    <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
+                    <TableCell data-label="Qty" align="center">Qty</TableCell>
+                    <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
+                    <TableCell data-label="Action" align="center"> Action </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {ingLoading && (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={6}>
                         <Box py={2} textAlign="center"><CircularProgress size={20} /></Box>
                       </TableCell>
                     </TableRow>
@@ -752,7 +871,7 @@ export default function ItemlistPage() {
 
                   {!ingLoading && itemIngredients.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={6}>
                         <Box py={3} textAlign="center">
                           <Typography variant="body2" color="text.secondary">
                             No ingredients added. Click "Add Ingredient".
@@ -764,43 +883,45 @@ export default function ItemlistPage() {
 
                   {itemIngredients.map(row => (
                     <TableRow key={row.id}>
-                      <TableCell sx={{ minWidth: 220 }}>
+                      <TableCell data-label="Ingredient" align="center" sx={{ minWidth: { xs: 220, sm: 300 } }}>
                         <FormControl fullWidth size="small">
                           <Select
                             value={row.ingredientId || ""}
                             displayEmpty
                             onChange={(e) => onSelectInventory(row.id, e.target.value)}
+                            MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
                           >
                             <MenuItem value=""><em>Select ingredient</em></MenuItem>
                             {inventory.map(i => (
-                              <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>
+                              <MenuItem key={i.id} value={i.id} sx={{ py: 0.75 }}>{i.name}</MenuItem>
                             ))}
                           </Select>
                         </FormControl>
                       </TableCell>
 
-                      <TableCell sx={{ minWidth: 140 }}>
+                      <TableCell data-label="Category" align="center" sx={{ minWidth: 100 }}>
                         <Typography variant="body2">{row.category || "—"}</Typography>
                       </TableCell>
 
-                      <TableCell sx={{ minWidth: 140 }}>
+                      <TableCell data-label="Unit / In Stock" align="center" sx={{ minWidth: 110 }}>
                         <Typography variant="body2">{row.unit || "—"}{row.currentStock != null ? ` • ${row.currentStock}` : ""}</Typography>
                       </TableCell>
 
-                      <TableCell sx={{ minWidth: 100 }}>
+                      <TableCell data-label="Qty" align="center" sx={{ minWidth: 96 }}>
                         <TextField
                           size="small"
                           value={row.qty || ""}
                           onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
                           inputMode="decimal"
                           placeholder="0"
+                          fullWidth
                           InputProps={{
                             endAdornment: <InputAdornment position="end">{row.unit || "pcs"}</InputAdornment>
                           }}
                         />
                       </TableCell>
 
-                      <TableCell sx={{ minWidth: 120 }}>
+                      <TableCell data-label="Price Per Unit" align="center" sx={{ minWidth: 112 }}>
                         <TextField
                           size="small"
                           value={row.price || ""}
@@ -811,11 +932,7 @@ export default function ItemlistPage() {
                         />
                       </TableCell>
 
-                      <TableCell sx={{ minWidth: 120 }}>
-                        <TextField size="small" value={Number(row.cost || 0).toFixed(2)} InputProps={{ readOnly: true }} />
-                      </TableCell>
-
-                      <TableCell>
+                      <TableCell data-label="Action" align="center" sx={{ width: 64 }}>
                         <Tooltip title="Remove">
                           <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
                             <DeleteOutlineIcon fontSize="small" />
@@ -827,7 +944,6 @@ export default function ItemlistPage() {
                 </TableBody>
               </Table>
             </TableContainer>
-
           </Stack>
 
           {/* Cost + Item Price + Profit/Margin in one row */}
@@ -836,9 +952,8 @@ export default function ItemlistPage() {
             spacing={2}
             alignItems="center"
             justifyContent="flex-end"
-            sx={{ mt: 2 }}
+            sx={{ mt: 2, flexWrap: "wrap" }}
           >
-            {/* Cost Overall */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Cost Overall"
@@ -848,11 +963,10 @@ export default function ItemlistPage() {
                   startAdornment: <InputAdornment position="start">₱</InputAdornment>,
                   readOnly: true
                 }}
-                sx={{ width: 130 }}
+                sx={{ width: 140 }}
               />
             </Box>
 
-            {/* Item Price */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Item Price"
@@ -862,15 +976,12 @@ export default function ItemlistPage() {
                   const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
                   setF((s) => ({ ...s, price: v }));
                 }}
-                InputProps={{
-                  startAdornment: <InputAdornment position="start">₱</InputAdornment>
-                }}
+                InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
                 inputMode="decimal"
-                sx={{ width: 130 }}
+                sx={{ width: 140 }}
               />
             </Box>
 
-            {/* Profit / Margin (single combined group like in Edit dialog) */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Profit / Margin"
@@ -895,7 +1006,7 @@ export default function ItemlistPage() {
           )}
         </DialogContent>
 
-        <DialogActions>
+        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
           <Button onClick={() => { resetForm(); setOpenCreate(false); }} disabled={saving}>
             Cancel
           </Button>
@@ -905,18 +1016,52 @@ export default function ItemlistPage() {
         </DialogActions>
       </Dialog>
 
-      {/* Edit Dialog (reuse same layout as Create) */}
-      <Dialog open={openEdit} onClose={() => (!saving && cancelEdit())} fullWidth maxWidth="md">
-        <DialogTitle>
+      {/* Edit Dialog (Responsive) */}
+      <Dialog
+        open={openEdit}
+        onClose={() => {
+          if (!saving && hasUnsavedChanges()) {
+            setDiscardTarget("edit");
+            setDiscardOpen(true);
+          } else if (!saving) {
+            cancelEdit();
+          }
+        }}
+        fullWidth
+        fullScreen={fullScreen}
+        maxWidth="md"
+        PaperProps={{
+          sx: {
+            width: { xs: "100%", sm: "92%", md: "80%" },
+            m: { xs: 0, sm: 2 },
+            maxHeight: { xs: "100dvh", sm: "calc(100dvh - 64px)" },
+            overflow: "hidden",            // ✅ keep content inside
+            display: "flex",
+            flexDirection: "column",
+          }
+        }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
           <Typography component="div" variant="h5" fontWeight={800}>
             Edit Item
           </Typography>
         </DialogTitle>
-        <DialogContent dividers sx={{ display: "grid", gap: 2, pt: 2 }}>
-          {/* (Same structure as Add) */}
+
+        <DialogContent
+          dividers
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            pt: 2,
+            flexGrow: 1,
+            overflowY: "auto",      // ✅ vertical scroll inside
+            overflowX: "hidden",
+            px: { xs: 2, sm: 3 },
+          }}
+        >
           <Stack spacing={2}>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              {/* Item Name */}
               <TextField
                 label="Item Name"
                 value={f.name}
@@ -939,7 +1084,6 @@ export default function ItemlistPage() {
                 }
               />
 
-              {/* Category Dropdown (match height to Item Name) */}
               <FormControl fullWidth>
                 <InputLabel id="add-item-category-label">Category (optional)</InputLabel>
                 <Select
@@ -948,12 +1092,10 @@ export default function ItemlistPage() {
                   label="Category (optional)"
                   onChange={(e) => onPickCategory(e.target.value)}
                   sx={{
-                    height: '56px', // match TextField’s default height for variant="outlined"
-                    display: 'flex',
-                    alignItems: 'center',
-                    "& .MuiSelect-select": {
-                      paddingY: '16.5px', // adjust vertical padding
-                    },
+                    height: "56px",
+                    display: "flex",
+                    alignItems: "center",
+                    "& .MuiSelect-select": { paddingY: "16.5px" },
                   }}
                 >
                   <MenuItem value="">None</MenuItem>
@@ -994,189 +1136,220 @@ export default function ItemlistPage() {
 
           <Divider />
 
-          {/* Ingredients table (reuse existing itemIngredients state) */}
+          {/* Ingredients table */}
           <Stack spacing={1}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} flexWrap="wrap">
               <Typography fontWeight={700}>Ingredients</Typography>
               <Button size="small" onClick={addIngredientRow} startIcon={<AddIcon />}>Add Ingredient</Button>
             </Stack>
-          
-          <Box>
-            <TableContainer
-              component={Paper}
-              elevation={0}
-              sx={{
-                maxHeight: 320,
-                mb: 2,            // <-- add bottom margin so controls don't hug the table
-                overflow: "auto"
-              }}
-            >
-              <Table stickyHeader size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Ingredient</TableCell>
-                    <TableCell>Category</TableCell>
-                    <TableCell>Unit / In stock</TableCell>
-                    <TableCell>Qty</TableCell>
-                    <TableCell>Price per Unit</TableCell>
-                    <TableCell>Cost</TableCell>
-                    <TableCell />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {ingLoading && (
+
+            <Box>
+              <TableContainer
+                component={Paper}
+                elevation={0}
+                sx={{
+                  maxHeight: { xs: 260, sm: 360 },
+                  mb: 2,
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  "& table": {
+                    width: "100%",
+                    tableLayout: "fixed",
+                    wordWrap: "break-word",
+                  },
+                  // ▼▼ Scoped compact padding just for INGREDIENTS table ▼▼
+                  "& th, & td": {
+                    px: 1,
+                    py: 0.5,
+                  },
+                  "& .MuiInputBase-root": { height: 36 },
+                  "& .MuiSelect-select": { py: 0.75, px: 1 },
+                  "& .MuiInputAdornment-root": { m: 0 },
+                  // ✅ Mobile-friendly stacked table (unchanged)
+                  "@media (max-width:600px)": {
+                    "& thead": { display: "none" }, // hide headers
+                    "& tr": {
+                      display: "block",
+                      borderBottom: "1px solid rgba(0,0,0,0.1)",
+                      marginBottom: "8px",
+                      padding: "8px 4px",
+                    },
+                    "& td": {
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      gap: "4px",
+                      fontSize: "0.9rem",
+                      padding: "8px 6px !important",
+                      border: "none !important",
+                      "&::before": {
+                        content: "attr(data-label)",  // use table headers as labels
+                        fontWeight: 600,
+                        color: "rgba(0,0,0,0.6)",
+                        fontSize: "0.8rem",
+                      },
+                    },
+                  },
+                }}
+              >
+              <Table
+                stickyHeader
+                size="small"
+                sx={{
+                  // vertical padding (top/bottom) for ALL cells
+                  "& .MuiTableCell-root": { py: 1.25 },
+                  // header can be a bit tighter (or same as body if you want)
+                  "& .MuiTableCell-head": { py: 1 },
+                  // avoid MUI’s fixed small-row height
+                  "& .MuiTableRow-root": { height: "auto" },
+                }}
+              >
+                  <TableHead>
                     <TableRow>
-                      <TableCell colSpan={7}>
-                        <Box py={2} textAlign="center"><CircularProgress size={20} /></Box>
-                      </TableCell>
+                      <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
+                      <TableCell data-label="Category" align="center">Category</TableCell>
+                      <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
+                      <TableCell data-label="Qty" align="center">Qty</TableCell>
+                      <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
+                      <TableCell data-label="Action" align="center">Action</TableCell>
                     </TableRow>
-                  )}
+                  </TableHead>
+                  <TableBody>
+                    {ingLoading && (
+                      <TableRow>
+                        <TableCell colSpan={6}>
+                          <Box py={2} textAlign="center"><CircularProgress size={20} /></Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
 
-                  {!ingLoading && itemIngredients.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={7}>
-                        <Box py={3} textAlign="center">
-                          <Typography variant="body2" color="text.secondary">No ingredients added. Click "Add Ingredient".</Typography>
-                        </Box>
-                      </TableCell>
-                    </TableRow>
-                  )}
+                    {!ingLoading && itemIngredients.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6}>
+                          <Box py={3} textAlign="center">
+                            <Typography variant="body2" color="text.secondary">No ingredients added. Click "Add Ingredient".</Typography>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
 
-                  {itemIngredients.map(row => (
-                    <TableRow key={row.id}>
-                      <TableCell sx={{ minWidth: 220 }}>
-                        <FormControl fullWidth size="small">
-                          <Select
-                            value={row.ingredientId || ""}
-                            displayEmpty
-                            onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                          >
-                            <MenuItem value=""><em>Select ingredient</em></MenuItem>
-                            {inventory.map(i => (
-                              <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
-                      </TableCell>
+                    {itemIngredients.map(row => (
+                      <TableRow key={row.id}>
+                        <TableCell data-label="Ingredient" align="center" sx={{ minWidth: { xs: 220, sm: 300 } }}>
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.ingredientId || ""}
+                              displayEmpty
+                              onChange={(e) => onSelectInventory(row.id, e.target.value)}
+                              MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+                            >
+                              <MenuItem value=""><em>Select ingredient</em></MenuItem>
+                              {inventory.map(i => (
+                                <MenuItem key={i.id} value={i.id} sx={{ py: 0.75 }}>{i.name}</MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
 
-                      <TableCell sx={{ minWidth: 140 }}>
-                        <Typography variant="body2">{row.category || "—"}</Typography>
-                      </TableCell>
+                        <TableCell data-label="Category" align="center" sx={{ minWidth: 100 }}>
+                          <Typography variant="body2">{row.category || "—"}</Typography>
+                        </TableCell>
 
-                      <TableCell sx={{ minWidth: 140 }}>
-                        <Typography variant="body2">{row.unit || "—"}{row.currentStock != null ? ` • ${row.currentStock}` : ""}</Typography>
-                      </TableCell>
+                        <TableCell data-label="Unit / In stock" align="center" sx={{ minWidth: 110 }}>
+                          <Typography variant="body2">{row.unit || "—"}{row.currentStock != null ? ` • ${row.currentStock}` : ""}</Typography>
+                        </TableCell>
 
-                      <TableCell sx={{ minWidth: 140 }}>  {/* increased from 100 */}
-                        <TextField
-                          size="small"
-                          value={row.qty || ""}
-                          onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
-                          inputMode="decimal"
-                          placeholder="0"
-                          sx={{ width: '100%' }}  // ensures the TextField fills the cell
-                          InputProps={{
-                            endAdornment: <InputAdornment position="end">{row.unit || "pcs"}</InputAdornment>
-                          }}
-                        />
-                      </TableCell>
+                        <TableCell data-label="Qty" align="center" sx={{ minWidth: 96 }}>
+                          <TextField
+                              size="small"
+                              value={row.qty || ""}
+                              onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
+                              inputMode="decimal"
+                              placeholder="0"
+                              fullWidth
+                              InputProps={{
+                                endAdornment: <InputAdornment position="end">{row.unit || "pcs"}</InputAdornment>
+                              }}
+                            />
+                        </TableCell>
 
-                      <TableCell sx={{ minWidth: 120 }}>
-                        <TextField
-                          size="small"
-                          value={row.price || ""}
-                          inputMode="decimal"
-                          placeholder="0.00"
-                          InputProps={{
-                            startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                            readOnly: true,
-                          }}
-                        />
-                      </TableCell>
+                        <TableCell data-label="Price per Unit" align="center" sx={{ minWidth: 112 }}>
+                          <TextField
+                            size="small"
+                            value={row.price || ""}
+                            onChange={(e) => onRowChange(row.id, "price", e.target.value)}
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
+                          />
+                        </TableCell>
 
-                      <TableCell sx={{ minWidth: 120 }}>
-                        <TextField
-                          size="small"
-                          value={Number(row.cost || 0).toFixed(2)}
-                          InputProps={{
-                            startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                            readOnly: true,
-                          }}
-                        />
-                      </TableCell>
+                        <TableCell data-label="Actions" align="center" sx={{ width: 64 }}>
+                          <Tooltip title="Remove">
+                            <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
 
-                      <TableCell>
-                        <Tooltip title="Remove">
-                          <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+              {/* Cost row */}
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={2}
+                alignItems="center"
+                justifyContent="flex-end"
+                sx={{ mt: 3, flexWrap: "wrap" }}
+              >
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <TextField
+                    label="Cost Overall"
+                    size="small"
+                    value={computeCostOverall().toFixed(2)}
+                    InputProps={{
+                      startAdornment: <InputAdornment position="start">₱</InputAdornment>,
+                      readOnly: true,
+                    }}
+                    sx={{ width: 140 }}
+                  />
+                </Box>
 
-            {/* Cost Overall, Item Price, and Profit/Margin in one row */}
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={2}
-              alignItems="center"
-              justifyContent="flex-end"
-              sx={{ mt: 3 }}
-            >
-              {/* Cost Overall */}
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <TextField
-                  label="Cost Overall"
-                  size="small"
-                  value={computeCostOverall().toFixed(2)}
-                  InputProps={{
-                    startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                    readOnly: true,
-                  }}
-                  sx={{ width: 130 }}
-                />
-              </Box>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <TextField
+                    label="Item Price"
+                    size="small"
+                    value={f.price}
+                    onChange={(e) => {
+                      const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
+                      setF((s) => ({ ...s, price: v }));
+                    }}
+                    InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
+                    inputMode="decimal"
+                    sx={{ width: 140 }}
+                  />
+                </Box>
 
-              {/* Item Price */}
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <TextField
-                  label="Item Price"
-                  size="small"
-                  value={f.price}
-                  onChange={(e) => {
-                    const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                    setF((s) => ({ ...s, price: v }));
-                  }}
-                  InputProps={{
-                    startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                  }}
-                  inputMode="decimal"
-                  sx={{ width: 130 }}
-                />
-              </Box>
-
-              {/* Profit / Margin (expand only within the row) */}
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <TextField
-                  label="Profit / Margin"
-                  size="small"
-                  value={(() => {
-                    const price = parseFloat(f.price || 0);
-                    const cost = computeCostOverall();
-                    const profit = price - cost;
-                    const margin = price > 0 ? ((profit / price) * 100).toFixed(1) : "0";
-                    return `₱${profit.toFixed(2)} • ${margin}%`;
-                  })()}
-                  InputProps={{ readOnly: true }}
-                  sx={{ width: 220 }} // expand a bit, but not stretch full width
-                />
-              </Box>
-            </Stack>
-
-          </Box>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <TextField
+                    label="Profit / Margin"
+                    size="small"
+                    value={(() => {
+                      const price = parseFloat(f.price || 0);
+                      const cost = computeCostOverall();
+                      const profit = price - cost;
+                      const margin = price > 0 ? ((profit / price) * 100).toFixed(1) : "0";
+                      return `₱${profit.toFixed(2)} • ${margin}%`;
+                    })()}
+                    InputProps={{ readOnly: true }}
+                    sx={{ width: 220 }}
+                  />
+                </Box>
+              </Stack>
+            </Box>
           </Stack>
 
           {saveErr && (
@@ -1185,9 +1358,82 @@ export default function ItemlistPage() {
             </Typography>
           )}
         </DialogContent>
-        <DialogActions>
+
+        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
           <Button onClick={cancelEdit} disabled={saving}>Cancel</Button>
-          <Button onClick={updateItem} variant="contained" disabled={saving || !f.name.trim()}>{saving ? "Updating..." : "Update"}</Button>
+          <Button onClick={updateItem} variant="contained" disabled={saving || !f.name.trim()}>
+            {saving ? "Updating..." : "Update"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Discard Confirmation Dialog */}
+      <Dialog
+        open={discardOpen}
+        onClose={() => setDiscardOpen(false)}
+        fullScreen={fullScreen}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{
+          sx: {
+            width: { xs: "100%", sm: 420 },
+            m: { xs: 0, sm: 2 }
+          }
+        }}
+      >
+        <DialogTitle>Discard changes?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to discard unsaved changes? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDiscardOpen(false)}>Cancel</Button>
+          <Button
+            onClick={() => {
+              setDiscardOpen(false);
+              if (discardTarget === "create") {
+                setOpenCreate(false);
+              } else if (discardTarget === "edit") {
+                cancelEdit();
+              }
+              resetForm();
+            }}
+            color="error"
+            variant="contained"
+          >
+            Discard
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Selected Confirmation Dialog */}
+      <Dialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        fullScreen={fullScreen}
+        PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, m: { xs: 0, sm: 2 } } }}
+      >
+        <DialogTitle>Delete selected?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete {selected.length} item{selected.length > 1 ? "s" : ""}? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={async () => {
+              setDeleteOpen(false);
+              await onDeleteSelected();
+            }}
+          >
+            Delete
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>
