@@ -3,45 +3,62 @@ const { Router } = require("express");
 const fs = require("fs");
 const path = require("path");
 
+// ⬇️ NEW: import shared DB so we can inject it
+let sharedDb = null;
+try {
+  sharedDb = require("../shared/db/mysql").db;
+} catch { /* will be provided by server.js DI in some setups */ }
+
+// Convert "UserAuth" -> "user-auth", "user_auth" -> "user-auth"
 function toKebabLower(s) {
-  // "UserAuth" -> "user-auth", "user_auth" -> "user-auth"
   return String(s)
     .replace(/[_\s]+/g, "-")
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
     .toLowerCase();
 }
 
-module.exports = function mountAllRoutes() {
+// Mount helper: supports either a router instance OR a factory function
+function mountWithDb(router, mountPath, mod, db) {
+  try {
+    const candidate = (mod && mod.__esModule && mod.default) ? mod.default : mod;
+    if (typeof candidate === "function") {
+      // Factory style: export default (opts) => Router
+      router.use(mountPath, candidate({ db }));
+    } else {
+      // Direct router instance
+      router.use(mountPath, candidate);
+    }
+  } catch (e) {
+    console.error(`[routes] Failed to mount ${mountPath}:`, e);
+  }
+}
+
+module.exports = function mountAllRoutes({ db } = {}) {
+  db = db || sharedDb; // fallback if not DI'd
   const router = Router();
   const root = __dirname;
-
-  /** Keep track of mounted paths to detect collisions */
   const mounted = new Set();
 
-  /** Recursively walk and mount */
   function walk(dir, segs = []) {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
-    // 1) If the folder has an index.js, mount it at /<...segs>
+    // 1) If folder has index.js, mount at /<...segs>
     const hasIndex = entries.some((e) => e.isFile() && e.name === "index.js");
     if (hasIndex && segs.length) {
       const mountPath = "/" + segs.map(toKebabLower).join("/");
       if (!mounted.has(mountPath)) {
         const mod = require(path.join(dir, "index.js"));
-        router.use(mountPath, mod);
+        mountWithDb(router, mountPath, mod, db);
         mounted.add(mountPath);
       } else {
         console.warn(`[routes] Duplicate mount skipped: ${mountPath}`);
       }
     }
 
-    // 2) Mount each .js file (except index.js) at /<...segs>/<fileBase>
+    // 2) Mount each .js file (except index.js)
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith(".js") && entry.name !== "index.js") {
         const fileBase = entry.name.replace(/\.js$/, "");
-
-        // Special case: if the file name equals the last segment (e.g., Users/users.js),
-        // mount at the folder path (same as having an index.js)
         const segsOut =
           segs.length && toKebabLower(fileBase) === toKebabLower(segs[segs.length - 1])
             ? segs
@@ -50,7 +67,7 @@ module.exports = function mountAllRoutes() {
         const mountPath = "/" + segsOut.map(toKebabLower).join("/");
         if (!mounted.has(mountPath)) {
           const mod = require(path.join(dir, entry.name));
-          router.use(mountPath, mod);
+          mountWithDb(router, mountPath, mod, db);
           mounted.add(mountPath);
         } else {
           console.warn(`[routes] Duplicate mount skipped: ${mountPath}`);
@@ -58,7 +75,7 @@ module.exports = function mountAllRoutes() {
       }
     }
 
-    // 3) Recurse into subdirectories
+    // 3) Recurse subdirectories
     for (const entry of entries) {
       if (entry.isDirectory()) {
         walk(path.join(dir, entry.name), [...segs, entry.name]);
@@ -66,7 +83,7 @@ module.exports = function mountAllRoutes() {
     }
   }
 
-  // Top-level: mount any top-level files (like your original code)
+  // Top-level files
   const topEntries = fs.readdirSync(root, { withFileTypes: true });
   for (const entry of topEntries) {
     if (entry.isFile() && entry.name.endsWith(".js") && entry.name !== "index.js") {
@@ -74,7 +91,7 @@ module.exports = function mountAllRoutes() {
       const mountPath = "/" + toKebabLower(fileBase);
       if (!mounted.has(mountPath)) {
         const mod = require(path.join(root, entry.name));
-        router.use(mountPath, mod);
+        mountWithDb(router, mountPath, mod, db);
         mounted.add(mountPath);
       } else {
         console.warn(`[routes] Duplicate mount skipped: ${mountPath}`);
@@ -82,7 +99,7 @@ module.exports = function mountAllRoutes() {
     }
   }
 
-  // Then walk subfolders
+  // Then subfolders
   for (const entry of topEntries) {
     if (entry.isDirectory()) {
       walk(path.join(root, entry.name), [entry.name]);

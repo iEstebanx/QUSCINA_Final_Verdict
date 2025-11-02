@@ -148,13 +148,16 @@ export default function UserManagementPage() {
 
   function nextEmployeeId(allRows) {
     const year = new Date().getFullYear();
-    const base = year * 1000000;
+    const prefix = String(year);                   // "2025"
     const nums = allRows
-      .map((r) => Number(String(r.employeeId).replace(/\D/g, "")))
-      .filter((n) => Number.isFinite(n));
-    const max = nums.length ? Math.max(...nums) : base;
-    const next = String(max + 1).padStart(9, "0");
-    return next;
+      .map(r => String(r.employeeId))
+      .filter(id => /^\d{9}$/.test(id) && id.startsWith(prefix))
+      .map(id => Number(id));
+
+    const base = Number(`${prefix}00000`);         // 202500000
+    const max  = nums.length ? Math.max(...nums) : base;
+    const next = String(max + 1);                  // 202500001, 202500002, ...
+    return next.padStart(9, "0");
   }
 
   function makeBlank(allRows) {

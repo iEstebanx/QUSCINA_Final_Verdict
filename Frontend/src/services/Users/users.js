@@ -1,9 +1,8 @@
 // Frontend/src/services/Users/users.jsx
-
-// Note: This module intentionally avoids Firestore client reads.
-// All data flows through the backend API (Backend/src/routes/Users/users.js).
-
 const API_BASE = import.meta.env?.VITE_API_BASE || "";
+
+// join("/api/users") -> `${API_BASE}/api/users` without double slashes
+const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
 
 async function safeJson(res) {
   const text = await res.text();
@@ -17,52 +16,42 @@ async function safeJson(res) {
  *   const unsub = subscribeUsers(({ rows }) => setRows(rows), { intervalMs: 5000 });
  *   return () => unsub();
  */
-export function subscribeUsers(
-  cb,
-  { intervalMs = 5000, onError } = {}
-) {
+export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
   let active = true;
   let timer = null;
 
   async function tick() {
     try {
-      const res = await fetch(`${API_BASE}/api/users`, { credentials: "include" });
+      const res = await fetch(join("/api/users"), { credentials: "include" });
       const data = await safeJson(res);
       if (res.ok && active && Array.isArray(data)) {
         cb({ rows: data });
       } else if (!res.ok) {
         const msg = data?.error || res.statusText || "GET /api/users failed";
         console.error(msg);
-        if (typeof onError === "function") onError(msg);
+        onError?.(msg);
       }
     } catch (e) {
       console.error("users poll failed", e);
-      if (typeof onError === "function") onError(e?.message || "Users poll failed");
+      onError?.(e?.message || "Users poll failed");
     } finally {
       if (active) timer = setTimeout(tick, intervalMs);
     }
   }
 
-  // initial fetch immediately
   tick();
-
-  // unsubscribe/cleanup
-  return () => {
-    active = false;
-    if (timer) clearTimeout(timer);
-  };
+  return () => { active = false; if (timer) clearTimeout(timer); };
 }
 
-/** Optional one-shot fetch if you ever need it */
 export async function fetchUsersOnce() {
-  const res = await fetch(`${API_BASE}/api/users`, { credentials: "include" });
+  const res = await fetch(join("/api/users"), { credentials: "include" });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "List users failed");
   return data; // array
 }
 
 export async function createUser(payload) {
-  const res = await fetch(`${API_BASE}/api/users`, {
+  const res = await fetch(join("/api/users"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -74,7 +63,7 @@ export async function createUser(payload) {
 }
 
 export async function updateUser(employeeId, patch) {
-  const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(employeeId)}`, {
+  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}`), {
     method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -85,22 +74,15 @@ export async function updateUser(employeeId, patch) {
   return data;
 }
 
-
-
 export async function deleteUser(employeeId, { signal } = {}) {
   if (!employeeId) throw new Error("employeeId is required");
-
-  const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(employeeId)}`, {
+  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}`), {
     method: "DELETE",
     credentials: "include",
     headers: { Accept: "application/json" },
     signal,
   });
-
-  // Treat 404 as already-gone = success
   if (res.ok || res.status === 404) return { ok: true };
-
   const data = await safeJson(res);
   throw new Error(data.error || "Delete user failed");
 }
-

@@ -3,287 +3,95 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-const { db } = require("../shared/firebase/firebaseAdmin");
-const { createEmailOtp, getLatestPendingOtp } = require("../shared/OTP/EmailOTP/otp");
+// Prefer DI from server.js, but fall back to shared pool if not provided
+let sharedDb = null;
+try { sharedDb = require("../shared/db/mysql").db; } catch { /* ok until DI passes db */ }
+
+// Keep your email sender
 const { sendOtpEmail } = require("../shared/email/mailer");
 
-const router = express.Router();
-const DEBUG = process.env.DEBUG_AUTH === "1";
+module.exports = function authRouterFactory({ db } = {}) {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available. Pass { db } from server.js or ensure ../shared/db/mysql exists.");
 
-const OTP_ENUMERATION_PROTECTION = process.env.OTP_ENUMERATION_PROTECTION !== "0";
+  const router = express.Router();
 
-// -------------------- helpers --------------------
-function makeToken(user) {
-  const payload = {
-    sub: String(user.employeeId),
-    role: user.role,
-    name: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-    username: user.username || "",
-    email: user.email || "",
-  };
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "7d" });
-}
+  // ---- Config ----
+  const DEBUG = process.env.DEBUG_AUTH === "1";
+  const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+  const RESET_JWT_SECRET = process.env.JWT_RESET_SECRET || JWT_SECRET;
 
-function detectType(identifier) {
-  const id = String(identifier || "").trim();
-  if (!id) return "username";
-  if (/^\d{9}$/.test(id)) return "employeeId";
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(id)) return "email";
-  return "username";
-}
+  const OTP_TTL_SEC = Number(process.env.OTP_TTL_SEC || 10 * 60);
+  const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
+  const RESEND_MIN_INTERVAL_SEC = Number(process.env.OTP_RESEND_MIN_INTERVAL_SEC || 60);
+  const RESET_TOKEN_TTL = String(process.env.RESET_TOKEN_TTL || "15m");
+  const SQ_TOKEN_TTL = String(process.env.SQ_TOKEN_TTL || "10m");
 
-async function getBy(field, value) {
-  if (value === null || value === undefined || value === "") return null;
-  const snap = await db.collection("employees").where(field, "==", value).limit(1).get();
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return { id: doc.id, ...doc.data() };
-}
+  // ---- Helpers ----
+  const lower = (s) => String(s || "").trim().toLowerCase();
 
-async function tryProbes(probes) {
-  for (const [field, value] of probes) {
-    const u = await getBy(field, value);
-    if (u) return u;
-  }
-  return null;
-}
-
-async function findUserByIdentifier(identifierRaw) {
-  const raw = String(identifierRaw || "").trim();
-  const primary = detectType(raw);
-  const lowerVal = raw.toLowerCase();
-  const looksNumeric = /^\d+$/.test(raw);
-  const asNumber = looksNumeric ? Number(raw) : null;
-
-  let probes = [];
-  if (primary === "email") {
-    probes = [
-      ["emailLower", lowerVal],
-      ["email", lowerVal],
-      ["email", raw],
-      ["usernameLower", lowerVal],
-      ["username", raw],
-    ];
-  } else if (primary === "employeeId") {
-    probes = [
-      ["employeeId", raw],
-      ["employeeId", asNumber],
-      ["usernameLower", lowerVal],
-      ["emailLower", lowerVal],
-      ["email", raw],
-    ];
-  } else {
-    probes = [
-      ["usernameLower", lowerVal],
-      ["username", raw],
-      ["emailLower", lowerVal],
-      ["email", raw],
-      ["employeeId", asNumber],
-      ["employeeId", raw],
-    ];
-  }
-  const user = await tryProbes(probes);
-  if (!user) return null;
-
-  const via = user.loginVia || {};
-  const ok =
-    (primary === "email" && via.email !== false) ||
-    (primary === "username" && via.username !== false) ||
-    (primary === "employeeId" && via.employeeId !== false) ||
-    (via.email !== false && via.username !== false && via.employeeId !== false);
-
-  return ok ? user : null;
-}
-
-// Less strict finder for security-questions (ignore loginVia toggles)
-async function findEmployeeByAnyIdentifier(identifierRaw) {
-  const raw = String(identifierRaw || "").trim();
-  const primary = detectType(raw);
-  const lowerVal = raw.toLowerCase();
-  const looksNumeric = /^\d+$/.test(raw);
-  const asNumber = looksNumeric ? Number(raw) : null;
-
-  let probes = [];
-  if (primary === "email") {
-    probes = [
-      ["emailLower", lowerVal],
-      ["email", lowerVal],
-      ["email", raw],
-      ["usernameLower", lowerVal],
-      ["username", raw],
-    ];
-  } else if (primary === "employeeId") {
-    probes = [
-      ["employeeId", raw],
-      ["employeeId", asNumber],
-      ["usernameLower", lowerVal],
-      ["emailLower", lowerVal],
-      ["email", raw],
-    ];
-  } else {
-    probes = [
-      ["usernameLower", lowerVal],
-      ["username", raw],
-      ["emailLower", lowerVal],
-      ["email", raw],
-      ["employeeId", asNumber],
-      ["employeeId", raw],
-    ];
-  }
-  return await tryProbes(probes);
-}
-
-function sanitizePassword(pw) {
-  return typeof pw === "string" ? pw.trim() : "";
-}
-
-function getPasswordHash(user) {
-  return user.passwordHash || user.passwordhash || user.passHash || user.hash || null;
-}
-
-const lower = (s) => String(s || "").trim().toLowerCase();
-
-// -------------------- /login --------------------
-router.post("/login", async (req, res, next) => {
-  try {
-    const { identifier, password, remember } = req.body || {};
-    if (!identifier || !password) {
-      return res.status(400).json({ error: "identifier and password are required" });
-    }
-
-    const user = await findUserByIdentifier(identifier);
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-    if (String(user.status || "").toLowerCase() !== "active") {
-      return res.status(403).json({ error: "Account is not active" });
-    }
-    if (!["admin", "manager"].includes(String(user.role || "").toLowerCase())) {
-      return res.status(403).json({ error: "Not authorized for Admin Dashboard" });
-    }
-
-    const hash = getPasswordHash(user);
-    if (!hash) return res.status(401).json({ error: "Password not set" });
-
-    const ok = await bcrypt.compare(sanitizePassword(password), hash);
-    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
-
-    const token = makeToken(user);
-    if (remember) {
-      res.cookie("qd_token", token, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: false,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        path: "/",
-      });
-    }
-    res.json({
-      token,
-      user: {
-        employeeId: String(user.employeeId ?? ""),
-        role: user.role,
-        status: user.status,
-        username: user.username || "",
-        email: user.email || "",
-        firstName: user.firstName || "",
-        lastName: user.lastName || "",
-      },
-    });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// -------------------- /me (soft) --------------------
-router.get("/me", (req, res) => {
-  // add a soft mode via query (?soft=1) or header (x-auth-optional: 1)
-  const soft =
-    req.query.soft === "1" ||
-    String(req.get("x-auth-optional") || "").toLowerCase() === "1";
-
-  const auth = req.headers.authorization || "";
-  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  const token = bearer || req.cookies?.qd_token || null;
-
-  if (!token) {
-    // no token
-    return soft
-      ? res.json({ ok: true, authenticated: false, user: null })
-      : res.status(401).json({ error: "No token" });
+  function normalizeIdentifier(idRaw) {
+    const s = String(idRaw || "").trim();
+    if (/^\d{9}$/.test(s)) return { type: "employee_id", valueLower: s }; // id is digits; not lowercased
+    if (s.includes("@")) return { type: "email", valueLower: s.toLowerCase() };
+    return { type: "username", valueLower: s.toLowerCase() };
   }
 
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    return res.json({ ok: true, authenticated: true, user: payload, token });
-  } catch {
-    return soft
-      ? res.json({ ok: true, authenticated: false, user: null })
-      : res.status(401).json({ error: "Invalid token" });
-  }
-});
+  async function findByAlias(identifierRaw) {
+    const { type, valueLower } = normalizeIdentifier(identifierRaw);
 
-// -------------------- Forgot Password (Email OTP) --------------------
-// Config
-const OTP_TTL_SEC = Number(process.env.OTP_TTL_SEC || 10 * 60); // 10 minutes
-const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
-const RESEND_MIN_INTERVAL_SEC = Number(process.env.OTP_RESEND_MIN_INTERVAL_SEC || 60);
-const RESET_TOKEN_TTL = String(process.env.RESET_TOKEN_TTL || "15m");
-const RESET_JWT_SECRET = process.env.JWT_RESET_SECRET || process.env.JWT_SECRET;
+    // 1) resolve employee_id via aliases
+    const a = await db.query(
+      `SELECT employee_id FROM aliases WHERE type = ? AND value_lower = ? LIMIT 1`,
+      [type, valueLower]
+    );
+    if (!a.length) return { user: null, type };
 
-// helper: normalize & lookup employee by email
-async function findEmployeeByEmail(emailRaw) {
-  const emailLower = String(emailRaw || "").trim().toLowerCase();
-  if (!emailLower) return null;
-
-  const byLower = await db
-    .collection("employees")
-    .where("emailLower", "==", emailLower)
-    .limit(1)
-    .get();
-
-  if (!byLower.empty) {
-    const d = byLower.docs[0];
-    return { id: d.id, emailLower, ...d.data() };
+    // 2) fetch employee row
+    const empId = a[0].employee_id;
+    const rows = await db.query(`SELECT * FROM employees WHERE employee_id = ? LIMIT 1`, [empId]);
+    return { user: rows[0] || null, type };
   }
 
-  const byEmail = await db
-    .collection("employees")
-    .where("email", "==", emailLower)
-    .limit(1)
-    .get();
+  async function findByEmail(emailRaw) {
+    const emailLower = lower(emailRaw);
+    if (!emailLower) return null;
+    const a = await db.query(
+      `SELECT employee_id FROM aliases WHERE type='email' AND value_lower=? LIMIT 1`,
+      [emailLower]
+    );
+    if (!a.length) return null;
+    const empId = a[0].employee_id;
+    const rows = await db.query(`SELECT * FROM employees WHERE employee_id = ? LIMIT 1`, [empId]);
+    return rows[0] || null;
+  }
 
-  if (!byEmail.empty) {
-    const d = byEmail.docs[0];
+  function makeJwtUserPayload(userRow) {
     return {
-      id: d.id,
-      emailLower,
-      ...d.data(),
-      email: emailLower,
+      sub: String(userRow.employee_id),
+      role: userRow.role,
+      name: `${userRow.first_name || ""} ${userRow.last_name || ""}`.trim(),
+      username: userRow.username || "",
+      email: userRow.email || "",
+      employeeId: String(userRow.employee_id),
     };
   }
 
-  return null;
-}
-
-// extra verification checker (ONLY if client sent extra data)
-function verifyExtraInfo(emp, verifyType, verifyValueRaw) {
-  if (!verifyType || !verifyValueRaw) return true; // nothing to verify
-  const value = String(verifyValueRaw).trim();
-  if (verifyType === "employeeId") {
-    return String(emp.employeeId ?? "") === value;
+  function issueAuthToken(userRow) {
+    return jwt.sign(makeJwtUserPayload(userRow), JWT_SECRET, { expiresIn: "7d" });
   }
-  if (verifyType === "username") {
-    return lower(emp.username) === lower(value);
-  }
-  return false;
-}
 
+  function loginMethodAllowed(userRow, loginType) {
+    // employees table uses login_employee_id / login_username / login_email (tinyint)
+    if (loginType === "employee_id") return !!userRow.login_employee_id;
+    if (loginType === "username") return !!userRow.login_username;
+    if (loginType === "email") return !!userRow.login_email;
+    return false;
+  }
 
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
   const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || "")
-  .split(",")
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean);
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
   function isEmailAllowed(email) {
     if (!EMAIL_RE.test(email)) return false;
@@ -292,326 +100,382 @@ function verifyExtraInfo(emp, verifyType, verifyValueRaw) {
     return ALLOWED_EMAIL_DOMAINS.includes(domain);
   }
 
+  // ---- Routes ----
 
-// POST /api/auth/forgot/start  (OTP)
-router.post("/forgot/start", async (req, res, next) => {
-  try {
-    const email = lower(req.body?.email);
-    const verifyType  = req.body?.verifyType;   // 'employeeId' | 'username' | undefined
-    const verifyValue = req.body?.verifyValue;  // string | undefined
-
-    if (!email) return res.status(400).json({ error: "Email is required" });
-    if (!isEmailAllowed(email)) {
-      return res.status(400).json({ error: "Enter a valid email address." });
-    }
-
-    const employee = await findEmployeeByEmail(email);
-    if (!employee) {
-      // STRICT: do not send, do not pretend; hard error
-      return res.status(404).json({ error: "That email is not registered." });
-    }
-
-    if (verifyType || verifyValue) {
-      const ok = verifyExtraInfo(employee, verifyType, verifyValue);
-      if (!ok) return res.status(400).json({ error: "We couldn't verify your details. Please check and try again." });
-    }
-
-    const { otpId, code, expiresAt } = await createEmailOtp({
-      employeeRefPath: `employees/${employee.id}`,
-      emailLower: email,
-      ttlSec: OTP_TTL_SEC,
-    });
-
-    if (DEBUG) console.log("[forgot/start] OTP created", { otpId, email, expiresAt });
-
+  // POST /api/auth/login
+  router.post("/login", async (req, res, next) => {
     try {
-      await sendOtpEmail(email, code, {
-        appName: "Quscina",
-        expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
-      });
-    } catch (mailErr) {
-      console.error("[forgot/start] Email send failed:", mailErr?.message || mailErr);
-      // Optional: consider rolling back OTP doc or marking it failed if send fails
-    }
-
-    return res.json({ ok: true, message: "We’ve sent a 6-digit code to your email." });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// POST /api/auth/forgot/resend
-router.post("/forgot/resend", async (req, res, next) => {
-  try {
-    const email = lower(req.body?.email);
-    if (!email) return res.status(400).json({ error: "Email is required" });
-    if (!isEmailAllowed(email)) {
-      return res.status(400).json({ error: "Enter a valid email address." });
-    }
-
-    const employee = await findEmployeeByEmail(email);
-    if (!employee) return res.status(404).json({ error: "That email is not registered." });
-
-    const latest = await getLatestPendingOtp(email);
-    const now = Date.now();
-
-    if (latest?.data?.createdAt?.toMillis) {
-      const lastMs = latest.data.createdAt.toMillis();
-      if ((now - lastMs) / 1000 < RESEND_MIN_INTERVAL_SEC) {
-        if (DEBUG) console.log("[forgot/resend] throttled for", email);
-        // Still respond OK but do NOT send again
-        return res.status(429).json({ error: "Please wait before requesting another code." });
+      const { identifier, password, remember } = req.body || {};
+      if (!identifier || !password) {
+        return res.status(400).json({ error: "identifier and password are required" });
       }
+
+      const { user, type } = await findByAlias(identifier);
+      if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+      if (String(user.status || "").toLowerCase() !== "active") {
+        return res.status(403).json({ error: "Account is not active" });
+      }
+
+      // Only Admin/Manager can access the Admin Dashboard
+      if (!["admin", "manager"].includes(String(user.role || "").toLowerCase())) {
+        return res.status(403).json({ error: "Not authorized for Admin Dashboard" });
+      }
+
+      if (!loginMethodAllowed(user, type)) {
+        return res.status(400).json({ error: "This login method is disabled for the account" });
+      }
+
+      const ok = await bcrypt.compare(String(password), user.password_hash);
+      if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
+      const token = issueAuthToken(user);
+      if (remember) {
+        res.cookie("qd_token", token, {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: false, // set true if you run https
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+          path: "/",
+        });
+      }
+
+      return res.json({
+        ok: true,
+        token,
+        user: {
+          employeeId: String(user.employee_id),
+          role: user.role,
+          status: user.status,
+          username: user.username || "",
+          email: user.email || "",
+          firstName: user.first_name || "",
+          lastName: user.last_name || "",
+          photoUrl: user.photo_url || "",
+        },
+      });
+    } catch (e) {
+      next(e);
     }
+  });
 
-    const { otpId, code, expiresAt } = await createEmailOtp({
-      employeeRefPath: `employees/${employee.id}`,
-      emailLower: email,
-      ttlSec: OTP_TTL_SEC,
-    });
+  // GET /api/auth/me?soft=1
+  router.get("/me", (req, res) => {
+    const soft =
+      req.query.soft === "1" ||
+      String(req.get("x-auth-optional") || "").toLowerCase() === "1";
 
-    if (DEBUG) console.log("[forgot/resend] OTP created", { otpId, email, expiresAt });
+    const auth = req.headers.authorization || "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    const token = bearer || req.cookies?.qd_token || null;
+
+    if (!token) {
+      return soft
+        ? res.json({ ok: true, authenticated: false, user: null })
+        : res.status(401).json({ error: "No token" });
+    }
 
     try {
-      await sendOtpEmail(email, code, {
-        appName: "Quscina",
-        expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
-      });
-    } catch (mailErr) {
-      console.error("[forgot/resend] Email send failed:", mailErr?.message || mailErr);
+      const payload = jwt.verify(token, JWT_SECRET);
+      return res.json({ ok: true, authenticated: true, user: payload, token });
+    } catch {
+      return soft
+        ? res.json({ ok: true, authenticated: false, user: null })
+        : res.status(401).json({ error: "Invalid token" });
     }
+  });
 
-    return res.json({ ok: true, message: "A new code has been sent." });
-  } catch (e) {
-    next(e);
+  // POST /api/auth/logout
+  router.post("/logout", (_req, res) => {
+    res.clearCookie("qd_token", { path: "/" });
+    res.json({ ok: true });
+  });
+
+  // -------------------- OTP (Email) --------------------
+
+  async function createEmailOtp({ employeeId, emailLower, ttlSec }) {
+    const code = (Math.floor(100000 + Math.random() * 900000)).toString(); // 6-digit
+    const codeHash = await bcrypt.hash(code, 10);
+    const expiresAt = new Date(Date.now() + ttlSec * 1000);
+
+    const r = await db.query(
+      `INSERT INTO otp (employee_id, email_lower, code_hash, status, attempts, created_at, expires_at)
+       VALUES (?, ?, ?, 'pending', 0, NOW(), ?)`,
+      [employeeId || null, emailLower, codeHash, expiresAt]
+    );
+    return { otpId: r.insertId, code, expiresAt };
   }
-});
 
-// POST /api/auth/forgot/verify  (OTP -> resetToken)
-router.post("/forgot/verify", async (req, res, next) => {
-  try {
-    const email = lower(req.body?.email);
-    const code = String(req.body?.code || "").trim();
+  async function latestPendingOtp(emailLower) {
+    const rows = await db.query(
+      `SELECT * FROM otp WHERE email_lower = ? AND status = 'pending'
+       ORDER BY created_at DESC LIMIT 1`,
+      [emailLower]
+    );
+    return rows[0] || null;
+  }
 
-    if (!email || !code) return res.status(400).json({ error: "Email and code are required" });
-
-    const latest = await getLatestPendingOtp(email);
-    if (!latest) {
-      return res.status(400).json({ error: "Invalid or expired code" });
+  async function updateOtp(id, patch) {
+    const sets = [];
+    const params = [];
+    for (const [k, v] of Object.entries(patch)) {
+      sets.push(`${k} = ?`);
+      params.push(v);
     }
+    if (!sets.length) return;
+    params.push(id);
+    await db.query(`UPDATE otp SET ${sets.join(", ")} WHERE id = ?`, params);
+  }
 
-    const otpDocRef = db.collection("otp").doc(latest.id);
-    const otp = latest.data;
+  // POST /api/auth/forgot/start
+  router.post("/forgot/start", async (req, res, next) => {
+    try {
+      const email = lower(req.body?.email);
+      const verifyType = req.body?.verifyType;   // 'employeeId' | 'username' | undefined
+      const verifyValue = String(req.body?.verifyValue || "").trim();
 
-    if (otp.status !== "pending") return res.status(400).json({ error: "Invalid or expired code" });
+      if (!email) return res.status(400).json({ error: "Email is required" });
+      if (!isEmailAllowed(email)) return res.status(400).json({ error: "Enter a valid email address." });
 
-    const now = Date.now();
-    const expMs = otp.expiresAt instanceof Date ? otp.expiresAt.getTime() : otp.expiresAt?.toMillis?.() || 0;
-    if (!expMs || now > expMs) {
-      await otpDocRef.update({ status: "expired", expiredAt: new Date() });
-      return res.status(400).json({ error: "Invalid or expired code" });
-    }
+      const emp = await findByEmail(email);
+      if (!emp) return res.status(404).json({ error: "That email is not registered." });
 
-    const attempts = Number(otp.attempts || 0);
-    if (attempts >= OTP_MAX_ATTEMPTS) {
-      await otpDocRef.update({ status: "blocked", blockedAt: new Date() });
-      return res.status(400).json({ error: "Too many attempts. Request a new code." });
-    }
+      // Optional extra verification
+      const okExtra =
+        !verifyType || !verifyValue ||
+        (verifyType === "employeeId" && String(emp.employee_id) === verifyValue) ||
+        (verifyType === "username" && lower(emp.username) === lower(verifyValue));
+      if (!okExtra) return res.status(400).json({ error: "We couldn't verify your details. Please try again." });
 
-    const ok = await bcrypt.compare(code, otp.codeHash);
-    if (!ok) {
-      await otpDocRef.update({ attempts: attempts + 1, lastAttemptAt: new Date() });
-      return res.status(400).json({ error: "Invalid or expired code" });
-    }
-
-    await otpDocRef.update({ status: "used", usedAt: new Date() });
-
-    const resetToken = jwt.sign(
-      {
-        purpose: "password-reset",
+      const { code, expiresAt } = await createEmailOtp({
+        employeeId: emp.employee_id,
         emailLower: email,
-        employeeRefPath: otp.employeeRefPath || "",
-        otpId: latest.id,
-      },
-      RESET_JWT_SECRET,
-      { expiresIn: RESET_TOKEN_TTL }
-    );
+        ttlSec: OTP_TTL_SEC,
+      });
 
-    if (DEBUG) console.log("[forgot/verify] success for", email);
+      if (DEBUG) console.log("[forgot/start] OTP for", email, "exp", expiresAt);
 
-    return res.json({ ok: true, resetToken });
-  } catch (e) {
-    next(e);
-  }
-});
+      try {
+        await sendOtpEmail(email, code, {
+          appName: "Quscina",
+          expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
+        });
+      } catch (mailErr) {
+        console.error("[forgot/start] email send failed:", mailErr?.message || mailErr);
+      }
 
-// -------------------- Security Questions (NEW) --------------------
-const SQ_TOKEN_TTL = String(process.env.SQ_TOKEN_TTL || "10m");
+      res.json({ ok: true, message: "We’ve sent a 6-digit code to your email." });
+    } catch (e) {
+      next(e);
+    }
+  });
 
-// Fixed catalog — do NOT reveal per-user configuration
-const SQ_CATALOG = {
-  pet: "What is the name of your first pet?",
-  school: "What is the name of your elementary school?",
-  city: "In what city were you born?",
-  mother_maiden: "What is your mother’s maiden name?",
-  nickname: "What was your childhood nickname?",
+  // POST /api/auth/forgot/resend
+  router.post("/forgot/resend", async (req, res, next) => {
+    try {
+      const email = lower(req.body?.email);
+      if (!email) return res.status(400).json({ error: "Email is required" });
+      if (!isEmailAllowed(email)) return res.status(400).json({ error: "Enter a valid email address." });
+
+      const emp = await findByEmail(email);
+      if (!emp) return res.status(404).json({ error: "That email is not registered." });
+
+      const latest = await latestPendingOtp(email);
+      if (latest) {
+        const lastMs = new Date(latest.created_at).getTime();
+        if ((Date.now() - lastMs) / 1000 < RESEND_MIN_INTERVAL_SEC) {
+          return res.status(429).json({ error: "Please wait before requesting another code." });
+        }
+      }
+
+      const { code, expiresAt } = await createEmailOtp({
+        employeeId: emp.employee_id,
+        emailLower: email,
+        ttlSec: OTP_TTL_SEC,
+      });
+
+      if (DEBUG) console.log("[forgot/resend] OTP for", email, "exp", expiresAt);
+
+      try {
+        await sendOtpEmail(email, code, {
+          appName: "Quscina",
+          expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
+        });
+      } catch (mailErr) {
+        console.error("[forgot/resend] email send failed:", mailErr?.message || mailErr);
+      }
+
+      res.json({ ok: true, message: "A new code has been sent." });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // POST /api/auth/forgot/verify
+  router.post("/forgot/verify", async (req, res, next) => {
+    try {
+      const email = lower(req.body?.email);
+      const code = String(req.body?.code || "").trim();
+      if (!email || !code) return res.status(400).json({ error: "Email and code are required" });
+
+      const rec = await latestPendingOtp(email);
+      if (!rec || rec.status !== "pending") {
+        return res.status(400).json({ error: "Invalid or expired code" });
+      }
+
+      const now = Date.now();
+      const expMs = new Date(rec.expires_at).getTime();
+      if (!expMs || now > expMs) {
+        await updateOtp(rec.id, { status: "expired", expired_at: new Date() });
+        return res.status(400).json({ error: "Invalid or expired code" });
+      }
+
+      const attempts = Number(rec.attempts || 0);
+      if (attempts >= OTP_MAX_ATTEMPTS) {
+        await updateOtp(rec.id, { status: "blocked", blocked_at: new Date() });
+        return res.status(400).json({ error: "Too many attempts. Request a new code." });
+      }
+
+      const ok = await bcrypt.compare(code, rec.code_hash);
+      if (!ok) {
+        await updateOtp(rec.id, { attempts: attempts + 1, last_attempt_at: new Date() });
+        return res.status(400).json({ error: "Invalid or expired code" });
+      }
+
+      await updateOtp(rec.id, { status: "used", used_at: new Date() });
+
+      const emp = await findByEmail(email);
+      const resetToken = jwt.sign(
+        {
+          purpose: "password-reset",
+          employeeId: emp ? emp.employee_id : null,
+          emailLower: email,
+        },
+        RESET_JWT_SECRET,
+        { expiresIn: RESET_TOKEN_TTL }
+      );
+
+      res.json({ ok: true, resetToken });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // -------------------- Security Questions --------------------
+  const SQ_CATALOG = {
+    pet: "What is the name of your first pet?",
+    school: "What is the name of your elementary school?",
+    city: "In what city were you born?",
+    mother_maiden: "What is your mother’s maiden name?",
+    nickname: "What was your childhood nickname?",
+  };
+  const norm = (s) => String(s || "").trim().toLowerCase();
+
+  // POST /api/auth/forgot/sq/start
+  router.post("/forgot/sq/start", async (req, res, next) => {
+    try {
+      const identifier = String(req.body?.identifier || "").trim();
+      if (!identifier) return res.status(400).json({ error: "identifier is required" });
+
+      const { user } = await findByAlias(identifier);
+      if (!user) return res.status(404).json({ error: "Account not found" });
+
+      const allowedIds = Object.keys(SQ_CATALOG);
+      const sqToken = jwt.sign(
+        {
+          purpose: "security-questions",
+          employeeId: user.employee_id,
+          allowedIds,
+        },
+        RESET_JWT_SECRET,
+        { expiresIn: SQ_TOKEN_TTL }
+      );
+
+      res.json({ ok: true, sqToken });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // POST /api/auth/forgot/sq/verify
+  router.post("/forgot/sq/verify", async (req, res, next) => {
+    try {
+      const { sqToken, answers } = req.body || {};
+      const fail = () => res.status(400).json({ error: "The details you entered don’t match our records." });
+
+      if (!sqToken || !Array.isArray(answers) || answers.length !== 1) return fail();
+
+      let payload;
+      try { payload = jwt.verify(sqToken, RESET_JWT_SECRET); } catch { return fail(); }
+      if (payload?.purpose !== "security-questions") return fail();
+
+      const employeeId = payload.employeeId;
+      const allowedIds = Array.isArray(payload.allowedIds) ? payload.allowedIds : [];
+      if (!employeeId || !allowedIds.length) return fail();
+
+      const { id, answer } = answers[0] || {};
+      if (!id || typeof answer !== "string" || !allowedIds.includes(id)) return fail();
+
+      const rows = await db.query(
+        `SELECT answer_hash FROM employee_security_questions WHERE employee_id = ? AND question_id = ? LIMIT 1`,
+        [employeeId, id]
+      );
+      if (!rows.length) return fail();
+
+      const ok = await bcrypt.compare(norm(answer), rows[0].answer_hash);
+      if (!ok) return fail();
+
+      const resetToken = jwt.sign(
+        { purpose: "password-reset", employeeId },
+        RESET_JWT_SECRET,
+        { expiresIn: RESET_TOKEN_TTL }
+      );
+
+      res.json({ ok: true, resetToken });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // POST /api/auth/forgot/reset
+  router.post("/forgot/reset", async (req, res, next) => {
+    try {
+      const { resetToken, newPassword } = req.body || {};
+      if (!resetToken || !newPassword) {
+        return res.status(400).json({ error: "resetToken and newPassword are required" });
+      }
+
+      let payload;
+      try { payload = jwt.verify(resetToken, RESET_JWT_SECRET); }
+      catch { return res.status(400).json({ error: "Invalid or expired reset token" }); }
+
+      if (payload?.purpose !== "password-reset") {
+        return res.status(400).json({ error: "Invalid reset token" });
+      }
+
+      // Resolve employee
+      let emp = null;
+      if (payload.employeeId) {
+        const rows = await db.query(`SELECT * FROM employees WHERE employee_id = ? LIMIT 1`, [payload.employeeId]);
+        emp = rows[0] || null;
+      }
+      if (!emp && payload.emailLower) {
+        emp = await findByEmail(payload.emailLower);
+      }
+      if (!emp) return res.status(400).json({ error: "Unable to reset password" });
+
+      const hashed = await bcrypt.hash(String(newPassword), 12);
+      await db.query(
+        `UPDATE employees SET password_hash = ?, password_last_changed = NOW() WHERE employee_id = ?`,
+        [hashed, emp.employee_id]
+      );
+
+      if (DEBUG) console.log("[forgot/reset] password updated for", emp.employee_id);
+      res.json({ ok: true, message: "Password updated" });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  return router;
 };
-
-// normalize for hashing/compare
-const norm = (s) => String(s || "").trim().toLowerCase();
-
-// POST /api/auth/forgot/sq/start
-// body: { identifier: string }
-// response: { ok, sqToken }
-router.post("/forgot/sq/start", async (req, res, next) => {
-  try {
-    const identifier = String(req.body?.identifier || "").trim();
-    if (!identifier) return res.status(400).json({ error: "identifier is required" });
-
-    const emp = await findEmployeeByAnyIdentifier(identifier);
-    if (!emp) return res.status(404).json({ error: "Account not found" });
-
-    // Do NOT leak which questions the user configured.
-    // Just issue a token with the set of allowed IDs (the 5 hardcoded ones).
-    const allowedIds = Object.keys(SQ_CATALOG);
-
-    const sqToken = jwt.sign(
-      {
-        purpose: "security-questions",
-        employeeRefPath: `employees/${emp.id}`,
-        allowedIds,
-      },
-      RESET_JWT_SECRET,
-      { expiresIn: SQ_TOKEN_TTL }
-    );
-
-    // Return only the token; no questions array.
-    return res.json({ ok: true, sqToken });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// POST /api/auth/forgot/sq/verify
-// body: { sqToken, answers: [{id, answer}] }  // exactly one
-// response: { ok, resetToken }
-router.post("/forgot/sq/verify", async (req, res, next) => {
-  try {
-    const { sqToken, answers } = req.body || {};
-    const fail = () =>
-      res.status(400).json({ error: "The details you entered don’t match our records." });
-
-    // Basic input validation
-    if (!sqToken || !Array.isArray(answers) || answers.length !== 1) {
-      return fail();
-    }
-
-    // Validate token
-    let payload;
-    try {
-      payload = jwt.verify(sqToken, RESET_JWT_SECRET);
-    } catch {
-      return fail();
-    }
-    if (payload?.purpose !== "security-questions") return fail();
-
-    const employeeRefPath = String(payload.employeeRefPath || "");
-    const allowedIds = Array.isArray(payload.allowedIds) ? payload.allowedIds : [];
-    if (!employeeRefPath || !allowedIds.length) return fail();
-
-    // Validate answer input
-    const { id, answer } = answers[0] || {};
-    if (!id || typeof answer !== "string" || !allowedIds.includes(id)) {
-      return fail();
-    }
-
-    // Load employee
-    const docRef = db.doc(employeeRefPath);
-    const snap = await docRef.get();
-    if (!snap.exists) return fail();
-    const emp = { id: snap.id, ...snap.data() };
-
-    // Check stored security questions
-    const configured = Array.isArray(emp.securityQuestions) ? emp.securityQuestions : [];
-    const stored = configured.find((q) => q && q.id === id);
-    if (!stored || !(stored.answerHash || stored.answerhash)) return fail();
-
-    // Compare hashes
-    const storedHash = stored.answerHash || stored.answerhash;
-    const ok = await bcrypt.compare(norm(answer), storedHash);
-    if (!ok) return fail();
-
-    // Success -> issue resetToken compatible with /forgot/reset
-    const resetToken = jwt.sign(
-      {
-        purpose: "password-reset",
-        employeeRefPath,
-        via: "security-questions",
-      },
-      RESET_JWT_SECRET,
-      { expiresIn: RESET_TOKEN_TTL }
-    );
-
-    return res.json({ ok: true, resetToken });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// -------------------- POST /api/auth/forgot/reset (shared) --------------------
-router.post("/forgot/reset", async (req, res, next) => {
-  try {
-    const { resetToken, newPassword } = req.body || {};
-    if (!resetToken || !newPassword) {
-      return res.status(400).json({ error: "resetToken and newPassword are required" });
-    }
-    let payload;
-    try {
-      payload = jwt.verify(resetToken, RESET_JWT_SECRET);
-    } catch {
-      return res.status(400).json({ error: "Invalid or expired reset token" });
-    }
-
-    if (payload?.purpose !== "password-reset") {
-      return res.status(400).json({ error: "Invalid reset token" });
-    }
-
-    const employeeRefPath = String(payload.employeeRefPath || "");
-    let employee = null;
-
-    if (employeeRefPath) {
-      const snap = await db.doc(employeeRefPath).get();
-      if (snap.exists) {
-        employee = { id: snap.id, ...snap.data() };
-      }
-    }
-
-    if (!employee) {
-      // Fallback path for OTP token (which carries emailLower)
-      const emailLower = String(payload.emailLower || "").trim().toLowerCase();
-      if (emailLower) {
-        employee = await findEmployeeByEmail(emailLower);
-      }
-    }
-
-    if (!employee) {
-      return res.status(400).json({ error: "Unable to reset password" });
-    }
-
-    const hashed = await bcrypt.hash(String(newPassword || ""), 10);
-
-    await db.collection("employees").doc(employee.id).update({
-      passwordHash: hashed,
-      passwordUpdatedAt: new Date(),
-    });
-
-    if (DEBUG) console.log("[forgot/reset] password updated for", employee.id);
-
-    return res.json({ ok: true, message: "Password updated" });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// -------------------- export --------------------
-module.exports = () => router;

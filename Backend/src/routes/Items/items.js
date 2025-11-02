@@ -1,14 +1,17 @@
 // Backend/src/routes/Items/items.js
 const express = require("express");
 const multer = require("multer");
-const { db } = require("../../shared/firebase/firebaseAdmin"); // Firestore only
 
-const router = express.Router();
+// Prefer DI, but fall back to shared pool
+let sharedDb = null;
+try {
+  sharedDb = require("../../shared/db/mysql").db;
+} catch { /* ignore until DI provides db */ }
 
-// Multer in-memory; we'll convert to base64 and store in Firestore
+// Multer in-memory; we'll convert to base64 and store in MySQL LONGTEXT
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB request cap
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB req cap
 });
 
 /* ---------------------- Helpers ---------------------- */
@@ -17,258 +20,267 @@ function bufferToDataUrl(buffer, mime) {
   return `data:${mime};base64,${b64}`;
 }
 
-// Firestore doc size ~1 MiB; base64 adds ~33%. Keep raw image <= ~600 KB.
+// Keep raw image ≤ ~600 KB
 const MAX_RAW_IMAGE_BYTES = 600 * 1024;
 
-/** Safely serialize Firestore Timestamps to epoch millis */
-function tsMillis(t) {
-  if (!t) return 0;
-  if (typeof t.toMillis === "function") return t.toMillis();
-  if (t._seconds != null) {
-    return t._seconds * 1000 + Math.floor((t._nanoseconds || 0) / 1e6);
-  }
-  if (t instanceof Date) return t.getTime();
-  return 0;
+function cleanMoney(x) {
+  if (x == null) return 0;
+  return Number(String(x).replace(/[^0-9.]/g, "")) || 0;
 }
-/* ----------------------------------------------------- */
 
-/* ===================== GET /api/items ===================== */
-router.get("/", async (req, res, next) => {
-  try {
-    const categoryId = String(req.query.categoryId || "").trim();
-    const categoryKey = String(req.query.category || "all").trim().toLowerCase();
+function computeCostOverall(ingredients) {
+  if (!Array.isArray(ingredients)) return 0;
+  return ingredients.reduce((s, it) => {
+    const qty = Number(it?.qty || 0);
+    const pr = Number(it?.price || 0);
+    return s + (qty * pr);
+  }, 0);
+}
 
-    let q = db.collection("items");
-    if (categoryId) {
-      q = q.where("categoryId", "==", categoryId);
-    } else if (categoryKey && categoryKey !== "all") {
-      q = q.where("categoryKey", "==", categoryKey);
-    }
+module.exports = ({ db } = {}) => {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
 
-    const snap = await q.get();
-    const items = snap.docs.map((d) => {
-      const x = d.data() || {};
-      const costOverall =
-        typeof x.costOverall === "number"
-          ? x.costOverall
-          : x.costOverall != null
-          ? Number(x.costOverall)
-          : 0;
-      const price =
-        typeof x.price === "number"
-          ? x.price
-          : x.price != null
-          ? Number(x.price)
-          : 0;
-      const profit =
-        typeof x.profit === "number"
-          ? x.profit
-          : Number((price - costOverall).toFixed(2));
+  const router = express.Router();
 
-      return {
-        id: d.id,
-        name: x.name ?? x.itemName ?? "",
+  /* ===================== GET /api/items ===================== */
+  router.get("/", async (req, res, next) => {
+    try {
+      const categoryId = String(req.query.categoryId || "").trim();
+      const categoryKey = String(req.query.category || "all").trim().toLowerCase();
+
+      let sql = `SELECT id, name, description, categoryId, categoryName, imageDataUrl,
+                        createdAt, updatedAt, price, ingredients, costOverall, profit
+                   FROM items`;
+      const params = [];
+      const where = [];
+
+      if (categoryId) {
+        where.push("categoryId = ?");
+        params.push(Number(categoryId));
+      } else if (categoryKey && categoryKey !== "all") {
+        where.push("categoryKey = ?");
+        params.push(categoryKey);
+      }
+
+      if (where.length) sql += " WHERE " + where.join(" AND ");
+      // We didn’t keep an index on updatedAt here, but you can add it later if needed.
+
+      const rows = await db.query(sql, params);
+
+      const items = rows.map((x) => ({
+        id: String(x.id),
+        name: x.name || "",
         description: x.description || "",
         categoryId: x.categoryId || "",
-        categoryName: x.categoryName ?? x.category ?? x.categoryKey ?? "",
-        imageUrl: x.imageUrl || x.imageDataUrl || "",
-        createdAt: tsMillis(x.createdAt),
-        updatedAt: tsMillis(x.updatedAt),
-        price,
-        ingredients: Array.isArray(x.ingredients) ? x.ingredients : [],
-        costOverall,
-        profit, // ⬅️ new field exposed to frontend
-      };
-    });
+        categoryName: x.categoryName || "",
+        imageUrl: x.imageDataUrl || "",
+        createdAt: x.createdAt ? new Date(x.createdAt).getTime() : 0,
+        updatedAt: x.updatedAt ? new Date(x.updatedAt).getTime() : 0,
+        price: Number(x.price || 0),
+        ingredients: typeof x.ingredients === "string" ? JSON.parse(x.ingredients || "[]") : (x.ingredients || []),
+        costOverall: Number(x.costOverall || 0),
+        profit: Number(x.profit || 0),
+      }));
 
-    res.json({ ok: true, items });
-  } catch (e) {
-    next(e);
-  }
-});
-
-/* ===================== POST /api/items ===================== */
-router.post("/", upload.single("image"), async (req, res, next) => {
-  try {
-    const b = req.body || {};
-    const name = String(b.name || "").trim();
-    if (!name) return res.status(400).json({ ok: false, error: "name is required" });
-
-    const description = String(b.description || "").trim().slice(0, 300);
-    const categoryId = String(b.categoryId || "").trim();
-    const categoryName = String(b.categoryName || "").trim();
-    const categoryKey = categoryName ? categoryName.toLowerCase() : "";
-
-    const price = Number(String(b.price || "0").replace(/[^0-9.]/g, "")) || 0;
-
-    let ingredients = [];
-    if (typeof b.ingredients === "string" && b.ingredients.trim()) {
-      try {
-        const parsed = JSON.parse(b.ingredients);
-        if (Array.isArray(parsed)) ingredients = parsed;
-      } catch {}
-    } else if (Array.isArray(b.ingredients)) {
-      ingredients = b.ingredients;
+      res.json({ ok: true, items });
+    } catch (e) {
+      next(e);
     }
+  });
 
-    let costOverall = 0;
-    if (Array.isArray(ingredients)) {
-      costOverall = ingredients.reduce((s, it) => {
-        const qty = Number(it.qty || 0);
-        const pr = Number(it.price || 0);
-        return s + qty * pr;
-      }, 0);
-    }
+  /* ===================== POST /api/items ===================== */
+  router.post("/", upload.single("image"), async (req, res, next) => {
+    try {
+      const b = req.body || {};
+      const name = String(b.name || "").trim();
+      if (!name) return res.status(400).json({ ok: false, error: "name is required" });
 
-    const profit = Number((price - costOverall).toFixed(2)); // ⬅️ compute profit
+      const description = String(b.description || "").trim().slice(0, 300);
+      const categoryId = Number(b.categoryId || 0) || null;
+      const categoryName = String(b.categoryName || "").trim();
+      const categoryKey = categoryName ? categoryName.toLowerCase() : "";
 
-    const now = new Date();
-    const baseDoc = {
-      name,
-      nameLower: name.toLowerCase(),
-      description,
-      categoryId: categoryId || "",
-      categoryName: categoryName || "",
-      categoryNameLower: categoryName ? categoryName.toLowerCase() : "",
-      categoryKey,
-      imageDataUrl: "",
-      price,
-      ingredients,
-      costOverall,
-      profit, // ⬅️ store profit
-      createdAt: now,
-      updatedAt: now,
-      active: true,
-    };
+      const price = cleanMoney(b.price);
 
-    const ref = await db.collection("items").add(baseDoc);
-
-    let imageUrl = "";
-    if (req.file && req.file.buffer && req.file.mimetype) {
-      const raw = req.file.buffer;
-      if (raw.length > MAX_RAW_IMAGE_BYTES) {
-        return res
-          .status(413)
-          .json({ ok: false, error: "Image too large for Firestore. Please upload ≤ 600 KB." });
+      let ingredients = [];
+      if (typeof b.ingredients === "string" && b.ingredients.trim()) {
+        try {
+          const parsed = JSON.parse(b.ingredients);
+          if (Array.isArray(parsed)) ingredients = parsed;
+        } catch { /* ignore */ }
+      } else if (Array.isArray(b.ingredients)) {
+        ingredients = b.ingredients;
       }
-      const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
-      await ref.update({ imageDataUrl: dataUrl, updatedAt: new Date() });
-      imageUrl = dataUrl;
-    }
 
-    res.status(201).json({ ok: true, id: ref.id, imageUrl });
-  } catch (e) {
-    next(e);
-  }
-});
+      const costOverall = computeCostOverall(ingredients);
+      const profit = Number((price - costOverall).toFixed(2));
 
-/* ===================== PATCH /api/items/:id ===================== */
-router.patch("/:id", upload.single("image"), async (req, res, next) => {
-  try {
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ ok: false, error: "invalid id" });
-
-    const updates = { updatedAt: new Date() };
-    const b = req.body || {};
-
-    if (typeof b.name === "string") {
-      const n = b.name.trim();
-      if (!n) return res.status(400).json({ ok: false, error: "name is required" });
-      updates.name = n;
-      updates.nameLower = n.toLowerCase();
-    }
-
-    if (typeof b.description === "string") {
-      updates.description = String(b.description).trim().slice(0, 300);
-    }
-
-    if (typeof b.categoryId === "string") updates.categoryId = String(b.categoryId || "").trim();
-    if (typeof b.categoryName === "string") {
-      const cn = String(b.categoryName || "").trim();
-      updates.categoryName = cn;
-      updates.categoryNameLower = cn ? cn.toLowerCase() : "";
-      updates.categoryKey = cn ? cn.toLowerCase() : "";
-    }
-
-    const price =
-      typeof b.price !== "undefined"
-        ? Number(String(b.price || "0").replace(/[^0-9.]/g, "")) || 0
-        : undefined;
-    if (typeof price === "number") updates.price = price;
-
-    // Handle ingredients + costOverall
-    let costOverall = 0;
-    if (typeof b.ingredients === "string") {
-      try {
-        const parsed = JSON.parse(b.ingredients);
-        if (Array.isArray(parsed)) {
-          updates.ingredients = parsed;
-          costOverall = parsed.reduce(
-            (s, it) => s + (Number(it.qty || 0) * Number(it.price || 0) || 0),
-            0
-          );
-          updates.costOverall = costOverall;
-        }
-      } catch {}
-    } else if (Array.isArray(b.ingredients)) {
-      updates.ingredients = b.ingredients;
-      costOverall = b.ingredients.reduce(
-        (s, it) => s + (Number(it.qty || 0) * Number(it.price || 0) || 0),
-        0
+      const now = new Date();
+      const result = await db.query(
+        `INSERT INTO items
+         (name, nameLower, description, categoryId, categoryName, categoryNameLower, categoryKey,
+          imageDataUrl, price, ingredients, costOverall, profit, active, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?)`,
+        [
+          name,
+          name.toLowerCase(),
+          description,
+          categoryId,
+          categoryName,
+          categoryName ? categoryName.toLowerCase() : "",
+          categoryKey,
+          price,
+          JSON.stringify(ingredients || []),
+          costOverall,
+          profit,
+          now,
+          now
+        ]
       );
-      updates.costOverall = costOverall;
-    } else if (typeof b.costOverall !== "undefined") {
-      costOverall = Number(String(b.costOverall || "0").replace(/[^0-9.]/g, "")) || 0;
-      updates.costOverall = costOverall;
-    }
+      const id = result.insertId;
 
-    // compute profit
-    const finalPrice = typeof price === "number" ? price : Number(b.price || 0);
-    updates.profit = Number((finalPrice - costOverall).toFixed(2));
-
-    if (req.file && req.file.buffer && req.file.mimetype) {
-      const raw = req.file.buffer;
-      if (raw.length > MAX_RAW_IMAGE_BYTES) {
-        return res
-          .status(413)
-          .json({ ok: false, error: "Image too large for Firestore. Please upload ≤ 600 KB." });
+      let imageUrl = "";
+      if (req.file && req.file.buffer && req.file.mimetype) {
+        const raw = req.file.buffer;
+        if (raw.length > MAX_RAW_IMAGE_BYTES) {
+          return res.status(413).json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
+        }
+        const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
+        await db.query(
+          `UPDATE items SET imageDataUrl = ?, updatedAt = ? WHERE id = ?`,
+          [dataUrl, new Date(), id]
+        );
+        imageUrl = dataUrl;
       }
-      updates.imageDataUrl = bufferToDataUrl(raw, req.file.mimetype);
+
+      res.status(201).json({ ok: true, id: String(id), imageUrl });
+    } catch (e) {
+      next(e);
     }
+  });
 
-    await db.collection("items").doc(id).update(updates);
-    res.json({ ok: true });
-  } catch (e) {
-    next(e);
-  }
-});
+  /* ===================== PATCH /api/items/:id ===================== */
+  router.patch("/:id", upload.single("image"), async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "invalid id" });
 
-/* ===================== DELETE /api/items (bulk) ===================== */
-router.delete("/", async (req, res, next) => {
-  try {
-    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
-    if (!ids.length) return res.status(400).json({ ok: false, error: "ids is required" });
+      const b = req.body || {};
+      const sets = ["updatedAt = ?"];
+      const params = [new Date()];
 
-    const batch = db.batch();
-    ids.forEach((id) => batch.delete(db.collection("items").doc(String(id))));
-    await batch.commit();
+      if (typeof b.name === "string") {
+        const n = b.name.trim();
+        if (!n) return res.status(400).json({ ok: false, error: "name is required" });
+        sets.push("name = ?", "nameLower = ?");
+        params.push(n, n.toLowerCase());
+      }
 
-    res.json({ ok: true, deleted: ids.length });
-  } catch (e) {
-    next(e);
-  }
-});
+      if (typeof b.description === "string") {
+        sets.push("description = ?");
+        params.push(String(b.description).trim().slice(0, 300));
+      }
 
-/* ===================== DELETE /api/items/:id ===================== */
-router.delete("/:id", async (req, res, next) => {
-  try {
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ ok: false, error: "id is required" });
-    await db.collection("items").doc(id).delete();
-    res.json({ ok: true });
-  } catch (e) {
-    next(e);
-  }
-});
+      if (typeof b.categoryId !== "undefined") {
+        const cid = Number(b.categoryId || 0) || null;
+        sets.push("categoryId = ?");
+        params.push(cid);
+      }
 
-module.exports = router;
+      if (typeof b.categoryName === "string") {
+        const cn = String(b.categoryName || "").trim();
+        sets.push("categoryName = ?", "categoryNameLower = ?", "categoryKey = ?");
+        params.push(cn, cn ? cn.toLowerCase() : "", cn ? cn.toLowerCase() : "");
+      }
+
+      if (typeof b.price !== "undefined") {
+        sets.push("price = ?");
+        params.push(cleanMoney(b.price));
+      }
+
+      // ingredients & cost/profit recompute
+      let ingredients = null;
+      let costOverall = null;
+
+      if (typeof b.ingredients === "string") {
+        try {
+          const parsed = JSON.parse(b.ingredients);
+          if (Array.isArray(parsed)) {
+            ingredients = parsed;
+            costOverall = computeCostOverall(parsed);
+          }
+        } catch { /* ignore */ }
+      } else if (Array.isArray(b.ingredients)) {
+        ingredients = b.ingredients;
+        costOverall = computeCostOverall(b.ingredients);
+      } else if (typeof b.costOverall !== "undefined") {
+        costOverall = cleanMoney(b.costOverall);
+      }
+
+      if (ingredients) {
+        sets.push("ingredients = ?");
+        params.push(JSON.stringify(ingredients));
+      }
+      if (costOverall != null) {
+        sets.push("costOverall = ?");
+        params.push(costOverall);
+      }
+
+      // compute profit if we changed either price or costOverall
+      const changedPrice = sets.some((s) => s.startsWith("price ="));
+      const changedCost = sets.some((s) => s.startsWith("costOverall ="));
+      if (changedPrice || changedCost) {
+        // profit = price - costOverall
+        // Do it in SQL using current/updated values:
+        sets.push("profit = (COALESCE(price,0) - COALESCE(costOverall,0))");
+      }
+
+      if (req.file && req.file.buffer && req.file.mimetype) {
+        const raw = req.file.buffer;
+        if (raw.length > MAX_RAW_IMAGE_BYTES) {
+          return res.status(413).json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
+        }
+        const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
+        sets.push("imageDataUrl = ?");
+        params.push(dataUrl);
+      }
+
+      params.push(id);
+      await db.query(`UPDATE items SET ${sets.join(", ")} WHERE id = ?`, params);
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  /* ===================== DELETE /api/items (bulk) ===================== */
+  router.delete("/", async (req, res, next) => {
+    try {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite) : [];
+      if (!ids.length) return res.status(400).json({ ok: false, error: "ids is required" });
+
+      const placeholders = ids.map(() => "?").join(",");
+      await db.query(`DELETE FROM items WHERE id IN (${placeholders})`, ids);
+
+      res.json({ ok: true, deleted: ids.length });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  /* ===================== DELETE /api/items/:id ===================== */
+  router.delete("/:id", async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "id is required" });
+
+      await db.query(`DELETE FROM items WHERE id = ?`, [id]);
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  return router;
+};

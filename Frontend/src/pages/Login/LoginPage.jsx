@@ -17,6 +17,13 @@ import { useAlert } from "@/context/Snackbar/AlertContext";
 import { ALNUM_DASH_RE } from "@/utils/patterns";
 
 const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
+const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+
+async function safeJson(res) {
+  const text = await res.text();
+  try { return text ? JSON.parse(text) : {}; }
+  catch { return { error: text || res.statusText || "Invalid response" }; }
+}
 
 const Transition = forwardRef(function Transition(props, ref) {
   return <Slide direction="up" ref={ref} {...props} />;
@@ -162,16 +169,15 @@ export default function LoginPage() {
         verifyValue: extra || undefined,
       };
 
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/start`, {
+      const resp = await fetch(join("/api/auth/forgot/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(payload),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Failed to send code");
-      
-      // success -> go OTP
+
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
@@ -204,13 +210,13 @@ export default function LoginPage() {
     if (otpCode.length !== 6) return alert.error("Please enter the 6-digit code.");
     setOtpSubmitting(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/verify`, {
+      const resp = await fetch(join("/api/auth/forgot/verify"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ email: fpEmail.trim().toLowerCase(), code: otpCode }),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Invalid code");
 
       setResetToken(j.resetToken || "");
@@ -225,13 +231,13 @@ export default function LoginPage() {
 
   const onResend = async () => {
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/resend`, {
+      const resp = await fetch(join("/api/auth/forgot/resend"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ email: fpEmail.trim().toLowerCase() }),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Could not resend yet. Try again shortly.");
       alert.info("A new code has been sent.");
     } catch (err) {
@@ -248,16 +254,15 @@ export default function LoginPage() {
 
     setSqLoading(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/sq/start`, {
+      const resp = await fetch(join("/api/auth/forgot/sq/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ identifier: id }),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Unable to start security questions");
 
-      // Backend returns only { ok, sqToken }
       setSqToken(j.sqToken);
       setSqSelectedId(SQ_CATALOG[0].id);
       setSqAnswer("");
@@ -281,13 +286,13 @@ export default function LoginPage() {
 
     setSqLoading(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/sq/verify`, {
+      const resp = await fetch(join("/api/auth/forgot/sq/verify"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ sqToken, answers }),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Verification failed");
 
       setResetToken(j.resetToken || "");
@@ -309,13 +314,13 @@ export default function LoginPage() {
 
     setResetSubmitting(true);
     try {
-      const resp = await fetch(`${API_BASE}/api/auth/forgot/reset`, {
+      const resp = await fetch(join("/api/auth/forgot/reset"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ resetToken, newPassword: newPw }),
       });
-      const j = await resp.json();
+      const j = await safeJson(resp);
       if (!resp.ok) throw new Error(j?.error || "Reset failed");
 
       alert.success("Password updated. Please sign in with your new password.");

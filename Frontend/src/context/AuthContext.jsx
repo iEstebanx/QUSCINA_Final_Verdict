@@ -6,6 +6,13 @@ const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
 const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
+const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+
+async function safeJson(res) {
+  const text = await res.text();
+  try { return text ? JSON.parse(text) : {}; }
+  catch { return { error: text || res.statusText || "Invalid response" }; }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);   // { employeeId, role, ... }
@@ -17,10 +24,9 @@ export function AuthProvider({ children }) {
     let cancelled = false;
 
     async function bootstrap() {
-      // 1) Try sessionStorage (for non-remember logins)
+      // 1) Try sessionStorage
       const tSess = sessionStorage.getItem("qd_token");
       const uSess = sessionStorage.getItem("qd_user");
-
       if (tSess && uSess) {
         try {
           if (!cancelled) {
@@ -32,7 +38,7 @@ export function AuthProvider({ children }) {
         } catch {}
       }
 
-      // 2) Try localStorage (for remember-me logins)
+      // 2) Try localStorage
       const tLocal = localStorage.getItem("qd_token");
       const uLocal = localStorage.getItem("qd_user");
       if (tLocal && uLocal) {
@@ -46,18 +52,16 @@ export function AuthProvider({ children }) {
         } catch {}
       }
 
-      // 3) Fallback: if a cookie session exists, restore it
+      // 3) Fallback: cookie session (soft)
       try {
-        const res = await fetch(`${API_BASE}/api/auth/me?soft=1`, {
+        const res = await fetch(join("/api/auth/me?soft=1"), {
           credentials: "include",
           cache: "no-store",
         });
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) {
-            setUser(data.user || null);
-            setToken(data.token || null);
-          }
+        const data = await safeJson(res);
+        if (res.ok && !cancelled) {
+          setUser(data.user || null);
+          setToken(data.token || null);
         }
       } catch {
         /* ignore */
@@ -66,19 +70,17 @@ export function AuthProvider({ children }) {
     }
 
     bootstrap();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   async function login(identifier, password, { remember } = {}) {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
+    const res = await fetch(join("/api/auth/login"), {
       method: "POST",
       credentials: "include", // needed for cookie on remember=true
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifier, password, remember }),
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) throw new Error(data?.error || "Login failed");
 
     const u = data.user || null;
@@ -106,8 +108,8 @@ export function AuthProvider({ children }) {
     localStorage.removeItem("qd_user");
     sessionStorage.removeItem("qd_token");
     sessionStorage.removeItem("qd_user");
-    // Clear cookie session if any
-    fetch(`${API_BASE}/api/auth/logout`, { credentials: "include" }).catch(() => {});
+    // Best-effort cookie clear
+    fetch(join("/api/auth/logout"), { credentials: "include" }).catch(() => {});
   }
 
   const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);

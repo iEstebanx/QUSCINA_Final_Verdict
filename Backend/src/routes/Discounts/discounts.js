@@ -1,126 +1,171 @@
 // Backend/src/routes/Discounts/discounts.js
 const express = require("express");
-const router = express.Router();
-const { db, FieldValue } = require("../../shared/firebase/firebaseAdmin");
 
-// helper: sequential code (DISC-000001, auto-expands)
+// Prefer DI, but allow fallback to shared pool
+let sharedDb = null;
+try {
+  sharedDb = require("../../shared/db/mysql").db;
+} catch { /* ignore until DI provides db */ }
+
 function formatDiscCode(n) {
   const width = Math.max(6, String(n).length);
   return `DISC-${String(n).padStart(width, "0")}`;
 }
 
-// GET /api/discounts
-router.get("/", async (_req, res) => {
-  try {
-    const snap = await db.collection("discounts").orderBy("createdAt", "desc").get();
-    const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    res.json(items);
-  } catch (e) {
-    console.error("[GET /api/discounts] failed:", e);
-    res.status(500).json({ error: e?.message ?? "Internal Server Error" });
-  }
-});
+module.exports = ({ db } = {}) => {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
 
-// POST /api/discounts  (auto-generate code via transaction)
-router.post("/", async (req, res) => {
-  try {
-    const {
-      name,
-      value,
-      type = "percent",
-      scope = "order",
-      isStackable = false,
-      requiresApproval = false,
-      isActive = true,
-    } = req.body;
+  const router = express.Router();
 
-    const numValue = Number(value);
-    if (!name || !Number.isFinite(numValue)) {
-      return res.status(400).json({ error: "name and numeric value are required" });
-    }
-
-    const countersRef = db.collection("_meta").doc("counters");
-
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(countersRef); // READ 1
-      const prev = snap.exists ? (snap.data().discountsSeq || 0) : 0;
-      const next = prev + 1;
-
-      const code = formatDiscCode(next);
-      const discRef = db.collection("discounts").doc(code);
-      const now = FieldValue.serverTimestamp();
-
-      // bump counter
-      tx.set(
-        countersRef,
-        { discountsSeq: FieldValue.increment(1) },
-        { merge: true }
+  // GET /api/discounts
+  router.get("/", async (_req, res) => {
+    try {
+      const rows = await db.query(
+        `SELECT id, code, name, type, value, scope,
+                isStackable, requiresApproval, isActive,
+                createdAt, updatedAt
+           FROM discounts
+          ORDER BY createdAt DESC`
       );
+      res.json(rows);
+    } catch (e) {
+      console.error("[GET /api/discounts] failed:", e);
+      res.status(500).json({ error: e?.message ?? "Internal Server Error" });
+    }
+  });
 
-      // create the discount doc; fails automatically if it already exists (collision-safe)
-      tx.create(discRef, {
-        code,
-        name: String(name).trim(),
-        type,
-        value: numValue,
-        scope,
-        isStackable,
-        requiresApproval,
-        isActive,
-        createdAt: now,
-        updatedAt: now,
+  // POST /api/discounts  (auto-generate code via transaction)
+  router.post("/", async (req, res) => {
+    try {
+      const {
+        name,
+        value,
+        type = "percent",
+        scope = "order",
+        isStackable = false,
+        requiresApproval = false,
+        isActive = true
+      } = req.body || {};
+
+      const numValue = Number(value);
+      if (!name || !Number.isFinite(numValue)) {
+        return res.status(400).json({ error: "name and numeric value are required" });
+      }
+
+      const result = await db.tx(async (conn) => {
+        // 1) bump the counter atomically
+        await conn.execute(
+          `INSERT INTO _meta_counters (name, val)
+           VALUES ('discountsSeq', 1)
+           ON DUPLICATE KEY UPDATE val = val + 1`
+        );
+
+        const [row] = await conn.query(
+          `SELECT val FROM _meta_counters WHERE name = 'discountsSeq' LIMIT 1`
+        );
+        const next = row?.val || 1;
+        const code = formatDiscCode(next);
+
+        const now = new Date();
+
+        // 2) create the discount (unique code prevents collision)
+        await conn.execute(
+          `INSERT INTO discounts
+           (code, name, type, value, scope, isStackable, requiresApproval, isActive, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            code,
+            String(name).trim(),
+            type,
+            numValue,
+            scope,
+            Boolean(isStackable) ? 1 : 0,
+            Boolean(requiresApproval) ? 1 : 0,
+            Boolean(isActive) ? 1 : 0,
+            now,
+            now
+          ]
+        );
+
+        return { code };
       });
 
-      return { code };
-    });
+      res.status(201).json({ ok: true, code: result.code });
+    } catch (e) {
+      console.error("[POST /api/discounts] failed:", e);
+      res.status(500).json({ error: e?.message ?? "Internal Server Error", stack: String(e?.stack ?? e) });
+    }
+  });
 
-    res.status(201).json({ ok: true, code: result.code });
-  } catch (e) {
-    console.error("[POST /api/discounts] failed:", e);
-    // TEMP: send stack to client so you can see what exactly is blowing up
-    res.status(500).json({
-      error: e?.message ?? "Internal Server Error",
-      stack: String(e?.stack ?? e),
-    });
-  }
-});
+  // PATCH /api/discounts/:code
+  router.patch("/:code", async (req, res) => {
+    try {
+      const { code } = req.params;
+      if (!code) return res.status(400).json({ error: "invalid code" });
 
-// PATCH /api/discounts/:code
-router.patch("/:code", async (req, res) => {
-  try {
-    const { code } = req.params;
-    const patch = { ...req.body, updatedAt: FieldValue.serverTimestamp() };
-    await db.collection("discounts").doc(code).set(patch, { merge: true });
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("[PATCH /api/discounts/:code] failed:", e);
-    res.status(500).json({ error: e?.message ?? "Internal Server Error" });
-  }
-});
+      // sanitize updatable fields
+      const patch = { ...req.body };
+      const allowed = [
+        "name", "type", "value", "scope",
+        "isStackable", "requiresApproval", "isActive"
+      ];
+      const sets = [];
+      const params = [];
 
-// DELETE /api/discounts/:code
-router.delete("/:code", async (req, res) => {
-  try {
-    await db.collection("discounts").doc(req.params.code).delete();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("[DELETE /api/discounts/:code] failed:", e);
-    res.status(500).json({ error: e?.message ?? "Internal Server Error" });
-  }
-});
+      for (const k of allowed) {
+        if (k in patch) {
+          sets.push(`${k} = ?`);
+          if (["isStackable","requiresApproval","isActive"].includes(k)) {
+            params.push(patch[k] ? 1 : 0);
+          } else {
+            params.push(patch[k]);
+          }
+        }
+      }
+      sets.push("updatedAt = ?"); params.push(new Date());
 
-// POST /api/discounts:bulkDelete
-router.post("/bulkDelete", async (req, res) => {
-  try {
-    const { codes = [] } = req.body;
-    const batch = db.batch();
-    codes.forEach((c) => batch.delete(db.collection("discounts").doc(c)));
-    await batch.commit();
-    res.json({ ok: true, count: codes.length });
-  } catch (e) {
-    console.error("[POST /api/discounts:bulkDelete] failed:", e);
-    res.status(500).json({ error: e?.message ?? "Internal Server Error" });
-  }
-});
+      if (sets.length === 1) {
+        return res.status(400).json({ error: "no valid fields to update" });
+      }
 
-module.exports = router;
+      params.push(code);
+      await db.query(`UPDATE discounts SET ${sets.join(", ")} WHERE code = ?`, params);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("[PATCH /api/discounts/:code] failed:", e);
+      res.status(500).json({ error: e?.message ?? "Internal Server Error" });
+    }
+  });
+
+  // DELETE /api/discounts/:code
+  router.delete("/:code", async (req, res) => {
+    try {
+      await db.query(`DELETE FROM discounts WHERE code = ?`, [req.params.code]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("[DELETE /api/discounts/:code] failed:", e);
+      res.status(500).json({ error: e?.message ?? "Internal Server Error" });
+    }
+  });
+
+  // POST /api/discounts:bulkDelete
+  router.post("/bulkDelete", async (req, res) => {
+    try {
+      const { codes = [] } = req.body || {};
+      const list = Array.isArray(codes) ? codes.filter(Boolean) : [];
+      if (!list.length) return res.status(400).json({ error: "codes array required" });
+
+      // Use IN (...) safely
+      const placeholders = list.map(() => "?").join(",");
+      await db.query(`DELETE FROM discounts WHERE code IN (${placeholders})`, list);
+
+      res.json({ ok: true, count: list.length });
+    } catch (e) {
+      console.error("[POST /api/discounts:bulkDelete] failed:", e);
+      res.status(500).json({ error: e?.message ?? "Internal Server Error" });
+    }
+  });
+
+  return router;
+};

@@ -1,6 +1,11 @@
 // Backend/src/shared/OTP/EmailOTP/otp.js
 const bcrypt = require("bcryptjs");
-const { db, FieldValue } = require("../../firebase/firebaseAdmin");
+
+// Prefer DI, but fall back to shared pool
+let sharedDb = null;
+try {
+  sharedDb = require("../../db/mysql").db;
+} catch { /* ignore until DI provides db */ }
 
 /** 6-digit numeric code */
 function genCode() {
@@ -13,44 +18,57 @@ async function hashCode(code) {
   return bcrypt.hash(code, salt);
 }
 
-/** create an OTP doc (purpose: 'reset') and return {otpId, code, expiresAt} */
-async function createEmailOtp({ employeeRefPath, emailLower, ttlSec = 10 * 60 }) {
+/**
+ * create an OTP row and return {otpId, code, expiresAt}
+ * @param {{ db?: any, employeeId?: number, emailLower: string, ttlSec?: number }}
+ */
+async function createEmailOtp({ db, employeeId, emailLower, ttlSec = 10 * 60 }) {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
+
   const code = genCode();
-  const hash = await hashCode(code);
+  const codeHash = await hashCode(code);
   const expiresAt = new Date(Date.now() + ttlSec * 1000);
 
-  const otpDoc = {
-    createdAt: FieldValue.serverTimestamp(),
-    expiresAt,
-    purpose: "reset",
-    channel: "email",
-    emailLower,
-    employeeRefPath,    // e.g. `employees/abc123`
-    codeHash: hash,
-    attempts: 0,
-    usedAt: null,
-    status: "pending",  // 'pending' | 'used' | 'expired' | 'blocked'
-  };
+  const result = await db.query(
+    `INSERT INTO otp (employee_id, email_lower, code_hash, status, attempts, created_at, expires_at, purpose, channel)
+     VALUES (?, ?, ?, 'pending', 0, NOW(), ?, 'reset', 'email')`,
+    [employeeId || null, String(emailLower || "").toLowerCase(), codeHash, expiresAt]
+  );
 
-  const ref = await db.collection("otp").add(otpDoc);
-  return { otpId: ref.id, code, expiresAt };
+  return { otpId: result.insertId, code, expiresAt };
 }
 
 /** fetch latest pending OTP for email */
-async function getLatestPendingOtp(emailLower) {
-  const snap = await db.collection("otp")
-    .where("emailLower", "==", emailLower)
-    .where("purpose", "==", "reset")
-    .where("status", "==", "pending")
-    .orderBy("createdAt", "desc")
-    .limit(1)
-    .get();
-  if (snap.empty) return null;
-  return { id: snap.docs[0].id, data: snap.docs[0].data() };
+async function getLatestPendingOtp(emailLower, { db } = {}) {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
+
+  const rows = await db.query(
+    `SELECT *
+       FROM otp
+      WHERE email_lower = ? AND purpose = 'reset' AND status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [String(emailLower || "").toLowerCase()]
+  );
+  const r = rows[0];
+  if (!r) return null;
+
+  return {
+    id: r.id,
+    data: {
+      ...r,
+      codeHash: r.code_hash,
+      attempts: r.attempts,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at
+    }
+  };
 }
 
 module.exports = {
   genCode,
   createEmailOtp,
-  getLatestPendingOtp,
+  getLatestPendingOtp
 };

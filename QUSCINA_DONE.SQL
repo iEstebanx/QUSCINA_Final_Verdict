@@ -1,60 +1,194 @@
--- ACCOUNT INFORMATION
-CREATE TABLE IF NOT EXISTS credential_types (
-  type_code VARCHAR(32) PRIMARY KEY  -- 'employee_id','username','email'
-) ENGINE=InnoDB;
+-- -- ACCOUNT INFORMATION
+-- CREATE TABLE IF NOT EXISTS credential_types (
+--   type_code VARCHAR(32) PRIMARY KEY  -- 'employee_id','username','email'
+-- ) ENGINE=InnoDB;
 
-INSERT IGNORE INTO credential_types (type_code)
-VALUES ('employee_id'),('username'),('email');
+-- INSERT IGNORE INTO credential_types (type_code)
+-- VALUES ('employee_id'),('username'),('email');
 
--- Aliases (each togglable)
-CREATE TABLE IF NOT EXISTS employee_credentials (
-  cred_id      BIGINT       PRIMARY KEY AUTO_INCREMENT,
-  employee_id  CHAR(9)      NOT NULL,
-  type_code    VARCHAR(32)  NOT NULL,         -- FK -> credential_types
-  value        VARCHAR(255) NOT NULL,         -- the login string
-  is_enabled   TINYINT(1)   NOT NULL DEFAULT 1,
-  is_verified  TINYINT(1)   NOT NULL DEFAULT 0,
-  is_primary   TINYINT(1)   NOT NULL DEFAULT 0,
-  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+-- -- Aliases (each togglable)
+-- CREATE TABLE IF NOT EXISTS employee_credentials (
+--   cred_id      BIGINT       PRIMARY KEY AUTO_INCREMENT,
+--   employee_id  CHAR(9)      NOT NULL,
+--   type_code    VARCHAR(32)  NOT NULL,         -- FK -> credential_types
+--   value        VARCHAR(255) NOT NULL,         -- the login string
+--   is_enabled   TINYINT(1)   NOT NULL DEFAULT 1,
+--   is_verified  TINYINT(1)   NOT NULL DEFAULT 0,
+--   is_primary   TINYINT(1)   NOT NULL DEFAULT 0,
+--   created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+--   updated_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
-  CONSTRAINT fk_empcred_emp  FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
-  CONSTRAINT fk_empcred_type FOREIGN KEY (type_code)   REFERENCES credential_types(type_code),
+--   CONSTRAINT fk_empcred_emp  FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+--   CONSTRAINT fk_empcred_type FOREIGN KEY (type_code)   REFERENCES credential_types(type_code),
 
-  UNIQUE KEY uq_empcred_global_alias (type_code, value),
-  UNIQUE KEY uq_empcred_primary_per_type (employee_id, type_code, is_primary),
+--   UNIQUE KEY uq_empcred_global_alias (type_code, value),
+--   UNIQUE KEY uq_empcred_primary_per_type (employee_id, type_code, is_primary),
 
-  KEY ix_empcred_lookup (type_code, value),
-  KEY ix_empcred_emp (employee_id)
-) ENGINE=InnoDB;
+--   KEY ix_empcred_lookup (type_code, value),
+--   KEY ix_empcred_emp (employee_id)
+-- ) ENGINE=InnoDB;
 
+-- Create the database (use utf8mb4)
+CREATE DATABASE IF NOT EXISTS quscina
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_general_ci;   -- use utf8mb4_0900_ai_ci if MySQL 8.0 (MariaDB doesn't have 0900)
 
+-- Create an application user (pick a strong password)
+CREATE USER IF NOT EXISTS 'quscina_user'@'localhost' IDENTIFIED BY 'StrongPass!234';
+CREATE USER IF NOT EXISTS 'quscina_user'@'127.0.0.1' IDENTIFIED BY 'StrongPass!234';
 
+-- Grant privileges on the app DB
+GRANT ALL PRIVILEGES ON quscina.* TO 'quscina_user'@'localhost';
+GRANT ALL PRIVILEGES ON quscina.* TO 'quscina_user'@'127.0.0.1';
 
+FLUSH PRIVILEGES;
 
+USE quscina;
 
+-- ------------------------------------------------------------
+-- EMPLOYEES
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS employees (
+  employee_id            CHAR(9)      NOT NULL,                  -- 9-digit app-generated id
+  first_name             VARCHAR(60)  NOT NULL,
+  last_name              VARCHAR(60)  NOT NULL,
+  phone                  VARCHAR(11)  NOT NULL,                  -- app validates 10–11 digits
+  role                   ENUM('Admin','Manager','Chef','Cashier') NOT NULL,
+  status                 ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
 
+  username               VARCHAR(60)  NULL,                      -- lowercased in app
+  email                  VARCHAR(191) NULL,
 
+  login_employee_id      TINYINT(1)   NOT NULL DEFAULT 1,
+  login_username         TINYINT(1)   NOT NULL DEFAULT 1,
+  login_email            TINYINT(1)   NOT NULL DEFAULT 1,
 
+  password_hash          VARCHAR(100) NOT NULL,                  -- bcrypt (~60 chars)
+  pin_hash               VARCHAR(100) NOT NULL,
 
+  password_last_changed  DATETIME NULL,
+  photo_url              TEXT NULL,
 
+  created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+  PRIMARY KEY (employee_id),
+  UNIQUE KEY uq_username (username),
+  UNIQUE KEY uq_email    (email),
+  KEY ix_role (role),
+  KEY ix_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ------------------------------------------------------------
+-- ALIASES  (lookup table for login identifiers)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS aliases (
+  alias_key    VARCHAR(256) NOT NULL,   -- e.g. "username:admin"
+  type         ENUM('employee_id','username','email') NOT NULL,
+  value_lower  VARCHAR(191) NOT NULL,
+  employee_id  CHAR(9) NOT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+  PRIMARY KEY (alias_key),
+  UNIQUE KEY uq_type_value (type, value_lower),
+  KEY ix_alias_emp (employee_id),
+  CONSTRAINT fk_alias_emp
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE discounts (
-  discount_id        BIGINT        PRIMARY KEY AUTO_INCREMENT,
-  code               VARCHAR(64)   UNIQUE,
-  name               VARCHAR(150)  NOT NULL,
-  type_code          VARCHAR(32)   NOT NULL,  -- discounts_type
-  value              DECIMAL(12,4) NOT NULL,  -- if 'percent', store e.g. 10.0 for 10%
-  scope              VARCHAR(32)   NOT NULL,  -- free-form until you define a lookup (e.g., 'order','item')
-  is_stackable       TINYINT(1)    NOT NULL DEFAULT 0,
-  requires_approval  TINYINT(1)    NOT NULL DEFAULT 0,
-  is_active          TINYINT(1)    NOT NULL DEFAULT 1,
-  created_at         DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at         DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  CONSTRAINT fk_discounts_type FOREIGN KEY (type_code) REFERENCES discounts_type(type_code)
-) ENGINE=InnoDB;
+-- ------------------------------------------------------------
+-- SECURITY QUESTIONS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS employee_security_questions (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id  CHAR(9) NOT NULL,
+  question_id  ENUM('pet','school','city','mother_maiden','nickname') NOT NULL,
+  answer_hash  VARCHAR(100) NOT NULL,
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+  PRIMARY KEY (id),
+  KEY ix_sq_emp (employee_id),
+  UNIQUE KEY uq_emp_question (employee_id, question_id),
+  CONSTRAINT fk_sq_emp
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ------------------------------------------------------------
+-- OTP store for forgot password via email
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS otp (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id     CHAR(9) NULL,                         -- may be null if email not linked yet
+  email_lower     VARCHAR(191) NOT NULL,
+  code_hash       VARCHAR(100) NOT NULL,
+  status          ENUM('pending','used','expired','blocked') NOT NULL DEFAULT 'pending',
+  attempts        INT NOT NULL DEFAULT 0,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at      DATETIME NOT NULL,
+  used_at         DATETIME NULL,
+  expired_at      DATETIME NULL,
+  blocked_at      DATETIME NULL,
+  last_attempt_at DATETIME NULL,
+
+  PRIMARY KEY (id),
+  KEY ix_otp_email_status (email_lower, status),
+  KEY ix_otp_created (created_at),
+  KEY ix_otp_emp (employee_id),
+  CONSTRAINT fk_otp_emp
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- SEED ADMIN (edit the hashes before running)
+-- ------------------------------------------------------------
+
+-- 1) Generate hashes in a terminal:
+-- Password: Admin@1234
+--    node -e "const b=require('bcryptjs');b.hash('Admin@1234',12).then(h=>console.log(h))"
+-- PIN: 123456
+--    node -e "const b=require('bcryptjs');b.hash('123456',12).then(h=>console.log(h))"
+-- Optional SQ answer ('fluffy'):
+--    node -e "const b=require('bcryptjs');b.hash('fluffy',12).then(h=>console.log(h))"
+
+-- 2) Insert employee
+INSERT INTO employees (
+  employee_id, first_name, last_name, phone, role, status,
+  username, email,
+  login_employee_id, login_username, login_email,
+  password_hash, pin_hash, password_last_changed
+) VALUES (
+  '202500001', 'System', 'Admin', '09559391324', 'Admin', 'Active',
+  'admin', 'admin@quscina.local',
+  1, 1, 1,
+  '<PASTE_PASSWORD_HASH>', '<PASTE_PIN_HASH>', NOW()
+)
+ON DUPLICATE KEY UPDATE
+  first_name=VALUES(first_name),
+  last_name=VALUES(last_name),
+  phone=VALUES(phone),
+  role=VALUES(role),
+  status=VALUES(status),
+  username=VALUES(username),
+  email=VALUES(email),
+  login_employee_id=VALUES(login_employee_id),
+  login_username=VALUES(login_username),
+  login_email=VALUES(login_email),
+  password_hash=VALUES(password_hash),
+  pin_hash=VALUES(pin_hash),
+  password_last_changed=VALUES(password_last_changed);
+
+-- 3) Insert aliases (enables all 3 login identifiers)
+INSERT INTO aliases (alias_key, type, value_lower, employee_id) VALUES
+  ('employee_id:202500001', 'employee_id', '202500001', '202500001'),
+  ('username:admin',        'username',    'admin',      '202500001'),
+  ('email:admin@quscina.local','email',    'admin@quscina.local', '202500001')
+ON DUPLICATE KEY UPDATE employee_id=VALUES(employee_id);
+
+-- 4) Optional: one security question (answer "fluffy")
+INSERT INTO employee_security_questions (employee_id, question_id, answer_hash)
+VALUES ('202500001','pet','<PASTE_FLUFFY_HASH>')
+ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);

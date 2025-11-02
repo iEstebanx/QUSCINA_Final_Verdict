@@ -1,126 +1,123 @@
 // Backend/src/routes/Inventory/invCategories.js
 const express = require("express");
 
-// 👇 Import the named exports from your helper
-const {
-  db,                // Firestore instance
-  FieldValue,        // admin.firestore.FieldValue
-} = require("../../shared/firebase/firebaseAdmin");
+// Prefer DI, but fall back to shared pool
+let sharedDb = null;
+try { sharedDb = require("../../shared/db/mysql").db; } catch {}
 
-const router = express.Router();
-const COLL = "inventory_categories";
-
-/* ---------- helpers ---------- */
 const NAME_MAX = 60;
 const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
 const normalizeName = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-const isValidName = (s) =>
-  !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
+const isValidName = (s) => !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
-function tsToISO(ts) {
-  // Firestore Timestamp -> ISO, or null
+const toISO = (v) => {
   try {
-    if (!ts) return null;
-    // if it's already a JS Date or ISO string, handle gracefully
-    if (ts instanceof Date) return ts.toISOString();
-    if (typeof ts === "string") return ts;
-    if (typeof ts.toDate === "function") return ts.toDate().toISOString();
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-/* ------------------------------ */
+    if (!v) return null;
+    if (typeof v === "string") return v;
+    return new Date(v).toISOString();
+  } catch { return null; }
+};
 
-/** GET /api/inventory/inv-categories */
-router.get("/", async (_req, res) => {
-  try {
-    // order by createdAt descending so newest items come first
-    const snap = await db.collection(COLL).orderBy("createdAt", "desc").get();
-    const categories = snap.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        name: data.name,
-        createdAt: tsToISO(data.createdAt),
-        updatedAt: tsToISO(data.updatedAt),
-        // include any other fields you expect, but explicitly list them to avoid non-serializable values
+module.exports = ({ db } = {}) => {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
+
+  const router = express.Router();
+
+  // GET /api/inventory/inv-categories
+  router.get("/", async (_req, res) => {
+    try {
+      const rows = await db.query(
+        `SELECT id, name, createdAt, updatedAt
+           FROM inventory_categories
+          ORDER BY createdAt DESC`
+      );
+      const categories = rows.map(r => ({
+        id: String(r.id),
+        name: r.name,
+        createdAt: toISO(r.createdAt),
+        updatedAt: toISO(r.updatedAt)
+      }));
+      res.json({ ok: true, categories });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || "List failed" });
+    }
+  });
+
+  // POST /api/inventory/inv-categories { name }
+  router.post("/", async (req, res) => {
+    try {
+      const name = normalizeName(req.body?.name);
+      if (!isValidName(name)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+        });
+      }
+      const now = new Date();
+      const result = await db.query(
+        `INSERT INTO inventory_categories (name, createdAt, updatedAt)
+         VALUES (?, ?, ?)`,
+        [name, now, now]
+      );
+      const id = result.insertId;
+      const row = await db.query(
+        `SELECT id, name, createdAt, updatedAt FROM inventory_categories WHERE id = ?`,
+        [id]
+      );
+      const d = row[0];
+      const category = {
+        id: String(d.id),
+        name: d.name,
+        createdAt: toISO(d.createdAt),
+        updatedAt: toISO(d.updatedAt)
       };
-    });
-    res.json({ ok: true, categories });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || "List failed" });
-  }
-});
-
-/** POST /api/inventory/inv-categories  { name } */
-router.post("/", async (req, res) => {
-  try {
-    const name = normalizeName(req.body?.name);
-    if (!isValidName(name)) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
-      });
+      res.status(201).json({ ok: true, category });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || "Create failed" });
     }
-    const now = FieldValue.serverTimestamp();
-    const ref = await db.collection(COLL).add({ name, createdAt: now, updatedAt: now });
+  });
 
-    // read the created doc to return the actual stored timestamps (as ISO strings)
-    const doc = await ref.get();
-    const data = doc.data() || {};
-    const category = {
-      id: doc.id,
-      name: data.name,
-      createdAt: tsToISO(data.createdAt),
-      updatedAt: tsToISO(data.updatedAt),
-    };
+  // PATCH /api/inventory/inv-categories/:id { name }
+  router.patch("/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "Not found" });
 
-    res.status(201).json({ ok: true, category });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || "Create failed" });
-  }
-});
+      const name = normalizeName(req.body?.name);
+      if (!isValidName(name)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+        });
+      }
 
-/** PATCH /api/inventory/inv-categories/:id  { name } */
-router.patch("/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const name = normalizeName(req.body?.name);
-    if (!isValidName(name)) {
-      return res.status(400).json({
-        ok: false,
-        error:
-          "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
-      });
+      await db.query(
+        `UPDATE inventory_categories SET name = ?, updatedAt = ? WHERE id = ?`,
+        [name, new Date(), id]
+      );
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || "Update failed" });
     }
+  });
 
-    const ref = db.collection(COLL).doc(id);
-    const doc = await ref.get();
-    if (!doc.exists) return res.status(404).json({ ok: false, error: "Not found" });
+  // DELETE /api/inventory/inv-categories  { ids: string[] }
+  router.delete("/", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite)
+        : [];
+      if (!ids.length) return res.status(400).json({ ok: false, error: "No ids provided" });
 
-    await ref.update({ name, updatedAt: FieldValue.serverTimestamp() });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || "Update failed" });
-  }
-});
+      const placeholders = ids.map(() => "?").join(",");
+      await db.query(`DELETE FROM inventory_categories WHERE id IN (${placeholders})`, ids);
 
-/** DELETE /api/inventory/inv-categories  { ids: string[] } */
-router.delete("/", async (req, res) => {
-  try {
-    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
-    if (!ids.length) return res.status(400).json({ ok: false, error: "No ids provided" });
+      res.json({ ok: true, deleted: ids.length });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || "Delete failed" });
+    }
+  });
 
-    const batch = db.batch();
-    ids.forEach((id) => batch.delete(db.collection(COLL).doc(id)));
-    await batch.commit();
-
-    res.json({ ok: true, deleted: ids.length });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || "Delete failed" });
-  }
-});
-
-module.exports = router;
+  return router;
+};

@@ -1,7 +1,6 @@
 // Frontend/src/services/Discounts/discounts.jsx
-// (kept Firestore imports in case you want to switch back later)
-import { collection, onSnapshot, query, orderBy } from "firebase/firestore";
-import { db } from "@/utils/firebaseConfig";
+const API_BASE = import.meta.env?.VITE_API_BASE || "";
+const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
 
 // safer JSON parse for API responses
 async function safeJson(res) {
@@ -10,11 +9,9 @@ async function safeJson(res) {
   catch { return { error: text || res.statusText || "Invalid response" }; }
 }
 
-const colRef = collection(db, "discounts");
-
 /**
  * Live reads via backend polling (works with cookie sessions).
- * Calls cb({ rows }) like your page expects.
+ * Calls cb({ rows })
  */
 export function subscribeDiscounts(cb, { intervalMs = 5000, onError } = {}) {
   let stopped = false;
@@ -22,17 +19,20 @@ export function subscribeDiscounts(cb, { intervalMs = 5000, onError } = {}) {
 
   async function tick() {
     try {
-      const res = await fetch("/api/discounts", {
+      const res = await fetch(join("/api/discounts"), {
         method: "GET",
-        credentials: "include",              // <-- important
+        credentials: "include",
         headers: { Accept: "application/json" },
       });
       const data = await safeJson(res);
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const rows = (Array.isArray(data) ? data : []).map(d => ({
-        id: d.id || d.code,  // normalize id for table/selection
+
+      // Backend returns an array of discounts
+      const rows = (Array.isArray(data) ? data : []).map((d) => ({
+        id: d.id || d.code, // keep your UI happy
         ...d,
       }));
+
       cb({ rows });
     } catch (e) {
       console.error("[subscribeDiscounts] failed:", e);
@@ -46,20 +46,23 @@ export function subscribeDiscounts(cb, { intervalMs = 5000, onError } = {}) {
   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }
 
-// If you ever want true Firestore realtime & your rules allow it, you can switch back:
-// export function subscribeDiscounts(cb, { onError } = {}) {
-//   const q = query(colRef, orderBy("createdAt", "desc"));
-//   return onSnapshot(q,
-//     snap => cb({ rows: snap.docs.map(d => ({ id: d.id, ...d.data() })) }),
-//     err  => onError?.(err.message || "Firestore read failed")
-//   );
-// }
+/** Optional one-shot fetch */
+export async function fetchDiscountsOnce() {
+  const res = await fetch(join("/api/discounts"), {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.error || "Fetch discounts failed");
+  return (Array.isArray(data) ? data : []).map((d) => ({ id: d.id || d.code, ...d }));
+}
 
-// Writes go through your API (with cookies)
+/** Writes go through your API (with cookies) */
 export async function createDiscountAuto(payload) {
-  const res = await fetch("/api/discounts", {
+  const res = await fetch(join("/api/discounts"), {
     method: "POST",
-    credentials: "include",                 // <-- added
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name: payload.name,
@@ -77,9 +80,9 @@ export async function createDiscountAuto(payload) {
 }
 
 export async function updateDiscount(code, patch) {
-  const res = await fetch(`/api/discounts/${encodeURIComponent(code)}`, {
+  const res = await fetch(join(`/api/discounts/${encodeURIComponent(code)}`), {
     method: "PATCH",
-    credentials: "include",                 // <-- added
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
@@ -89,9 +92,9 @@ export async function updateDiscount(code, patch) {
 }
 
 export async function deleteDiscount(code) {
-  const res = await fetch(`/api/discounts/${encodeURIComponent(code)}`, {
+  const res = await fetch(join(`/api/discounts/${encodeURIComponent(code)}`), {
     method: "DELETE",
-    credentials: "include",                 // <-- added
+    credentials: "include",
   });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Delete failed");
@@ -99,9 +102,9 @@ export async function deleteDiscount(code) {
 }
 
 export async function deleteMany(codes = []) {
-  const res = await fetch(`/api/discounts/bulkDelete`, {
+  const res = await fetch(join(`/api/discounts/bulkDelete`), {
     method: "POST",
-    credentials: "include",                 // <-- added
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ codes }),
   });

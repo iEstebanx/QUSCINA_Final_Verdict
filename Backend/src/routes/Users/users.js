@@ -1,12 +1,14 @@
 // Backend/src/routes/Users/users.js
 const express = require("express");
-const router = express.Router();
 const bcrypt = require("bcryptjs");
-const { db, FieldValue, Timestamp } = require("../../shared/firebase/firebaseAdmin");
+
+// Prefer DI, but fall back to shared pool
+let sharedDb = null;
+try { sharedDb = require("../../shared/db/mysql").db; } catch {}
 
 const SALT_ROUNDS = 12;
 
-// 🔐 Supported questions (must match frontend)
+// 🔐 Supported security questions
 const SQ_CATALOG = {
   pet: "What is the name of your first pet?",
   school: "What is the name of your elementary school?",
@@ -15,60 +17,33 @@ const SQ_CATALOG = {
   nickname: "What was your childhood nickname?",
 };
 
+// Utility helpers
+const normalizeAnswer = (s) => String(s || "").trim().toLowerCase();
+
+const pick = (obj, keys) => {
+  const out = {};
+  keys.forEach((k) => { if (obj?.[k] !== undefined) out[k] = obj[k]; });
+  return out;
+};
+
 function aliasKey(type, value) {
   return `${type}:${String(value || "").trim().toLowerCase()}`;
 }
 
-function pick(obj, keys) {
-  const out = {};
-  keys.forEach((k) => {
-    if (obj?.[k] !== undefined) out[k] = obj[k];
-  });
-  return out;
-}
-
-// Normalize answers (case/space-insensitive by design)
-function normalizeAnswer(s) {
-  return String(s || "").trim().toLowerCase();
-}
-
-// Build validated + hashed SQ entries
-// `when` must be a concrete Timestamp (not FieldValue.serverTimestamp())
-async function buildSQEntries(inputArr, when) {
-  if (!Array.isArray(inputArr)) return undefined; // not provided
-  if (inputArr.length === 0) return []; // allow clearing
-
-  const items = (inputArr ?? []).filter(
-    (q) => !!q?.id && typeof q?.answer === "string" && q.answer.trim().length > 0
-  );
-  if (items.length > 2) throw new Error("You can only set up to 2 security questions.");
-
-  const ids = items.map((q) => q.id);
-  if (new Set(ids).size !== ids.length) {
-    throw new Error("Security questions must be different.");
-  }
-
-  const out = [];
-  for (const q of items) {
-    if (!SQ_CATALOG[q.id]) throw new Error("Unknown security question id.");
-    const norm = normalizeAnswer(q.answer);
-    if (!norm) throw new Error("Security question answers cannot be empty.");
-    const answerHash = await bcrypt.hash(norm, SALT_ROUNDS);
-    out.push({ id: q.id, question: SQ_CATALOG[q.id], answerHash, updatedAt: when });
-  }
-  return out;
-}
-
-/* ===========================
-   Helpers to reduce complexity
-   =========================== */
-
-function mergeLoginVia(currentLoginVia = { employeeId: true, username: true, email: true }, nextLoginVia = {}) {
+function mergeLoginVia(cur = { employeeId: true, username: true, email: true }, next = {}) {
   return {
-    employeeId: !!(nextLoginVia.employeeId ?? currentLoginVia.employeeId),
-    username: !!(nextLoginVia.username ?? currentLoginVia.username),
-    email: !!(nextLoginVia.email ?? currentLoginVia.email),
+    employeeId: !!(next.employeeId ?? cur.employeeId),
+    username: !!(next.username ?? cur.username),
+    email: !!(next.email ?? cur.email),
   };
+}
+
+function ensureAtLeastOneMethod(loginVia) {
+  if (!loginVia.employeeId && !loginVia.username && !loginVia.email) {
+    const err = new Error("At least one login method must be enabled");
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 function makeAliases(loginVia, username, email, employeeId) {
@@ -79,29 +54,6 @@ function makeAliases(loginVia, username, email, employeeId) {
   return keys;
 }
 
-function ensureAtLeastOneMethod(loginVia) {
-  if (!loginVia.employeeId && !loginVia.username && !loginVia.email) {
-    throw new Error("At least one login method must be enabled");
-  }
-}
-
-async function requireCurrentPasswordIfNeeded(curDoc, hasNewPassword, currentPassword) {
-  if (!hasNewPassword) return;
-  const hasExisting = !!curDoc?.passwordHash;
-  if (!hasExisting) return; // allow set if none before
-  if (!currentPassword) {
-    const err = new Error("Current password is required.");
-    err.statusCode = 400;
-    throw err;
-  }
-  const ok = await bcrypt.compare(currentPassword, curDoc.passwordHash);
-  if (!ok) {
-    const err = new Error("Current password is incorrect.");
-    err.statusCode = 400;
-    throw err;
-  }
-}
-
 function diffAliases(currentKeys, desiredKeys) {
   return {
     toDelete: currentKeys.filter((k) => !desiredKeys.includes(k)),
@@ -109,279 +61,356 @@ function diffAliases(currentKeys, desiredKeys) {
   };
 }
 
-async function assertAliasUniquenessTx(tx, keysToCreate, employeeId) {
-  for (const key of keysToCreate) {
-    const aref = db.collection("aliases").doc(key);
-    const a = await tx.get(aref);
-    if (a.exists && a.data()?.employeeId !== String(employeeId)) {
-      throw new Error("Credential (alias) already in use");
-    }
-  }
-}
-
-async function buildUpdateDoc({
-  cur,
-  next,
-  newUsername,
-  newEmail,
-  desiredLoginVia,
-  hasNewPassword,
-  hasNewPin,
-  patch,
-  now, // serverTimestamp sentinel
-  sqProvided,
-  sqEntries, // [] or array or undefined
-}) {
-  const updateDoc = {
-    ...next,
-    username: newUsername,
-    email: newEmail,
-    loginVia: desiredLoginVia,
-    updatedAt: now,
+// ---- DB <-> API mappers ----
+function dbLoginViaToObj(row) {
+  return {
+    employeeId: !!row.login_employee_id,
+    username: !!row.login_username,
+    email: !!row.login_email,
   };
-
-  if (hasNewPassword) {
-    updateDoc.passwordHash = await bcrypt.hash(patch.password, SALT_ROUNDS);
-    updateDoc.passwordLastChanged = now;
-  }
-  if (hasNewPin) {
-    updateDoc.pinHash = await bcrypt.hash(patch.pin, SALT_ROUNDS);
-  }
-  if (sqProvided) {
-    updateDoc.securityQuestions = sqEntries; // replace with [] or array
-  }
-  return { ...cur, ...updateDoc };
 }
 
-function applyAliasWritesTx(tx, { toDelete, toCreate }, now, employeeId) {
-  for (const key of toDelete) {
-    tx.delete(db.collection("aliases").doc(key));
-  }
-  for (const key of toCreate) {
-    const [type, valueLower] = key.split(":");
-    tx.set(db.collection("aliases").doc(key), {
-      type,
-      valueLower,
-      employeeId: String(employeeId),
-      createdAt: now,
-    });
-  }
+function objToDbLoginVia(loginVia = { employeeId: true, username: true, email: true }) {
+  return {
+    login_employee_id: loginVia.employeeId ? 1 : 0,
+    login_username: loginVia.username ? 1 : 0,
+    login_email: loginVia.email ? 1 : 0,
+  };
 }
 
-/* ===========================
-   Routes
-   =========================== */
+function sqIdsToDisplay(items = []) {
+  return items.map((q) => ({ id: q.id, question: SQ_CATALOG[q.id] || "Security question" }));
+}
 
-// GET /api/users  (simple list — omit answer hashes)
-router.get("/", async (_req, res) => {
-  try {
-    const snap = await db.collection("employees").orderBy("createdAt", "desc").get();
-    const rows = snap.docs.map((d) => {
-      const data = d.data() ?? {};
-      const safeSQ = Array.isArray(data.securityQuestions)
-        ? data.securityQuestions.map((q) => ({ id: q.id, question: q.question }))
-        : [];
-      return { id: d.id, ...data, securityQuestions: safeSQ };
-    });
-    res.json(rows);
-  } catch (e) {
-    console.error("[GET /api/users] fail:", e);
-    res.status(500).json({ error: e?.message ?? "Failed to list users" });
+async function requireCurrentPasswordIfNeeded(curRow, hasNewPassword, currentPassword) {
+  if (!hasNewPassword) return;
+  const hasExisting = !!curRow?.passwordHash;
+  if (!hasExisting) return;
+  if (!currentPassword) throw new Error("Current password is required.");
+  const ok = await bcrypt.compare(currentPassword, curRow.passwordHash);
+  if (!ok) throw new Error("Current password is incorrect.");
+}
+
+// Build validated + hashed SQ entries
+async function buildSQEntries(inputArr) {
+  if (!Array.isArray(inputArr)) return undefined;
+  if (inputArr.length === 0) return [];
+  const items = inputArr.filter(
+    (q) => !!q?.id && typeof q?.answer === "string" && q.answer.trim().length > 0
+  );
+  if (items.length > 2) throw new Error("You can only set up to 2 security questions.");
+  const ids = items.map((q) => q.id);
+  if (new Set(ids).size !== ids.length) throw new Error("Security questions must be different.");
+
+  const out = [];
+  for (const q of items) {
+    if (!SQ_CATALOG[q.id]) throw new Error("Unknown security question id.");
+    const norm = normalizeAnswer(q.answer);
+    const answerHash = await bcrypt.hash(norm, SALT_ROUNDS);
+    out.push({ id: q.id, question: SQ_CATALOG[q.id], answerHash, updatedAt: new Date().toISOString() });
   }
-});
+  return out;
+}
 
-// POST /api/users  (create)
-router.post("/", async (req, res) => {
-  try {
-    const {
-      employeeId,
-      firstName, lastName, phone, role, status,
-      username = "", email = "",
-      loginVia = { employeeId: true, username: true, email: true },
-      password, pin, photoUrl = "",
-      securityQuestions = undefined,
-    } = req.body;
+// Generate next 9-digit id: "YYYYxxxxx"
+async function generateNextEmployeeId(conn, year = new Date().getFullYear()) {
+  const prefix = String(year);
+  const [{ max_id }] = await conn.query(
+    `SELECT MAX(employee_id) AS max_id FROM employees WHERE employee_id LIKE ?`,
+    [`${prefix}%`]
+  );
+  const base = Number(`${prefix}00000`);
+  const nextNum = Math.max(base, Number(max_id || 0)) + 1;
+  const nextStr = String(nextNum);
+  return /^\d{9}$/.test(nextStr) ? nextStr : `${prefix}00001`;
+}
 
-    // Basic validation (backend must re-check)
-    if (!/^\d{9}$/.test(String(employeeId))) return res.status(400).json({ error: "employeeId must be 9 digits" });
-    if (!firstName?.trim() || !lastName?.trim()) return res.status(400).json({ error: "firstName and lastName are required" });
-    if (!/^\d{10,11}$/.test(String(phone || ""))) return res.status(400).json({ error: "phone must be 10–11 digits" });
-    if (!role) return res.status(400).json({ error: "role is required" });
-    if (!status) return res.status(400).json({ error: "status is required" });
-    if (!password || password.length < 8) return res.status(400).json({ error: "password must be at least 8 chars" });
-    if (!/^\d{6}$/.test(String(pin || ""))) return res.status(400).json({ error: "pin must be 6 digits" });
-    if (!loginVia?.employeeId && !loginVia?.username && !loginVia?.email) {
-      return res.status(400).json({ error: "At least one login method must be enabled" });
+module.exports = ({ db } = {}) => {
+  db = db || sharedDb;
+  if (!db) throw new Error("DB pool not available");
+  const router = express.Router();
+
+  /* =============================
+     GET /api/users
+     ============================= */
+  router.get("/", async (_req, res) => {
+    try {
+      const rows = await db.query(`
+        SELECT
+          e.employee_id, e.first_name, e.last_name, e.phone,
+          e.role, e.status, e.username, e.email,
+          e.login_employee_id, e.login_username, e.login_email,
+          e.password_last_changed, e.photo_url, e.created_at, e.updated_at,
+          (
+            SELECT JSON_ARRAYAGG(JSON_OBJECT('id', sq.question_id))
+            FROM employee_security_questions sq
+            WHERE sq.employee_id = e.employee_id
+          ) AS sq_json
+        FROM employees e
+        ORDER BY e.created_at DESC
+      `);
+
+      const safe = rows.map((r) => {
+        let sqIds = [];
+        try {
+          const parsed = typeof r.sq_json === "string" ? JSON.parse(r.sq_json || "[]") : (r.sq_json || []);
+          sqIds = Array.isArray(parsed) ? parsed : [];
+        } catch { sqIds = []; }
+
+        return {
+          id: String(r.employee_id),
+          employeeId: String(r.employee_id),
+          firstName: r.first_name,
+          lastName: r.last_name,
+          phone: r.phone,
+          role: r.role,
+          status: r.status,
+          username: r.username,
+          email: r.email,
+          loginVia: dbLoginViaToObj(r),
+          passwordLastChanged: r.password_last_changed,
+          photoUrl: r.photo_url,
+          securityQuestions: sqIdsToDisplay(sqIds),
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        };
+      });
+
+      res.json(safe);
+    } catch (e) {
+      console.error("[GET /api/users] fail:", e);
+      res.status(500).json({ error: e?.message ?? "Failed to list users" });
     }
+  });
 
-    const now = FieldValue.serverTimestamp();
-    const nowTS = Timestamp.now();
-    const employeeRef = db.collection("employees").doc(String(employeeId));
+  /* =============================
+     POST /api/users (create)
+     ============================= */
+  router.post("/", async (req, res) => {
+    try {
+      const {
+        employeeId, firstName, lastName, phone, role, status,
+        username = "", email = "",
+        loginVia = { employeeId: true, username: true, email: true },
+        password, pin, photoUrl = "", securityQuestions = undefined,
+      } = req.body;
 
-    const uname = String(username || "").trim().toLowerCase();
-    const mail = String(email || "").trim();
+      if (!firstName?.trim() || !lastName?.trim()) return res.status(400).json({ error: "firstName and lastName are required" });
+      if (!/^\d{10,11}$/.test(String(phone || ""))) return res.status(400).json({ error: "phone must be 10–11 digits" });
+      if (!role) return res.status(400).json({ error: "role is required" });
+      if (!status) return res.status(400).json({ error: "status is required" });
+      if (!password || password.length < 8) return res.status(400).json({ error: "password must be at least 8 chars" });
+      if (!/^\d{6}$/.test(String(pin || ""))) return res.status(400).json({ error: "pin must be 6 digits" });
 
-    const aliasDocsToCreate = [];
-    if (loginVia.employeeId) aliasDocsToCreate.push({ ref: db.collection("aliases").doc(aliasKey("employee_id", employeeId)) });
-    if (loginVia.username && uname) aliasDocsToCreate.push({ ref: db.collection("aliases").doc(aliasKey("username", uname)) });
-    if (loginVia.email && mail) aliasDocsToCreate.push({ ref: db.collection("aliases").doc(aliasKey("email", mail)) });
+      const uname = String(username || "").trim().toLowerCase();
+      const mail = String(email || "").trim();
+      const desiredLoginVia = mergeLoginVia(undefined, loginVia);
+      ensureAtLeastOneMethod(desiredLoginVia);
 
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
+      const sqEntries = await buildSQEntries(securityQuestions);
+      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+      const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
 
-    // Prepare SQ entries (may be [], undefined, or array)
-    const sqEntries = await buildSQEntries(securityQuestions, nowTS);
+      await db.tx(async (conn) => {
+        let id = /^\d{9}$/.test(String(employeeId)) ? String(employeeId) : null;
+        const lv = objToDbLoginVia(desiredLoginVia);
 
-    await db.runTransaction(async (tx) => {
-      const existingEmployee = await tx.get(employeeRef);
-      if (existingEmployee.exists) throw new Error("Employee already exists");
+        for (let attempt = 0; attempt < 5; attempt++) {
+          if (!id) id = await generateNextEmployeeId(conn);
+          try {
+            await conn.execute(
+              `INSERT INTO employees
+                (employee_id, first_name, last_name, phone, role, status,
+                 username, email,
+                 login_employee_id, login_username, login_email,
+                 password_hash, pin_hash, password_last_changed, photo_url,
+                 created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?,
+                       ?, ?,
+                       ?, ?, ?,
+                       ?, ?, NOW(), ?,
+                       NOW(), NOW())`,
+              [
+                id, firstName.trim(), lastName.trim(), String(phone),
+                role, status,
+                uname || null, mail || null,
+                lv.login_employee_id, lv.login_username, lv.login_email,
+                passwordHash, pinHash, photoUrl || null,
+              ]
+            );
+            break;
+          } catch (err) {
+            if (err?.code === "ER_DUP_ENTRY") { id = null; continue; }
+            throw err;
+          }
+        }
 
-      // check uniqueness for each alias
-      for (const { ref } of aliasDocsToCreate) {
-        const a = await tx.get(ref);
-        if (a.exists) throw new Error("Credential (alias) already in use");
-      }
+        const aliasesWanted = makeAliases(desiredLoginVia, uname, mail, id);
+        for (const key of aliasesWanted) {
+          const [type, valueLower] = key.split(":");
+          try {
+            await conn.execute(
+              `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
+               VALUES (?, ?, ?, ?, NOW())`,
+              [key, type, valueLower, id]
+            );
+          } catch (err) {
+            if (err?.code === "ER_DUP_ENTRY") {
+              if (type === "username") throw new Error("Username already in use");
+              if (type === "email") throw new Error("Email already in use");
+              throw new Error("Credential (alias) already in use");
+            }
+            throw err;
+          }
+        }
 
-      // create employee
-      const doc = {
-        employeeId: String(employeeId),
-        firstName: String(firstName).trim(),
-        lastName: String(lastName).trim(),
-        phone: String(phone),
-        role, status,
-        username: uname,
-        email: mail,
-        loginVia: {
-          employeeId: !!loginVia.employeeId,
-          username: !!loginVia.username,
-          email: !!loginVia.email,
+        if (Array.isArray(sqEntries)) {
+          for (const q of sqEntries) {
+            await conn.execute(
+              `INSERT INTO employee_security_questions
+                 (employee_id, question_id, answer_hash, updated_at, created_at)
+               VALUES (?, ?, ?, NOW(), NOW())
+               ON DUPLICATE KEY UPDATE
+                 answer_hash = VALUES(answer_hash),
+                 updated_at = NOW()`,
+              [id, q.id, q.answerHash]
+            );
+          }
+        }
+      });
+
+      res.status(201).json({ ok: true });
+    } catch (e) {
+      console.error("[POST /api/users] fail:", e);
+      res.status(500).json({ error: e?.message ?? "Failed to create user" });
+    }
+  });
+
+  /* =============================
+     PATCH /api/users/:employeeId
+     ============================= */
+  router.patch("/:employeeId", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const patch = req.body ?? {};
+      const hasNewPassword = typeof patch.password === "string" && patch.password.length >= 8;
+      const hasNewPin = typeof patch.pin === "string" && /^\d{6}$/.test(patch.pin);
+      const currentPassword = typeof patch.currentPassword === "string" ? patch.currentPassword : "";
+
+      const curRows = await db.query(`SELECT * FROM employees WHERE employee_id = ? LIMIT 1`, [String(employeeId)]);
+      if (!curRows.length) return res.status(404).json({ error: "Employee not found" });
+      const cur = curRows[0];
+
+      await requireCurrentPasswordIfNeeded({ passwordHash: cur.password_hash }, hasNewPassword, currentPassword);
+
+      const next = pick(patch, ["firstName", "lastName", "phone", "role", "status", "username", "email", "loginVia", "photoUrl"]);
+
+      const desiredLoginVia = mergeLoginVia(
+        {
+          employeeId: !!cur.login_employee_id,
+          username: !!cur.login_username,
+          email: !!cur.login_email,
         },
-        passwordHash,
-        pinHash,
-        passwordLastChanged: now,
-        photoUrl,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      if (sqEntries !== undefined) {
-        doc.securityQuestions = sqEntries; // set [] or array
-      }
-
-      tx.set(employeeRef, doc);
-
-      // create alias docs
-      for (const { ref } of aliasDocsToCreate) {
-        const [type, valueLower] = ref.id.split(":");
-        tx.set(ref, { type, valueLower, employeeId: String(employeeId), createdAt: now });
-      }
-    });
-
-    res.status(201).json({ ok: true });
-  } catch (e) {
-    console.error("[POST /api/users] fail:", e);
-    res.status(500).json({ error: e?.message ?? "Failed to create user" });
-  }
-});
-
-// PATCH /api/users/:employeeId  (update + alias maintenance)
-router.patch("/:employeeId", async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const patch = req.body ?? {};
-
-    const now = FieldValue.serverTimestamp();
-    const nowTS = Timestamp.now();
-    const employeeRef = db.collection("employees").doc(String(employeeId));
-
-    // Optional sensitive updates (re-hash if provided)
-    const next = pick(patch, [
-      "firstName", "lastName", "phone", "role", "status",
-      "username", "email", "loginVia", "photoUrl",
-    ]);
-
-    const hasNewPassword = typeof patch.password === "string" && patch.password.length >= 8;
-    const hasNewPin = typeof patch.pin === "string" && /^\d{6}$/.test(patch.pin);
-    const currentPassword = typeof patch.currentPassword === "string" ? patch.currentPassword : "";
-
-    // Prepare SQ entries if the field is present (replace semantics)
-    const sqProvided = patch != null && Object.hasOwn(patch, "securityQuestions");
-    const sqEntries = sqProvided ? await buildSQEntries(patch.securityQuestions, nowTS) : undefined;
-
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(employeeRef);
-      if (!snap.exists) throw new Error("Employee not found");
-      const cur = snap.data();
-
-      // 🔒 Current-password check (extracted)
-      await requireCurrentPasswordIfNeeded(cur, hasNewPassword, currentPassword);
-
-      const desiredLoginVia = mergeLoginVia(cur.loginVia, next.loginVia);
+        next.loginVia
+      );
       ensureAtLeastOneMethod(desiredLoginVia);
 
       const newUsername = (next.username ?? cur.username ?? "").trim().toLowerCase();
       const newEmail = (next.email ?? cur.email ?? "").trim();
 
-      const curAliases = makeAliases(cur.loginVia ?? { employeeId: true, username: true, email: true }, cur.username, cur.email, employeeId);
+      const curLoginVia = {
+        employeeId: !!cur.login_employee_id,
+        username: !!cur.login_username,
+        email: !!cur.login_email,
+      };
+      const curAliases = makeAliases(curLoginVia, cur.username, cur.email, employeeId);
       const desiredAliases = makeAliases(desiredLoginVia, newUsername, newEmail, employeeId);
-
       const { toDelete, toCreate } = diffAliases(curAliases, desiredAliases);
-      await assertAliasUniquenessTx(tx, toCreate, employeeId);
 
-      const updateDoc = await buildUpdateDoc({
-        cur,
-        next,
-        newUsername,
-        newEmail,
-        desiredLoginVia,
-        hasNewPassword,
-        hasNewPin,
-        patch,
-        now,
-        sqProvided,
-        sqEntries,
+      const sqProvided = Object.prototype.hasOwnProperty.call(patch, "securityQuestions");
+      const sqEntries = sqProvided ? await buildSQEntries(patch.securityQuestions) : undefined;
+
+      const now = new Date();
+
+      await db.tx(async (conn) => {
+        for (const key of toCreate) {
+          const a = await conn.query(`SELECT alias_key, employee_id FROM aliases WHERE alias_key = ? LIMIT 1`, [key]);
+          if (a.length && String(a[0].employee_id) !== String(employeeId)) throw new Error("Credential (alias) already in use");
+        }
+
+        const sets = ["updated_at = NOW()"];
+        const params = [];
+
+        if (next.firstName !== undefined) { sets.push("first_name = ?"); params.push(next.firstName.trim()); }
+        if (next.lastName !== undefined)  { sets.push("last_name = ?");  params.push(next.lastName.trim()); }
+        if (next.phone !== undefined)     { sets.push("phone = ?");      params.push(next.phone); }
+        if (next.role !== undefined)      { sets.push("role = ?");       params.push(next.role); }
+        if (next.status !== undefined)    { sets.push("status = ?");     params.push(next.status); }
+        if (next.username !== undefined)  { sets.push("username = ?");   params.push(newUsername || null); }
+        if (next.email !== undefined)     { sets.push("email = ?");      params.push(newEmail || null); }
+        if (next.photoUrl !== undefined)  { sets.push("photo_url = ?");  params.push(next.photoUrl || ""); }
+        if (next.loginVia !== undefined)  {
+          const lv = objToDbLoginVia(desiredLoginVia);
+          sets.push("login_employee_id = ?", "login_username = ?", "login_email = ?");
+          params.push(lv.login_employee_id, lv.login_username, lv.login_email);
+        }
+        if (hasNewPassword) {
+          const passwordHash = await bcrypt.hash(patch.password, SALT_ROUNDS);
+          sets.push("password_hash = ?", "password_last_changed = ?");
+          params.push(passwordHash, now);
+        }
+        if (hasNewPin) {
+          const pinHash = await bcrypt.hash(patch.pin, SALT_ROUNDS);
+          sets.push("pin_hash = ?");
+          params.push(pinHash);
+        }
+
+        params.push(String(employeeId));
+        await conn.execute(`UPDATE employees SET ${sets.join(", ")} WHERE employee_id = ?`, params);
+
+        for (const key of toDelete) await conn.execute(`DELETE FROM aliases WHERE alias_key = ?`, [key]);
+        for (const key of toCreate) {
+          const [type, valueLower] = key.split(":");
+          await conn.execute(
+            `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
+             VALUES (?, ?, ?, ?, NOW())`,
+            [key, type, valueLower, employeeId]
+          );
+        }
+
+        if (sqProvided) {
+          await conn.execute(`DELETE FROM employee_security_questions WHERE employee_id = ?`, [employeeId]);
+          for (const q of (sqEntries || [])) {
+            await conn.execute(
+              `INSERT INTO employee_security_questions
+                 (employee_id, question_id, answer_hash, updated_at, created_at)
+               VALUES (?, ?, ?, NOW(), NOW())`,
+              [employeeId, q.id, q.answerHash]
+            );
+          }
+        }
       });
 
-      // Write employee
-      tx.set(employeeRef, updateDoc, { merge: true });
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("[PATCH /api/users/:employeeId] fail:", e);
+      res.status(e.statusCode ?? 500).json({ error: e?.message ?? "Failed to update user" });
+    }
+  });
 
-      // Delete/Write alias docs
-      applyAliasWritesTx(tx, { toDelete, toCreate }, now, employeeId);
-    });
+  /* =============================
+     DELETE /api/users/:employeeId
+     ============================= */
+  router.delete("/:employeeId", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      await db.execute(`DELETE FROM employees WHERE employee_id = ?`, [String(employeeId)]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("[DELETE /api/users/:employeeId] fail:", e);
+      res.status(500).json({ error: e?.message ?? "Failed to delete user" });
+    }
+  });
 
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("[PATCH /api/users/:employeeId] fail:", e);
-    const code = e.statusCode ?? 500;
-    res.status(code).json({ error: e?.message ?? "Failed to update user" });
-  }
-});
-
-// DELETE /api/users/:employeeId  (remove user + aliases)
-router.delete("/:employeeId", async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const employeeRef = db.collection("employees").doc(String(employeeId));
-
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(employeeRef);
-      if (!snap.exists) return; // idempotent
-
-      const cur = snap.data() ?? {};
-      const aliasKeys = [];
-      if (cur.loginVia?.employeeId) aliasKeys.push(aliasKey("employee_id", employeeId));
-      if (cur.loginVia?.username && cur.username) aliasKeys.push(aliasKey("username", cur.username));
-      if (cur.loginVia?.email && cur.email) aliasKeys.push(aliasKey("email", cur.email));
-
-      aliasKeys.forEach((k) => tx.delete(db.collection("aliases").doc(k)));
-      tx.delete(employeeRef);
-    });
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("[DELETE /api/users/:employeeId] fail:", e);
-    res.status(500).json({ error: e?.message ?? "Failed to delete user" });
-  }
-});
-
-module.exports = router;
+  return router;
+};
