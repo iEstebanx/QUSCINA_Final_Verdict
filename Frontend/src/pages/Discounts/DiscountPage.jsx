@@ -34,12 +34,14 @@ import AddIcon from "@mui/icons-material/Add";
 import LocalOfferOutlinedIcon from "@mui/icons-material/LocalOfferOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { useAlert } from "@/context/Snackbar/AlertContext";
+import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext";
 
 import {
   subscribeDiscounts,
   createDiscountAuto,
   updateDiscount,
   deleteMany,
+  deleteDiscount,
 } from "@/services/Discounts/discounts";
 
 function percentClamp(n) {
@@ -50,6 +52,7 @@ function percentClamp(n) {
 export default function DiscountPage() {
   const [rows, setRows] = useState([]);
   const alert = useAlert();
+  const confirm = useConfirm();
 
   // single filter (Status only)
   const [statusFilter, setStatusFilter] = useState("all");
@@ -119,7 +122,7 @@ export default function DiscountPage() {
   };
 
   const openEdit = (row) => {
-    setEditingCode(row.id);
+    setEditingCode(row.code);
     setName(row.name ?? "");
     setValue(String(row.value ?? ""));
     setTouched(false);
@@ -159,8 +162,23 @@ export default function DiscountPage() {
     }
   };
 
+  // Bulk delete with confirm
   const onDeleteSelected = async () => {
     if (!selected.length) return;
+
+    const ok = await confirm({
+      title: "Delete Selected Discounts",
+      content: `Are you sure you want to delete ${selected.length} discount${selected.length > 1 ? "s" : ""}?\nThis action cannot be undone.`,
+      confirmLabel: "Delete All",
+      confirmColor: "error",
+    });
+
+    if (!ok) {
+      const visible = new Set(filteredRows.map(r => r.id));
+      setSelected(s => s.filter(id => !visible.has(id)));
+      return;
+    }
+
     try {
       await deleteMany(selected);
       alert.info(`Deleted ${selected.length} discount${selected.length > 1 ? "s" : ""}.`);
@@ -187,6 +205,26 @@ export default function DiscountPage() {
   const nameError = touched && name.trim().length === 0;
   const valueNum = percentClamp(parseFloat(String(value).replace(",", ".")));
   const valueError = touched && (Number.isNaN(valueNum) || String(value).trim() === "");
+
+  // Single delete with confirm
+  const onDeleteOne = async (code, discountName) => {
+    const ok = await confirm({
+      title: "Delete Discount",
+      content: `Are you sure you want to delete "${discountName}"?\nThis action cannot be undone.`,
+      confirmLabel: "Delete",
+      confirmColor: "error",
+    });
+    if (!ok) return;
+
+    try {
+      await deleteDiscount(code); // calls DELETE /api/discounts/:code
+      alert.info(`Discount "${discountName}" deleted.`);
+      // also unselect if it was selected
+      setSelected((s) => s.filter((x) => x !== code && x !== rows.find(r => r.code === code)?.id));
+    } catch (e) {
+      alert.error(e?.message || "Failed to delete discount.");
+    }
+  };
 
   return (
     <Box p={2} display="grid" gap={2}>
@@ -279,6 +317,7 @@ export default function DiscountPage() {
                 <col style={{width:56}}/>
                 <col style={{minWidth:240}}/>
                 <col style={{minWidth:120,width:"auto"}}/>
+                <col style={{width:56}}/>
               </colgroup>
 
               <TableHead>
@@ -291,6 +330,9 @@ export default function DiscountPage() {
                   </TableCell>
                   <TableCell align="left">
                     <Typography fontWeight={600}>Value</Typography>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Typography fontWeight={600}>Actions</Typography>
                   </TableCell>
                 </TableRow>
               </TableHead>
@@ -331,12 +373,23 @@ export default function DiscountPage() {
                     <TableCell align="left" sx={{ whiteSpace: "nowrap" }}>
                       <Typography fontWeight={700}>{r.value}%</Typography>
                     </TableCell>
+
+                    {/* Actions */}
+                    <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+                      <IconButton
+                        aria-label="Delete"
+                        onClick={() => onDeleteOne(r.code, r.name)}
+                        size="small"
+                      >
+                        <DeleteOutlineIcon />
+                      </IconButton>
+                    </TableCell>
                   </TableRow>
                 ))}
 
                 {filteredRows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={3}>
+                    <TableCell colSpan={4}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           No discounts found{rows.length ? " for the chosen filters." : " yet."}

@@ -192,3 +192,32 @@ ON DUPLICATE KEY UPDATE employee_id=VALUES(employee_id);
 INSERT INTO employee_security_questions (employee_id, question_id, answer_hash)
 VALUES ('202500001','pet','<PASTE_FLUFFY_HASH>')
 ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);
+
+-- Create database (skip if you already have one)
+-- CREATE DATABASE IF NOT EXISTS quscina CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- USE quscina;
+
+-- Discounts table (matches your backend fields)
+CREATE TABLE IF NOT EXISTS `discounts` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `code` VARCHAR(32) NULL,           -- e.g. DISC-000001 (unique, human-friendly)
+  `name` VARCHAR(120) NOT NULL,
+  `type` ENUM('percent','amount') NOT NULL DEFAULT 'percent',
+  `value` DECIMAL(7,3) NOT NULL,         -- supports 0..100 (or a fixed amount)
+  `scope` ENUM('order','item') NOT NULL DEFAULT 'order',
+  `isStackable` TINYINT(1) NOT NULL DEFAULT 0,
+  `requiresApproval` TINYINT(1) NOT NULL DEFAULT 0,
+  `isActive` TINYINT(1) NOT NULL DEFAULT 1,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_discounts_code` (`code`),
+  KEY `idx_discounts_active_created` (`isActive`, `createdAt`),
+
+  -- Optional: prevent >100% if using percent
+  CONSTRAINT `ck_discounts_percent_range`
+    CHECK (
+      (type <> 'percent') OR (value >= 0 AND value <= 100)
+    )
+) ENGINE=InnoDB;

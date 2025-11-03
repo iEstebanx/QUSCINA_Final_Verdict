@@ -1,15 +1,11 @@
 // Backend/src/routes/Discounts/discounts.js
 const express = require("express");
 
-// Prefer DI, but allow fallback to shared pool
 let sharedDb = null;
-try {
-  sharedDb = require("../../shared/db/mysql").db;
-} catch { /* ignore until DI provides db */ }
+try { sharedDb = require("../../shared/db/mysql").db; } catch {}
 
 function formatDiscCode(n) {
-  const width = Math.max(6, String(n).length);
-  return `DISC-${String(n).padStart(width, "0")}`;
+  return `DISC-${String(n).padStart(6, "0")}`;
 }
 
 module.exports = ({ db } = {}) => {
@@ -22,12 +18,15 @@ module.exports = ({ db } = {}) => {
   router.get("/", async (_req, res) => {
     try {
       const rows = await db.query(
-        `SELECT id, code, name, type, value, scope,
-                isStackable, requiresApproval, isActive,
+        `SELECT id, code, name, type,
+                CAST(value AS DOUBLE) AS value,
+                scope, isStackable, requiresApproval, isActive,
                 createdAt, updatedAt
            FROM discounts
           ORDER BY createdAt DESC`
       );
+      // Safety: ensure JS numbers
+      rows.forEach(r => { r.value = Number(r.value); });
       res.json(rows);
     } catch (e) {
       console.error("[GET /api/discounts] failed:", e);
@@ -35,7 +34,7 @@ module.exports = ({ db } = {}) => {
     }
   });
 
-  // POST /api/discounts  (auto-generate code via transaction)
+  // POST /api/discounts  (no counters; build code from insertId)
   router.post("/", async (req, res) => {
     try {
       const {
@@ -53,48 +52,36 @@ module.exports = ({ db } = {}) => {
         return res.status(400).json({ error: "name and numeric value are required" });
       }
 
-      const result = await db.tx(async (conn) => {
-        // 1) bump the counter atomically
-        await conn.execute(
-          `INSERT INTO _meta_counters (name, val)
-           VALUES ('discountsSeq', 1)
-           ON DUPLICATE KEY UPDATE val = val + 1`
-        );
+      const now = new Date();
 
-        const [row] = await conn.query(
-          `SELECT val FROM _meta_counters WHERE name = 'discountsSeq' LIMIT 1`
-        );
-        const next = row?.val || 1;
-        const code = formatDiscCode(next);
-
-        const now = new Date();
-
-        // 2) create the discount (unique code prevents collision)
-        await conn.execute(
-          `INSERT INTO discounts
+      // 1) Insert with code = NULL (valid under UNIQUE)
+      const result = await db.query(
+        `INSERT INTO discounts
            (code, name, type, value, scope, isStackable, requiresApproval, isActive, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            code,
-            String(name).trim(),
-            type,
-            numValue,
-            scope,
-            Boolean(isStackable) ? 1 : 0,
-            Boolean(requiresApproval) ? 1 : 0,
-            Boolean(isActive) ? 1 : 0,
-            now,
-            now
-          ]
-        );
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          String(name).trim(),
+          type,
+          numValue,
+          scope,
+          isStackable ? 1 : 0,
+          requiresApproval ? 1 : 0,
+          isActive ? 1 : 0,
+          now,
+          now
+        ]
+      );
 
-        return { code };
-      });
+      const insertId = result.insertId; // mysql2 OkPacket
+      const code = formatDiscCode(insertId);
 
-      res.status(201).json({ ok: true, code: result.code });
+      // 2) Set the final code derived from id
+      await db.query(`UPDATE discounts SET code = ? WHERE id = ?`, [code, insertId]);
+
+      res.status(201).json({ ok: true, code });
     } catch (e) {
       console.error("[POST /api/discounts] failed:", e);
-      res.status(500).json({ error: e?.message ?? "Internal Server Error", stack: String(e?.stack ?? e) });
+      res.status(500).json({ error: e?.message ?? "Internal Server Error" });
     }
   });
 
@@ -104,7 +91,6 @@ module.exports = ({ db } = {}) => {
       const { code } = req.params;
       if (!code) return res.status(400).json({ error: "invalid code" });
 
-      // sanitize updatable fields
       const patch = { ...req.body };
       const allowed = [
         "name", "type", "value", "scope",
@@ -116,7 +102,7 @@ module.exports = ({ db } = {}) => {
       for (const k of allowed) {
         if (k in patch) {
           sets.push(`${k} = ?`);
-          if (["isStackable","requiresApproval","isActive"].includes(k)) {
+          if (["isStackable", "requiresApproval", "isActive"].includes(k)) {
             params.push(patch[k] ? 1 : 0);
           } else {
             params.push(patch[k]);
@@ -149,20 +135,33 @@ module.exports = ({ db } = {}) => {
     }
   });
 
-  // POST /api/discounts:bulkDelete
+  // POST /api/discounts/bulkDelete
   router.post("/bulkDelete", async (req, res) => {
     try {
       const { codes = [] } = req.body || {};
-      const list = Array.isArray(codes) ? codes.filter(Boolean) : [];
+      const list = Array.isArray(codes) ? codes.filter(v => v !== null && v !== undefined) : [];
       if (!list.length) return res.status(400).json({ error: "codes array required" });
 
-      // Use IN (...) safely
-      const placeholders = list.map(() => "?").join(",");
-      await db.query(`DELETE FROM discounts WHERE code IN (${placeholders})`, list);
+      const ids = [];
+      const stringCodes = [];
+      for (const v of list) {
+        const s = String(v);
+        if (/^\d+$/.test(s)) ids.push(Number(s));        // numeric id
+        else stringCodes.push(s);                        // code like DISC-000010
+      }
+
+      if (ids.length) {
+        const ph = ids.map(() => "?").join(",");
+        await db.query(`DELETE FROM discounts WHERE id IN (${ph})`, ids);
+      }
+      if (stringCodes.length) {
+        const ph = stringCodes.map(() => "?").join(",");
+        await db.query(`DELETE FROM discounts WHERE code IN (${ph})`, stringCodes);
+      }
 
       res.json({ ok: true, count: list.length });
     } catch (e) {
-      console.error("[POST /api/discounts:bulkDelete] failed:", e);
+      console.error("[POST /api/discounts/bulkDelete] failed:", e);
       res.status(500).json({ error: e?.message ?? "Internal Server Error" });
     }
   });
