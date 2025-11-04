@@ -1,33 +1,3 @@
--- -- ACCOUNT INFORMATION
--- CREATE TABLE IF NOT EXISTS credential_types (
---   type_code VARCHAR(32) PRIMARY KEY  -- 'employee_id','username','email'
--- ) ENGINE=InnoDB;
-
--- INSERT IGNORE INTO credential_types (type_code)
--- VALUES ('employee_id'),('username'),('email');
-
--- -- Aliases (each togglable)
--- CREATE TABLE IF NOT EXISTS employee_credentials (
---   cred_id      BIGINT       PRIMARY KEY AUTO_INCREMENT,
---   employee_id  CHAR(9)      NOT NULL,
---   type_code    VARCHAR(32)  NOT NULL,         -- FK -> credential_types
---   value        VARCHAR(255) NOT NULL,         -- the login string
---   is_enabled   TINYINT(1)   NOT NULL DEFAULT 1,
---   is_verified  TINYINT(1)   NOT NULL DEFAULT 0,
---   is_primary   TINYINT(1)   NOT NULL DEFAULT 0,
---   created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
---   updated_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-
---   CONSTRAINT fk_empcred_emp  FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
---   CONSTRAINT fk_empcred_type FOREIGN KEY (type_code)   REFERENCES credential_types(type_code),
-
---   UNIQUE KEY uq_empcred_global_alias (type_code, value),
---   UNIQUE KEY uq_empcred_primary_per_type (employee_id, type_code, is_primary),
-
---   KEY ix_empcred_lookup (type_code, value),
---   KEY ix_empcred_emp (employee_id)
--- ) ENGINE=InnoDB;
-
 -- Create the database (use utf8mb4)
 CREATE DATABASE IF NOT EXISTS quscina
   CHARACTER SET utf8mb4
@@ -193,9 +163,9 @@ INSERT INTO employee_security_questions (employee_id, question_id, answer_hash)
 VALUES ('202500001','pet','<PASTE_FLUFFY_HASH>')
 ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);
 
--- Create database (skip if you already have one)
--- CREATE DATABASE IF NOT EXISTS quscina CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
--- USE quscina;
+-- ------------------------------------------------------------
+-- Discounts
+-- ------------------------------------------------------------
 
 -- Discounts table (matches your backend fields)
 CREATE TABLE IF NOT EXISTS `discounts` (
@@ -221,3 +191,42 @@ CREATE TABLE IF NOT EXISTS `discounts` (
       (type <> 'percent') OR (value >= 0 AND value <= 100)
     )
 ) ENGINE=InnoDB;
+
+-- ------------------------------------------------------------
+-- Categories (Menu)
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS categories (
+  id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name            VARCHAR(60)  NOT NULL,
+  name_lower      VARCHAR(60)  NOT NULL,
+  image_data_url  LONGTEXT     NULL,
+  active          TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_categories_name_lower (name_lower)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- 
+-- ------------------------------------------------------------
+
+
+-- ------------------------------------------------------------
+--  Inventory Categories
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_categories (
+  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name         VARCHAR(60)  NOT NULL,
+  name_lower   VARCHAR(60)  NOT NULL,
+  active       TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at   DATETIME     NOT NULL,
+  updated_at   DATETIME     NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_inventory_categories_name_lower (name_lower)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- 
+-- ------------------------------------------------------------

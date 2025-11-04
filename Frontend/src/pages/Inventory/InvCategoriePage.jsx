@@ -1,9 +1,3 @@
-// // Frontend/src/pages/Inventory/InvCategoriePage.jsx
-// import { Typography } from "@mui/material";
-// export default function InvCategoriePage() {
-//   return <Typography variant="h5">.</Typography>;
-// }
-
 // Frontend/src/pages/Inventory/InvCategoriePage.jsx
 import { useMemo, useState, useEffect } from "react";
 import {
@@ -26,23 +20,27 @@ import {
   TableRow,
   TextField,
   Typography,
+  Avatar,
   IconButton,
   Tooltip,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { alpha } from "@mui/material/styles";
+import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext.jsx";
 
 /* validation */
 const NAME_MAX = 60;
+const NAME_MIN = 3;
 const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
 const normalizeName = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const isValidName = (s) =>
-  !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
+  !!s && s.length >= NAME_MIN && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
 const API_BASE = "/api/inventory/inv-categories";
 
 export default function InvCategoriePage() {
+  const confirm = useConfirm();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -66,12 +64,45 @@ export default function InvCategoriePage() {
   }, [rows, page, rowsPerPage]);
 
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
+  function clearSelection() {
+    setSelected([]);
+  }
   const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
 
   const toggleAll = () =>
     setSelected((s) => (s.length === rows.length ? [] : rows.map((r) => r.id)));
   const toggleOne = (id) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+
+  async function onDeleteOne(row) {
+    const result = await confirm({
+      title: "Delete inventory category?",
+      content: `Delete "${row.name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      confirmColor: "error",
+    });
+    const ok = result === true || result?.confirmed === true;
+    if (!ok) {
+      // user canceled: uncheck only this row if it was selected
+      setSelected((s) => s.filter((id) => id !== row.id));
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok !== true) {
+        throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+      }
+      // ensure this id is not in selection anymore
+      setSelected((s) => s.filter((id) => id !== row.id));
+      await load();
+    } catch (e) {
+      setErr(e?.message || "Delete failed");
+    }
+  }
 
   const resetForm = () => {
     setEditingId(null);
@@ -140,7 +171,7 @@ export default function InvCategoriePage() {
     const clean = normalizeName(name);
     if (!isValidName(clean)) {
       setSaveErr(
-        "Please enter a valid name (max 60; allowed letters, numbers, spaces, - ' & . , ( ) /)."
+        `Please enter a valid name (min ${NAME_MIN}, max ${NAME_MAX}; allowed letters, numbers, spaces, - ' & . , ( ) /).`
       );
       return;
     }
@@ -157,6 +188,10 @@ export default function InvCategoriePage() {
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) {
+        if (res.status === 409) {
+          setSaveErr("That category name already exists. Names are case-insensitive. Please choose a different name.");
+          return;
+        }
         throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
       }
 
@@ -188,7 +223,15 @@ export default function InvCategoriePage() {
   async function onDeleteSelected() {
     if (!selected.length) return;
     const plural = selected.length > 1 ? "categories" : "category";
-    if (!window.confirm(`Delete ${selected.length} ${plural}? This cannot be undone.`)) return;
+    const result = await confirm({
+      title: `Delete ${selected.length} ${plural}?`,
+      content: "This cannot be undone.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      confirmColor: "error",
+    });
+    const ok = result === true || result?.confirmed === true;
+    if (!ok) { clearSelection(); return; }
 
     try {
       const res = await fetch(API_BASE, {
@@ -200,7 +243,7 @@ export default function InvCategoriePage() {
       if (!res.ok || data?.ok !== true) {
         throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
       }
-      setSelected([]);
+      clearSelection();
       await load();
     } catch (e) {
       setErr(e?.message || "Delete failed");
@@ -237,6 +280,7 @@ export default function InvCategoriePage() {
               <colgroup>
                 <col style={{ width: 56 }} />
                 <col style={{ minWidth: 320 }} />
+                <col style={{ width: 72 }} />
               </colgroup>
 
               <TableHead>
@@ -245,17 +289,18 @@ export default function InvCategoriePage() {
                     <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
                   </TableCell>
                   <TableCell><Typography fontWeight={600}>Name</Typography></TableCell>
+                  <TableCell align="right"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
               </TableHead>
 
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={2}><Box py={6} textAlign="center">Loading…</Box></TableCell></TableRow>
+                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">Loading…</Box></TableCell></TableRow>
                 ) : err ? (
-                  <TableRow><TableCell colSpan={2}><Box py={6} textAlign="center">
+                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">
                     <Typography variant="body2" color="error">{err}</Typography></Box></TableCell></TableRow>
                 ) : rows.length === 0 ? (
-                  <TableRow><TableCell colSpan={2}><Box py={6} textAlign="center">
+                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">
                     <Typography variant="body2" color="text.secondary">
                       No inventory categories yet. Click <strong>Add Inventory Category</strong>.
                     </Typography></Box></TableCell></TableRow>
@@ -268,6 +313,19 @@ export default function InvCategoriePage() {
                       </TableCell>
                       <TableCell sx={{ overflow: "hidden" }}>
                         <Typography noWrap title={r.name}>{r.name}</Typography>
+                      </TableCell>
+                      <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                        <Tooltip title="Delete">
+                          <span>
+                            <IconButton
+                              aria-label={`Delete ${r.name}`}
+                              onClick={(e) => { e.stopPropagation(); onDeleteOne(r); }}
+                              size="small"
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                       </TableCell>
                     </TableRow>
                   ))
@@ -308,8 +366,12 @@ export default function InvCategoriePage() {
               error={nameIsInvalid}
               helperText={
                 name
-                  ? `${name.length}/${NAME_MAX}${nameIsInvalid ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /" : ""}`
-                  : `Max ${NAME_MAX} chars`
+                  ? `${name.length}/${NAME_MAX}${
+                      nameIsInvalid
+                        ? ` • Must be at least ${NAME_MIN} chars • Allowed: letters, numbers, spaces, - ' & . , ( ) /`
+                        : ""
+                    }`
+                  : `Min ${NAME_MIN}, max ${NAME_MAX} chars`
               }
               autoFocus
               fullWidth
@@ -321,7 +383,7 @@ export default function InvCategoriePage() {
 
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button variant="outlined" onClick={handleClose} disabled={saving}>Cancel</Button>
-          <Button variant="contained" onClick={onSave} disabled={saving || normalizeName(name).length === 0}>
+          <Button variant="contained" onClick={onSave} disabled={saving || normalizeName(name).length < NAME_MIN}>
             {saving ? "Saving..." : "Save"}
           </Button>
         </DialogActions>

@@ -31,6 +31,7 @@ import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext.jsx";
 
 /* -------------------------- Name validation helpers -------------------------- */
 const NAME_MAX = 60;
+const NAME_MIN = 3;
 // First character must be alphanumeric; then allow spaces and a small safe set of punctuations
 const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
 
@@ -39,7 +40,7 @@ function normalizeName(s) {
 }
 function isValidName(s) {
   if (!s) return false;
-  if (s.length === 0 || s.length > NAME_MAX) return false;
+  if (s.length < NAME_MIN || s.length > NAME_MAX) return false;
   if (!NAME_ALLOWED.test(s)) return false;
   return true;
 }
@@ -88,6 +89,12 @@ export default function CategoriePage() {
     const start = page * rowsPerPage;
     return rows.slice(start, start + rowsPerPage);
   }, [rows, page, rowsPerPage]);
+  const isEmpty = !loading && !err && rows.length === 0;
+
+  // Handy helper so we always clear selection the same way
+  function clearSelection() {
+  setSelected([]);
+  }
 
   function toggleAll() {
     setSelected((s) => (s.length === rows.length ? [] : rows.map((r) => r.id)));
@@ -142,7 +149,7 @@ export default function CategoriePage() {
     setLoading(true);
     setErr("");
     try {
-      const res = await fetch(`/api/categories`, { cache: "no-store" });
+      const res = await fetch(`/api/categories`, { cache: "no-store", credentials: "include" });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.ok) {
         const list = Array.isArray(data.categories) ? data.categories : [];
@@ -188,15 +195,21 @@ export default function CategoriePage() {
         res = await fetch(`/api/categories/${encodeURIComponent(editingId)}`, {
           method: "PATCH",
           body: form,
+          credentials: "include",
         });
       } else {
         res = await fetch(`/api/categories`, {
           method: "POST",
           body: form,
+          credentials: "include",
         });
       }
       data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) {
+        if (res.status === 409) {
+          setSaveErr("That category name already exists. Names are case-insensitive. Please choose a different name.");
+          return; // keep dialog open so user can fix it
+        }
         throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
       }
 
@@ -214,18 +227,23 @@ export default function CategoriePage() {
   }
 
   async function onDeleteOne(row) {
-    const ok = await confirm({
+    const result = await confirm({
       title: "Delete category?",
       content: `Delete "${row.name}"? This cannot be undone.`,
       confirmLabel: "Delete",
       cancelLabel: "Cancel",
       confirmColor: "error",
     });
-    if (!ok) return;
-
+    const ok = result === true || result?.confirmed === true;
+    if (!ok) {
+      // User canceled: uncheck only what they had selected
+      setSelected([]);
+      return;
+    }
     try {
       const res = await fetch(`/api/categories/${encodeURIComponent(row.id)}`, {
         method: "DELETE",
+        credentials: "include",
       });
       const data = await res.json().catch(() => ({}));
 
@@ -250,20 +268,26 @@ export default function CategoriePage() {
     if (!selected.length) return;
     const plural = selected.length > 1 ? "categories" : "category";
 
-    const ok = await confirm({
+    const result = await confirm({
       title: `Delete ${selected.length} ${plural}?`,
       content: "This cannot be undone.",
       confirmLabel: "Delete",
       cancelLabel: "Cancel",
       confirmColor: "error",
     });
-    if (!ok) return;
+    const ok = result === true || result?.confirmed === true;
+    if (!ok) {
+      // User canceled: uncheck everything they had selected
+      clearSelection();
+      return;
+    }
 
     try {
       const res = await fetch(`/api/categories`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: selected }),
+        credentials: "include",
       });
       const data = await res.json().catch(() => ({}));
 
@@ -281,7 +305,7 @@ export default function CategoriePage() {
           showBlockedModal(`Some categories were not deleted because items are still assigned: ${sample}${more}.`);
           setSelected((prev) => prev.filter((id) => !selected.includes(id)));
         } else {
-          setSelected([]);
+          clearSelection();
         }
       }
 
@@ -372,8 +396,31 @@ export default function CategoriePage() {
               </TableHead>
 
               <TableBody>
-                {/* ...existing states (loading, err, empty) stay the same... */}
-                {paged.map((r) => (
+                {/* States: loading / error / empty */}
+                  {loading && (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <Typography variant="body2">Loading categories…</Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {!!err && !loading && (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <Typography variant="body2" color="error">{err}</Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {isEmpty && (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <Typography variant="body2" color="text.secondary">
+                          No categories yet. Click <strong>Add Category</strong> to create your first one.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                {!loading && !err && !isEmpty && paged.map((r) => (
                   <TableRow
                     key={r.id}
                     hover
@@ -407,7 +454,7 @@ export default function CategoriePage() {
                         <span>
                           <IconButton
                             aria-label={`Delete ${r.name}`}
-                            onClick={() => onDeleteOne(r)}
+                            onClick={(e) => { e.stopPropagation(); onDeleteOne(r); }}
                             size="small"
                           >
                             <DeleteOutlineIcon fontSize="small" />
@@ -470,8 +517,12 @@ export default function CategoriePage() {
               error={nameIsInvalid}
               helperText={
                 name
-                  ? `${name.length}/${NAME_MAX} ${nameIsInvalid ? "• Allowed: letters, numbers, spaces, - ' & . , ( ) /" : ""}`
-                  : `Max ${NAME_MAX} chars`
+                  ? `${name.length}/${NAME_MAX} ${
+                      nameIsInvalid
+                        ? `• Must be at least ${NAME_MIN} chars • Allowed: letters, numbers, spaces, - ' & . , ( ) /`
+                        : ""
+                    }`
+                  : `Min ${NAME_MIN}, max ${NAME_MAX} chars`
               }
               autoFocus
               fullWidth
@@ -527,7 +578,7 @@ export default function CategoriePage() {
           <Button
             variant="contained"
             onClick={onSave}
-            disabled={saving || normalizeName(name).length === 0}
+            disabled={saving || normalizeName(name).length < NAME_MIN}
           >
             {saving ? "Saving..." : "Save"}
           </Button>
