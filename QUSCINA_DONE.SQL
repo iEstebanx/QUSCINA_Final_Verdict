@@ -164,7 +164,92 @@ VALUES ('202500001','pet','<PASTE_FLUFFY_HASH>')
 ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);
 
 -- ------------------------------------------------------------
--- Discounts
+-- Items (Menu Items referencing categories)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `items` (
+  `id`                INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name`              VARCHAR(60)  NOT NULL,
+  `nameLower`         VARCHAR(60)  AS (LOWER(`name`)) STORED,
+
+  `description`       VARCHAR(300) NULL,
+
+  `categoryId`        INT UNSIGNED NULL,                      -- FK → categories.id
+  `categoryName`      VARCHAR(60)  NULL,                      -- denormalized for caching
+  `categoryNameLower` VARCHAR(60)  NULL,
+  `categoryKey`       VARCHAR(60)  NULL,
+
+  `imageDataUrl`      LONGTEXT     NULL,                      -- base64 image
+  `price`             DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- selling price
+
+  `ingredients`       JSON         NULL,                      -- [{ingredientId,name,qty,price,...}]
+  `costOverall`       DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- total ingredient cost
+  `profit`            DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- price - costOverall
+
+  `active`            TINYINT(1)   NOT NULL DEFAULT 1,
+
+  `createdAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (`id`),
+
+  KEY `idx_items_categoryId`   (`categoryId`),
+  KEY `idx_items_categoryKey`  (`categoryKey`),
+  KEY `idx_items_updatedAt`    (`updatedAt`),
+  KEY `idx_items_nameLower`    (`nameLower`),
+
+  CONSTRAINT `fk_items_category_opt`
+    FOREIGN KEY (`categoryId`)
+    REFERENCES `categories`(`id`)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
+)
+ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Categories (for Menu / Items)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `categories` (
+  `id`              INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name`            VARCHAR(60)  NOT NULL,
+  `name_lower`      VARCHAR(60)  AS (LOWER(`name`)) STORED,  -- generated lower name
+  `image_data_url`  LONGTEXT     NULL,                        -- base64 data:<mime>;base64,...
+  `active`          TINYINT(1)   NOT NULL DEFAULT 1,
+  `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_categories_name_lower` (`name_lower`),
+  KEY `idx_categories_active` (`active`),
+  KEY `idx_categories_updated_at` (`updated_at`)
+)
+ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Trigger: Auto-update item category fields after category rename
+-- ------------------------------------------------------------
+DELIMITER $$
+
+CREATE TRIGGER trg_categories_after_update
+AFTER UPDATE ON categories
+FOR EACH ROW
+BEGIN
+  IF (NEW.name <> OLD.name OR NEW.name_lower <> OLD.name_lower) THEN
+    UPDATE items
+       SET categoryName      = NEW.name,
+           categoryNameLower = NEW.name_lower,
+           categoryKey       = NEW.name_lower
+     WHERE categoryId = NEW.id;
+  END IF;
+END$$
+
+DELIMITER ;
+
+-- ------------------------------------------------------------
+-- Discounts (Menu)
 -- ------------------------------------------------------------
 
 -- Discounts table (matches your backend fields)
@@ -192,40 +277,76 @@ CREATE TABLE IF NOT EXISTS `discounts` (
     )
 ) ENGINE=InnoDB;
 
--- ------------------------------------------------------------
--- Categories (Menu)
--- ------------------------------------------------------------
+-- ============================================================
+-- INVENTORY CATEGORIES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `inventory_categories` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+  `active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL,
+  `updated_at` DATETIME NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_inventory_categories_name_lower` (`name_lower`)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS categories (
-  id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  name            VARCHAR(60)  NOT NULL,
-  name_lower      VARCHAR(60)  NOT NULL,
-  image_data_url  LONGTEXT     NULL,
-  active          TINYINT(1)   NOT NULL DEFAULT 1,
-  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_categories_name_lower (name_lower)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ============================================================
+-- INVENTORY INGREDIENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+  `category` VARCHAR(60) NOT NULL,
+  `category_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`category`)) STORED,
+  `type` VARCHAR(30) NULL,
+  `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
+  `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
+  `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
+  `createdAt` DATETIME NOT NULL,
+  `updatedAt` DATETIME NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_inventory_ingredients_name_lower` (`name_lower`),
+  KEY `idx_inventory_ingredients_category` (`category`),
+  KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
+  KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`)
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
 
--- ------------------------------------------------------------
--- 
--- ------------------------------------------------------------
-
-
--- ------------------------------------------------------------
---  Inventory Categories
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS inventory_categories (
-  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  name         VARCHAR(60)  NOT NULL,
-  name_lower   VARCHAR(60)  NOT NULL,
-  active       TINYINT(1)   NOT NULL DEFAULT 1,
-  created_at   DATETIME     NOT NULL,
-  updated_at   DATETIME     NOT NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_inventory_categories_name_lower (name_lower)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ============================================================
+-- INVENTORY ACTIVITY LOG
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `inventory_activity` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ts` DATETIME NULL,
+  `employee` VARCHAR(60) NULL,
+  `remarks` VARCHAR(255) NULL,
+  `io` ENUM('In','Out') NOT NULL DEFAULT 'In',
+  `qty` DECIMAL(12,3) NOT NULL DEFAULT 0,
+  `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
+  `ingredientId` INT UNSIGNED NULL,
+  `ingredientName` VARCHAR(60) NULL,
+  `createdAt` DATETIME NOT NULL,
+  `updatedAt` DATETIME NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_inventory_activity_ts` (`ts`),
+  KEY `idx_inventory_activity_ingredientId` (`ingredientId`),
+  KEY `idx_inventory_activity_io` (`io`),
+  CONSTRAINT `fk_activity_ingredient`
+    FOREIGN KEY (`ingredientId`)
+    REFERENCES `inventory_ingredients`(`id`)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
 -- 

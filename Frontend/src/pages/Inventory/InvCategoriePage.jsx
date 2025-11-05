@@ -20,7 +20,6 @@ import {
   TableRow,
   TextField,
   Typography,
-  Avatar,
   IconButton,
   Tooltip,
 } from "@mui/material";
@@ -38,6 +37,7 @@ const isValidName = (s) =>
   !!s && s.length >= NAME_MIN && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
 const API_BASE = "/api/inventory/inv-categories";
+const MAX_BLOCKED_SHOWN = 5; // show up to 10 categories in the blocked dialog
 
 export default function InvCategoriePage() {
   const confirm = useConfirm();
@@ -49,12 +49,27 @@ export default function InvCategoriePage() {
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
 
-  const [open, setOpen] = useState(false);
+  // Editor (create/edit)
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const isEdit = Boolean(editingId);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
+
+  // Rename feedback
+  const [renameInfo, setRenameInfo] = useState({ open: false, name: "", count: 0, sample: [] })
+
+  // Usage warning dialog — now supports single OR multi
+  // usageList = [{ categoryName, ingredientCount, activityCount, sampleIngredients }, ...]
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [usageList, setUsageList] = useState(null);
+
+  function openUsageDialog(payload) {
+    const list = Array.isArray(payload) ? payload : [payload];
+    setUsageList(list);
+    setUsageOpen(true);
+  }
 
   const nameIsInvalid = name.trim().length > 0 && !isValidName(normalizeName(name));
 
@@ -75,6 +90,27 @@ export default function InvCategoriePage() {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   async function onDeleteOne(row) {
+    // Pre-check usage to give a nicer message before confirming
+    try {
+      const check = await fetch(`${API_BASE}/${encodeURIComponent(row.id)}/usage`, { cache: "no-store" });
+      const usageResp = await check.json().catch(() => ({}));
+      if (check.ok && usageResp?.ok) {
+        const u = usageResp.usage;
+        if (u.ingredientCount > 0 || u.activityCount > 0) {
+          openUsageDialog({
+            categoryName: row.name,
+            ingredientCount: u.ingredientCount,
+            activityCount: u.activityCount,
+            sampleIngredients: u.sampleIngredients || [],
+          });
+          // ensure this row isn't selected anymore
+          setSelected((s) => s.filter((id) => id !== row.id));
+          return;
+        }
+      }
+    } catch {}
+
+    // If not in use, proceed with confirm -> delete
     const result = await confirm({
       title: "Delete inventory category?",
       content: `Delete "${row.name}"? This cannot be undone.`,
@@ -84,19 +120,27 @@ export default function InvCategoriePage() {
     });
     const ok = result === true || result?.confirmed === true;
     if (!ok) {
-      // user canceled: uncheck only this row if it was selected
       setSelected((s) => s.filter((id) => id !== row.id));
       return;
     }
+
     try {
-      const res = await fetch(`${API_BASE}/${encodeURIComponent(row.id)}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`${API_BASE}/${encodeURIComponent(row.id)}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) {
-        throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+        if (res.status === 409 && data?.usage) {
+          openUsageDialog({
+            categoryName: row.name,
+            ingredientCount: data.usage.ingredientCount,
+            activityCount: data.usage.activityCount,
+            sampleIngredients: data.usage.sampleIngredients || [],
+          });
+        } else {
+          throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+        }
+        setSelected((s) => s.filter((id) => id !== row.id));
+        return;
       }
-      // ensure this id is not in selection anymore
       setSelected((s) => s.filter((id) => id !== row.id));
       await load();
     } catch (e) {
@@ -113,14 +157,14 @@ export default function InvCategoriePage() {
 
   const openCreate = () => {
     resetForm();
-    setOpen(true);
+    setEditorOpen(true);
   };
   const openEdit = (row) => {
     setEditingId(row.id);
     setName(row.name ?? "");
-    setOpen(true);
+    setEditorOpen(true);
   };
-  const handleClose = () => setOpen(false);
+  const handleClose = () => setEditorOpen(false);
 
   // comparator: newest-first
   const sortNewestFirst = (a, b) => {
@@ -195,31 +239,35 @@ export default function InvCategoriePage() {
         throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
       }
 
-      // If API returned the created/updated category object, update local rows for immediate UX.
-      // Backend suggested response shape: { ok: true, category: { id, name, createdAt, ... } }
+      // Optimistic UI
       if (!isEdit && data?.category) {
-        // Prepend new category (newest-first) and reset to page 0 so user sees it.
         setRows((prev) => [data.category, ...prev]);
         setPageState((s) => ({ ...s, page: 0 }));
-        // Make sure selected set doesn't contain invalid ids (and keep existing selections)
         const valid = new Set([data.category.id, ...rows.map((r) => r.id)]);
         setSelected((prev) => prev.filter((id) => valid.has(id)));
       } else if (isEdit && data?.category) {
-        // Update edited row in-place
         setRows((prev) => prev.map((r) => (r.id === data.category.id ? data.category : r)));
+        // If ingredients were auto-associated, show a rename summary with up to 5 names
+        if (Number.isFinite(data?.affectedIngredients) && data.affectedIngredients > 0) {
+          setRenameInfo({
+            open: true,
+            name: data?.category?.name || "",
+            count: Number(data.affectedIngredients),
+            sample: Array.isArray(data?.sample) ? data.sample.slice(0, 5) : [],
+          });
+        }
       } else {
-        // Fallback to reload (safe) if API didn't return category object
-        await load();
+        await load(); // fallback
       }
 
-      setOpen(false);
+      setEditorOpen(false);
     } catch (e) {
       setSaveErr(e?.message || "Save failed");
     } finally {
       setSaving(false);
     }
   }
-  
+
   async function onDeleteSelected() {
     if (!selected.length) return;
     const plural = selected.length > 1 ? "categories" : "category";
@@ -243,6 +291,18 @@ export default function InvCategoriePage() {
       if (!res.ok || data?.ok !== true) {
         throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
       }
+
+      // If some blocked, show ALL of them (capped visually)
+      if (Array.isArray(data.blocked) && data.blocked.length) {
+        const payload = data.blocked.map((b) => ({
+          categoryName: b?.name || "Category",
+          ingredientCount: b?.usage?.ingredientCount || 0,
+          activityCount: b?.usage?.activityCount || 0,
+          sampleIngredients: b?.usage?.sampleIngredients || [],
+        }));
+        openUsageDialog(payload);
+      }
+
       clearSelection();
       await load();
     } catch (e) {
@@ -250,12 +310,21 @@ export default function InvCategoriePage() {
     }
   }
 
+  const blockedCount = Array.isArray(usageList) ? usageList.length : 0;
+  const blockedShown = Array.isArray(usageList) ? usageList.slice(0, MAX_BLOCKED_SHOWN) : [];
+  const blockedRemaining = Math.max(0, blockedCount - blockedShown.length);
+
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
         <Box p={2}>
           <Stack direction="row" useFlexGap alignItems="center" flexWrap="wrap" rowGap={1.5} columnGap={2}>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>
+            <Button
+              type="button"
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={openCreate}
+            >
               Add Inventory Category
             </Button>
 
@@ -274,8 +343,12 @@ export default function InvCategoriePage() {
         <Divider />
 
         <Box p={2} sx={{ minWidth: 0 }}>
-          <TableContainer component={Paper} elevation={0} className="scroll-x"
-            sx={{ mx: "auto", width: { xs: "100%", sm: "auto" }, maxWidth: 720 }}>
+          <TableContainer
+            component={Paper}
+            elevation={0}
+            className="scroll-x"
+            sx={{ mx: "auto", width: { xs: "100%", sm: "auto" }, maxWidth: 720 }}
+          >
             <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 520 }}>
               <colgroup>
                 <col style={{ width: 56 }} />
@@ -295,21 +368,45 @@ export default function InvCategoriePage() {
 
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">Loading…</Box></TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Box py={6} textAlign="center">Loading…</Box>
+                    </TableCell>
+                  </TableRow>
                 ) : err ? (
-                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">
-                    <Typography variant="body2" color="error">{err}</Typography></Box></TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2" color="error">{err}</Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
                 ) : rows.length === 0 ? (
-                  <TableRow><TableCell colSpan={3}><Box py={6} textAlign="center">
-                    <Typography variant="body2" color="text.secondary">
-                      No inventory categories yet. Click <strong>Add Inventory Category</strong>.
-                    </Typography></Box></TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2" color="text.secondary">
+                          No inventory categories yet. Click <strong>Add Inventory Category</strong>.
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
                 ) : (
                   paged.map((r) => (
-                    <TableRow key={r.id} hover onClick={() => openEdit(r)}
-                      sx={(theme) => ({ cursor: "pointer", "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) } })}>
+                    <TableRow
+                      key={r.id}
+                      hover
+                      onClick={() => openEdit(r)}
+                      sx={(theme) => ({
+                        cursor: "pointer",
+                        "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) },
+                      })}
+                    >
                       <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
+                        <Checkbox
+                          checked={selected.includes(r.id)}
+                          onChange={() => toggleOne(r.id)}
+                        />
                       </TableCell>
                       <TableCell sx={{ overflow: "hidden" }}>
                         <Typography noWrap title={r.name}>{r.name}</Typography>
@@ -340,29 +437,46 @@ export default function InvCategoriePage() {
             page={page}
             onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
             rowsPerPage={rowsPerPage}
-            onRowsPerPageChange={(e) => setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })}
+            onRowsPerPageChange={(e) =>
+              setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })
+            }
             rowsPerPageOptions={[5, 10, 25]}
           />
         </Box>
       </Paper>
 
-      <Dialog open={open} onClose={handleClose} maxWidth="xs" fullWidth>
-        <DialogTitle>
+      {/* Add / Edit Category Dialog */}
+      <Dialog
+        keepMounted
+        open={editorOpen}
+        onClose={handleClose}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>
               {isEdit ? "Edit Inventory Category" : "Add Inventory Category"}
             </Typography>
-            {isEdit && <Typography variant="body2" color="text.secondary">ID: {editingId}</Typography>}
+            {isEdit && (
+              <Typography variant="body2" color="text.secondary">
+                ID: {editingId}
+              </Typography>
+            )}
           </Stack>
         </DialogTitle>
 
         <Divider />
+
         <DialogContent>
           <Stack spacing={2} mt={1}>
             <TextField
               label="Name"
               value={name}
-              onChange={(e) => { const raw = e.target.value; if (raw.length <= NAME_MAX) setName(raw); }}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw.length <= NAME_MAX) setName(raw);
+              }}
               error={nameIsInvalid}
               helperText={
                 name
@@ -382,10 +496,138 @@ export default function InvCategoriePage() {
         </DialogContent>
 
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button variant="outlined" onClick={handleClose} disabled={saving}>Cancel</Button>
-          <Button variant="contained" onClick={onSave} disabled={saving || normalizeName(name).length < NAME_MIN}>
+          <Button variant="outlined" onClick={handleClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={onSave}
+            disabled={saving || normalizeName(name).length < NAME_MIN || nameIsInvalid}
+          >
             {saving ? "Saving..." : "Save"}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Blocked-Delete Usage Dialog (single or multiple) */}
+      <Dialog open={usageOpen} onClose={() => setUsageOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle component="div">
+          <Typography variant="h6" fontWeight={600}>
+            {blockedCount > 1 ? "Cannot Delete Categories" : "Cannot Delete Category"}
+          </Typography>
+        </DialogTitle>
+        <Divider />
+        <DialogContent>
+          <Stack spacing={1.5}>
+            {blockedCount > 1 ? (
+              <>
+                <Typography>
+                  <strong>{blockedCount}</strong> categories can’t be deleted because they’re in use.
+                </Typography>
+
+                {/* List of blocked categories (max 10 to avoid a huge dialog) */}
+                <Box component="ul" sx={{ pl: 3, m: 0 }}>
+                  {blockedShown.map((b, i) => (
+                    <li key={i}>
+                      <Typography variant="subtitle2" component="div" sx={{ mb: 0.25 }}>
+                        {b.categoryName}
+                        {" · "}
+                        <Typography component="span" variant="body2">
+                          ingredients: <strong>{b.ingredientCount}</strong>
+                          {" • "}
+                          activity logs: <strong>{b.activityCount}</strong>
+                        </Typography>
+                      </Typography>
+                      {!!(b.sampleIngredients?.length) && (
+                        <Box component="ul" sx={{ pl: 3, m: 0, mb: 1 }}>
+                          {b.sampleIngredients.slice(0, 3).map((n, j) => (
+                            <Typography key={j} component="li" variant="body2">{n}</Typography>
+                          ))}
+                          {b.sampleIngredients.length > 3 && (
+                            <Typography component="li" variant="body2" fontStyle="italic">…and more</Typography>
+                          )}
+                        </Box>
+                      )}
+                    </li>
+                  ))}
+                  {blockedRemaining > 0 && (
+                    <li>
+                      <Typography variant="body2" fontStyle="italic">
+                        …and {blockedRemaining} more categor{blockedRemaining === 1 ? "y" : "ies"}
+                      </Typography>
+                    </li>
+                  )}
+                </Box>
+
+                <Typography variant="body2" color="text.secondary">
+                  To proceed, move or delete all ingredients in those categories, and ensure related activity is no longer tied to them.
+                </Typography>
+              </>
+            ) : (
+              // Single category (previous behavior)
+              <>
+                <Typography>
+                  <strong>{usageList?.[0]?.categoryName}</strong> is currently in use and can’t be deleted.
+                </Typography>
+                <Typography variant="body2">
+                  Linked <strong>ingredients</strong>: {usageList?.[0]?.ingredientCount ?? 0}
+                  {" • "}Linked <strong>activity logs</strong>: {usageList?.[0]?.activityCount ?? 0}
+                </Typography>
+
+                {!!(usageList?.[0]?.sampleIngredients?.length) && (
+                  <Box>
+                    <Typography variant="body2" sx={{ mb: 0.5 }}>Recent ingredients in this category:</Typography>
+                    <Box component="ul" sx={{ pl: 3, m: 0 }}>
+                      {usageList[0].sampleIngredients.map((n, i) => (
+                        <Typography key={i} component="li" variant="body2">{n}</Typography>
+                      ))}
+                      {(usageList[0].ingredientCount || 0) > usageList[0].sampleIngredients.length && (
+                        <Typography component="li" variant="body2" fontStyle="italic">…and more</Typography>
+                      )}
+                    </Box>
+                  </Box>
+                )}
+
+                <Typography variant="body2" color="text.secondary">
+                  To delete this category, move or delete all ingredients in it, and ensure related activity is no longer tied to those ingredients.
+                </Typography>
+              </>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="contained" onClick={() => setUsageOpen(false)}>OK</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Rename Feedback Dialog */}
+      <Dialog
+        open={renameInfo.open}
+        onClose={() => setRenameInfo((d) => ({ ...d, open: false }))}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Category Renamed</DialogTitle>
+        <DialogContent>
+          <Typography>
+            <strong>{renameInfo.name || "This category"}</strong> was renamed.
+          </Typography>
+          <Typography sx={{ mt: 1 }} variant="body2" color="text.secondary">
+            {renameInfo.count} linked ingredient{renameInfo.count === 1 ? "" : "s"} {renameInfo.count === 1 ? "was" : "were"} automatically updated by the system.
+          </Typography>
+          {renameInfo.sample?.length > 0 && (
+            <>
+              <Typography sx={{ mt: 1 }} variant="body2">Recent ingredients in this category:</Typography>
+              <Box component="ul" sx={{ pl: 3, mt: 0.5, mb: 0 }}>
+                {renameInfo.sample.map((n, i) => (
+                  <Typography key={i} component="li" variant="body2">{n}</Typography>
+                ))}
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button variant="contained" onClick={() => setRenameInfo((d) => ({ ...d, open: false }))}>OK</Button>
         </DialogActions>
       </Dialog>
     </Box>

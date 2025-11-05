@@ -16,13 +16,11 @@ module.exports = ({ db } = {}) => {
     try {
       const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "200", 10)));
 
-      // Prefer ts desc; fallback to createdAt desc if ts is nullable
       const rows = await db.query(
         `SELECT id, ts, employee, remarks, io, qty, price, ingredientId, ingredientName, createdAt, updatedAt
-           FROM inventory_activity
+          FROM inventory_activity
           ORDER BY COALESCE(ts, createdAt) DESC
-          LIMIT ?`,
-        [limit]
+          LIMIT ${limit}`
       );
 
       // Normalize to your previous shape

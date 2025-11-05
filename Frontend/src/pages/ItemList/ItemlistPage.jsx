@@ -100,7 +100,7 @@ export default function ItemlistPage() {
 
   // pagination
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10); // -1 for "All"
+  const [rowsPerPage, setRowsPerPage] = useState(5); // -1 for "All"
 
   // Build query string for items
   const qs = useMemo(() => {

@@ -32,7 +32,6 @@ import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext.jsx";
 /* -------------------------- Name validation helpers -------------------------- */
 const NAME_MAX = 60;
 const NAME_MIN = 3;
-// First character must be alphanumeric; then allow spaces and a small safe set of punctuations
 const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
 
 function normalizeName(s) {
@@ -65,6 +64,8 @@ export default function CategoriePage() {
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
   const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
 
+  const [renameInfo, setRenameInfo] = useState({ open: false, count: 0, name: "", sample: [] })
+
   // create/edit dialog
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null); // null=create, string=edit
@@ -76,8 +77,15 @@ export default function CategoriePage() {
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
 
-  // Blocked-delete modal
-  const [blockDialog, setBlockDialog] = useState({ open: false, message: "" });
+  // Blocked-delete modal (rich, inventory-like)
+  const [blockedDialog, setBlockedDialog] = useState({
+    open: false,
+    categoryName: "",
+    countItems: 0,
+    activityCount: 0,   // reserved for parity with inventory dialog; keep 0 for now
+    sampleItems: [],    // array of strings
+    message: "",
+  });
 
   // Keep track of blob URLs to revoke
   const [objectUrls, setObjectUrls] = useState([]);
@@ -93,7 +101,7 @@ export default function CategoriePage() {
 
   // Handy helper so we always clear selection the same way
   function clearSelection() {
-  setSelected([]);
+    setSelected([]);
   }
 
   function toggleAll() {
@@ -215,6 +223,15 @@ export default function CategoriePage() {
 
       await load();
       setOpen(false);
+      // If we just renamed and backend tells us how many items were auto-updated, show it.
+      if (isEdit && Number.isFinite(data?.affectedItems) && data.affectedItems > 0) {
+        setRenameInfo({
+          open: true,
+          count: Number(data.affectedItems),
+          name: normalizeName(name),
+          sample: Array.isArray(data?.sample) ? data.sample.slice(0, 5) : [],
+        });
+      }
     } catch (e) {
       setSaveErr(e?.message || "Save failed");
     } finally {
@@ -222,8 +239,23 @@ export default function CategoriePage() {
     }
   }
 
-  function showBlockedModal(message) {
-    setBlockDialog({ open: true, message });
+  /* ------------------------ Inventory-like blocked modal ------------------------ */
+  function showBlockedModal(payload = {}) {
+    const {
+      categoryName = "",
+      countItems = 0,
+      activityCount = 0,
+      sampleItems = [],
+      message = "",
+    } = payload || {};
+    setBlockedDialog({
+      open: true,
+      categoryName,
+      countItems: Number.isFinite(countItems) ? countItems : 0,
+      activityCount: Number.isFinite(activityCount) ? activityCount : 0,
+      sampleItems: Array.isArray(sampleItems) ? sampleItems.slice(0, 6) : [],
+      message: String(message || ""),
+    });
   }
 
   async function onDeleteOne(row) {
@@ -236,10 +268,10 @@ export default function CategoriePage() {
     });
     const ok = result === true || result?.confirmed === true;
     if (!ok) {
-      // User canceled: uncheck only what they had selected
-      setSelected([]);
+      setSelected([]); // user canceled
       return;
     }
+
     try {
       const res = await fetch(`/api/categories/${encodeURIComponent(row.id)}`, {
         method: "DELETE",
@@ -249,12 +281,25 @@ export default function CategoriePage() {
 
       if (!res.ok) {
         if (res.status === 409) {
-          showBlockedModal("Cannot delete category: items are still assigned to this category.");
-          setSelected((s) => s.filter((id) => id !== row.id)); // uncheck it
+          const count = Number.isFinite(data?.count) ? data.count : undefined;
+          const sample = Array.isArray(data?.sample) ? data.sample : [];
+          // If server didn't send names, try to at least show the current row name
+          showBlockedModal({
+            categoryName: row.name || "This category",
+            countItems: Number.isFinite(count) ? count : 0,
+            activityCount: Number.isFinite(data?.activityCount) ? data.activityCount : 0,
+            sampleItems: sample,
+            message:
+              typeof data?.error === "string"
+                ? data.error
+                : "Cannot delete category; item(s) are assigned to it.",
+          });
+          setSelected((s) => s.filter((id) => id !== row.id)); // uncheck just this one
         } else {
           throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
         }
       } else {
+        // deleted -> remove from selection if present
         setSelected((s) => s.filter((id) => id !== row.id));
       }
 
@@ -277,7 +322,6 @@ export default function CategoriePage() {
     });
     const ok = result === true || result?.confirmed === true;
     if (!ok) {
-      // User canceled: uncheck everything they had selected
       clearSelection();
       return;
     }
@@ -293,20 +337,48 @@ export default function CategoriePage() {
 
       if (!res.ok) {
         if (res.status === 409 && data?.error) {
-          showBlockedModal("Cannot delete category: items are still assigned to this category.");
+          showBlockedModal({ message: String(data.error) });
         } else {
           throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
         }
       } else {
+        // Build a helpful dialog summarizing blocked ones
         if (Array.isArray(data.blocked) && data.blocked.length) {
           const namesById = new Map(rows.map((r) => [r.id, r.name]));
-          const sample = data.blocked.slice(0, 5).map((b) => namesById.get(b.id) || b.id).join(", ");
-          const more = data.blocked.length > 5 ? ` and ${data.blocked.length - 5} more` : "";
-          showBlockedModal(`Some categories were not deleted because items are still assigned: ${sample}${more}.`);
-          setSelected((prev) => prev.filter((id) => !selected.includes(id)));
-        } else {
-          clearSelection();
+          // If only one blocked, show its details inventory-style
+          if (data.blocked.length === 1) {
+            const b = data.blocked[0];
+            const name = namesById.get(b.id) || "This category";
+            const sample =
+              Array.isArray(b.sample) && b.sample.length
+                ? b.sample
+                : []; // server-provided sample if any
+            showBlockedModal({
+              categoryName: name,
+              countItems: Number.isFinite(b.count) ? b.count : 0,
+              activityCount: Number.isFinite(b.activityCount) ? b.activityCount : 0,
+              sampleItems: sample,
+              message: "Cannot delete category; item(s) are assigned to it.",
+            });
+          } else {
+            // Multiple blocked: show a compact summary message with first few names
+            const preview = data.blocked
+              .slice(0, 5)
+              .map((b) => namesById.get(b.id) || b.id)
+              .join(", ");
+            const more = data.blocked.length > 5 ? ` and ${data.blocked.length - 5} more` : "";
+            showBlockedModal({
+              categoryName: "",
+              countItems: 0,
+              sampleItems: [],
+              message: `Some categories were not deleted because items are still assigned: ${preview}${more}.`,
+            });
+          }
         }
+
+        // Remove deleted ones from selection; keep blocked ones unchecked
+        const blockedIds = new Set((data.blocked || []).map((b) => b.id));
+        setSelected((prev) => prev.filter((id) => blockedIds.has(id))); // leave blocked selected off next render
       }
 
       await load();
@@ -390,36 +462,35 @@ export default function CategoriePage() {
                     <Typography fontWeight={600}>Name</Typography>
                   </TableCell>
                   <TableCell align="right">
-                    <Typography fontWeight={600}>Actions</Typography> {/* NEW */}
+                    <Typography fontWeight={600}>Actions</Typography>
                   </TableCell>
                 </TableRow>
               </TableHead>
 
               <TableBody>
-                {/* States: loading / error / empty */}
-                  {loading && (
-                    <TableRow>
-                      <TableCell colSpan={4}>
-                        <Typography variant="body2">Loading categories…</Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {!!err && !loading && (
-                    <TableRow>
-                      <TableCell colSpan={4}>
-                        <Typography variant="body2" color="error">{err}</Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {isEmpty && (
-                    <TableRow>
-                      <TableCell colSpan={4}>
-                        <Typography variant="body2" color="text.secondary">
-                          No categories yet. Click <strong>Add Category</strong> to create your first one.
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Typography variant="body2">Loading categories…</Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!!err && !loading && (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Typography variant="body2" color="error">{err}</Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+                {isEmpty && (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Typography variant="body2" color="text.secondary">
+                        No categories yet. Click <strong>Add Category</strong> to create your first one.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
                 {!loading && !err && !isEmpty && paged.map((r) => (
                   <TableRow
                     key={r.id}
@@ -448,7 +519,6 @@ export default function CategoriePage() {
                       <Typography noWrap title={r.name}>{r.name}</Typography>
                     </TableCell>
 
-                    {/* NEW actions cell */}
                     <TableCell align="right" onClick={(e) => e.stopPropagation()}>
                       <Tooltip title="Delete">
                         <span>
@@ -512,7 +582,7 @@ export default function CategoriePage() {
               value={name}
               onChange={(e) => {
                 const raw = e.target.value;
-                if (raw.length <= NAME_MAX) setName(raw); // hard cap length while typing
+                if (raw.length <= NAME_MAX) setName(raw);
               }}
               error={nameIsInvalid}
               helperText={
@@ -585,21 +655,102 @@ export default function CategoriePage() {
         </DialogActions>
       </Dialog>
 
-      {/* Blocked-delete Modal */}
-      <Dialog
-        open={blockDialog.open}
-        onClose={() => setBlockDialog({ open: false, message: "" })}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Cannot delete category</DialogTitle>
+      {/* Blocked Delete Dialog (Cleaned, Inventory-style) */}
+      <Dialog open={blockedDialog.open} onClose={() => setBlockedDialog((d) => ({ ...d, open: false }))} maxWidth="sm" fullWidth>
+        <DialogTitle>Cannot Delete Category</DialogTitle>
         <DialogContent>
-          <Typography>
-            {blockDialog.message || "Cannot delete category: items are still assigned to this category."}
+          <Typography sx={{ mb: 1.5 }}>
+            <strong>{blockedDialog.categoryName || "This category"}</strong>{" "}
+            is currently in use and can’t be deleted.
+          </Typography>
+
+          {/* Linked items count */}
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Linked <strong>items</strong>: {blockedDialog.countItems}
+          </Typography>
+
+          {/* List of linked items */}
+          {blockedDialog.sampleItems?.length > 0 && (
+            <>
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                Recent items in this category:
+              </Typography>
+              <Box component="ul" sx={{ pl: 3, mt: 0, mb: 1.5 }}>
+                {blockedDialog.sampleItems.map((item, i) => (
+                  <li key={`${item}-${i}`}>
+                    <Typography variant="body2">{item}</Typography>
+                  </li>
+                ))}
+              </Box>
+            </>
+          )}
+
+          {/* Core message */}
+          {blockedDialog.message && (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mb: 1.5, whiteSpace: "pre-wrap" }}
+            >
+              {blockedDialog.message}
+            </Typography>
+          )}
+
+          {/* Footer tip */}
+          <Typography variant="body2" color="text.secondary">
+            To delete this category, move or delete all items in it, and ensure
+            any related references are cleared.
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setBlockDialog({ open: false, message: "" })} variant="contained" autoFocus>
+          <Button
+            onClick={() => setBlockedDialog((d) => ({ ...d, open: false }))}
+            variant="contained"
+            autoFocus
+          >
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Rename Feedback Dialog */}
+      <Dialog
+        open={renameInfo.open}
+        onClose={() => setRenameInfo((d) => ({ ...d, open: false }))}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Category Renamed</DialogTitle>
+        <DialogContent>
+          <Typography>
+            <strong>{renameInfo.name || "This category"}</strong> was renamed.
+          </Typography>
+          <Typography sx={{ mt: 1 }} variant="body2" color="text.secondary">
+            {renameInfo.count} linked item
+            {renameInfo.count > 1 ? "s were" : " was"} automatically updated by the system.
+          </Typography>
+            {renameInfo.sample?.length > 0 && (
+              <>
+                <Typography sx={{ mt: 1 }} variant="body2">
+                  Recent items in this category:
+                </Typography>
+                <Box component="ul" sx={{ pl: 3, mt: 0.5, mb: 0 }}>
+                  {renameInfo.sample.slice(0, 5).map((n, i) => (
+                    <li key={`${n}-${i}`}>
+                      <Typography variant="body2">{n}</Typography>
+                    </li>
+                  ))}
+                </Box>
+              </>
+            )}    
+        </DialogContent>
+        
+        <DialogActions>
+          <Button
+            onClick={() => setRenameInfo((d) => ({ ...d, open: false }))}
+            variant="contained"
+            autoFocus
+          >
             OK
           </Button>
         </DialogActions>

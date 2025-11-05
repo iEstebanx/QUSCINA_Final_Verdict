@@ -32,7 +32,13 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import SearchIcon from "@mui/icons-material/Search";
-import { useAlert } from "@/context/Snackbar/AlertContext"; // Make sure to import useAlert
+import { useAlert } from "@/context/Snackbar/AlertContext";
+
+/** Validation must mirror backend */
+const NAME_MAX = 60;
+const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
+const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const isValidName = (s) => !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
 const formatPhp = (n) =>
   `₱${Number(n || 0).toLocaleString("en-PH", {
@@ -56,13 +62,25 @@ export default function InventoryPage() {
   const [categories, setCategories] = useState([]);
   const [activity, setActivity] = useState([]);
 
-  const alert = useAlert(); // For showing success/error messages
+  const alert = useAlert();
 
-  // Delete confirmation dialog state
+  // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [ingredientToDelete, setIngredientToDelete] = useState(null);
   const [deleteCheckResult, setDeleteCheckResult] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Close handler for the Stock In/Out dialog
+  const handleStockClose = () => {
+    if (stockFormChanged) {
+      // show discard confirmation dialog
+      setShowStockConfirm(true);
+    } else {
+      // safe to close immediately
+      setOpenStock(false);
+      resetStockForm();
+    }
+  };
 
   // Load categories
   useEffect(() => {
@@ -85,7 +103,7 @@ export default function InventoryPage() {
     return () => { alive = false; };
   }, []);
 
-  // Load ingredients (names + meta) - Backend now returns newest first
+  // Load ingredients — backend returns newest-first
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -98,12 +116,12 @@ export default function InventoryPage() {
           id: x.id,
           name: x.name || "",
           category: x.category || "Uncategorized",
-          type: x.type || "",            // unit/type (e.g., KG, L, PCS) if available
+          type: x.type || "",
           currentStock: Number(x.currentStock || 0),
           lowStock: Number(x.lowStock || 0),
           price: Number(x.price || 0),
-          createdAt: x.createdAt, // Keep for potential client-side sorting
-          updatedAt: x.updatedAt, // Keep for potential client-side sorting
+          createdAt: x.createdAt || null,
+          updatedAt: x.updatedAt || null,
         }));
         if (alive) setIngredients(list);
       } catch (e) {
@@ -113,7 +131,7 @@ export default function InventoryPage() {
     return () => { alive = false; };
   }, []);
 
-  // Load activity
+  // Load inventory activity
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -142,7 +160,7 @@ export default function InventoryPage() {
     return () => { alive = false; };
   }, []);
 
-  // Search / filtered list - Maintain backend order for non-searched items
+  // Search / filter
   const qLower = query.trim().toLowerCase();
   const filtered = useMemo(() => {
     const filteredList = ingredients.filter((ing) => {
@@ -153,25 +171,15 @@ export default function InventoryPage() {
       );
     });
 
-    // When searching, sort by relevance (keep original order for non-searched)
     if (qLower) {
       return filteredList.sort((a, b) => {
-        // Exact matches first, then partial matches
-        const aNameMatch = a.name.toLowerCase().includes(qLower);
-        const bNameMatch = b.name.toLowerCase().includes(qLower);
-        const aCatMatch = String(a.category || "").toLowerCase().includes(qLower);
-        const bCatMatch = String(b.category || "").toLowerCase().includes(qLower);
-        
-        // Name matches come before category matches
-        if (aNameMatch && !bNameMatch) return -1;
-        if (!aNameMatch && bNameMatch) return 1;
-        
-        // Both have name matches or both don't - maintain original order
-        return 0;
+        const aName = a.name.toLowerCase().includes(qLower);
+        const bName = b.name.toLowerCase().includes(qLower);
+        if (aName !== bName) return aName ? -1 : 1; // name matches first
+        return 0; // otherwise keep backend order
       });
     }
-    
-    return filteredList; // Return in original order (newest first from backend)
+    return filteredList;
   }, [ingredients, qLower]);
 
   useEffect(() => {
@@ -183,27 +191,26 @@ export default function InventoryPage() {
     return filtered.slice(start, start + pageState.rowsPerPage);
   }, [filtered, pageState]);
 
-  // Selection helpers
-  const allChecked = filtered.length > 0 && filtered.every(ing => selected.includes(ing.id));
-  const someChecked = filtered.some(ing => selected.includes(ing.id)) && !allChecked;
-  
+  // selection
+  const allChecked = filtered.length > 0 && filtered.every((ing) => selected.includes(ing.id));
+  const someChecked = filtered.some((ing) => selected.includes(ing.id)) && !allChecked;
+
   const toggleAll = () => {
-    const ids = filtered.map(ing => ing.id);
-    const everyIncluded = ids.every(id => selected.includes(id));
-    setSelected(s => (everyIncluded ? s.filter(id => !ids.includes(id)) : Array.from(new Set([...s, ...ids]))));
-  };
-  
-  const toggleOne = (id) => {
-    setSelected(s => (s.includes(id) ? s.filter(x => x !== id) : [...s, id]));
+    const ids = filtered.map((ing) => ing.id);
+    const everyIncluded = ids.every((id) => selected.includes(id));
+    setSelected((s) => (everyIncluded ? s.filter((id) => !ids.includes(id)) : Array.from(new Set([...s, ...ids]))));
   };
 
-  // Keep selection valid when data changes
+  const toggleOne = (id) => {
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  };
+
   useEffect(() => {
-    const validIds = new Set(ingredients.map(ing => ing.id));
-    setSelected(prev => prev.filter(id => validIds.has(id)));
+    const validIds = new Set(ingredients.map((ing) => ing.id));
+    setSelected((prev) => prev.filter((id) => validIds.has(id)));
   }, [ingredients]);
 
-  // helpers to get last in/out
+  // helpers
   const lastActivity = (ingId, ioType) => {
     const rows = activity
       .filter((a) => a.ingredientId === ingId && a.io === ioType)
@@ -222,51 +229,38 @@ export default function InventoryPage() {
     }
   };
 
-  // Delete functionality
+  // Delete flow
   const handleDeleteClick = async (ingredient) => {
     setIngredientToDelete(ingredient);
     setDeleteCheckResult(null);
-    
     try {
-      // Check if ingredient is used in any items
       const res = await fetch(`${ING_API}/${ingredient.id}/usage`);
       const data = await res.json().catch(() => ({}));
-      
-      if (res.ok && data?.ok) {
-        setDeleteCheckResult(data);
-      } else {
-        setDeleteCheckResult({ isUsed: false, usedInItems: [] });
-      }
-    } catch (error) {
-      console.error("Error checking ingredient usage:", error);
+      if (res.ok && data?.ok) setDeleteCheckResult(data);
+      else setDeleteCheckResult({ isUsed: false, usedInItems: [] });
+    } catch (e) {
+      console.error("usage check error:", e);
       setDeleteCheckResult({ isUsed: false, usedInItems: [] });
     }
-    
     setDeleteDialogOpen(true);
   };
 
   const handleConfirmDelete = async () => {
     if (!ingredientToDelete) return;
-    
     setDeleting(true);
     try {
-      const res = await fetch(`${ING_API}/${ingredientToDelete.id}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`${ING_API}/${ingredientToDelete.id}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
-      
       if (res.ok && data?.ok) {
-        // Remove from local state
-        setIngredients(prev => prev.filter(ing => ing.id !== ingredientToDelete.id));
-        // Remove from selection if it was selected
-        setSelected(prev => prev.filter(id => id !== ingredientToDelete.id));
+        setIngredients((prev) => prev.filter((ing) => ing.id !== ingredientToDelete.id));
+        setSelected((prev) => prev.filter((id) => id !== ingredientToDelete.id));
         alert.success(`Ingredient "${ingredientToDelete.name}" deleted successfully`);
         setDeleteDialogOpen(false);
       } else {
         alert.error(data?.error || "Failed to delete ingredient");
       }
-    } catch (error) {
-      console.error("Error deleting ingredient:", error);
+    } catch (e) {
+      console.error("delete error:", e);
       alert.error("Failed to delete ingredient");
     } finally {
       setDeleting(false);
@@ -274,56 +268,39 @@ export default function InventoryPage() {
   };
 
   const handleBulkDelete = async () => {
-    if (selected.length === 0) return;
-    
-    // For bulk delete, we'll delete one by one and show results
-    let successCount = 0;
-    let errorCount = 0;
-    
+    if (!selected.length) return;
+    let success = 0;
+    let failed = 0;
     for (const id of selected) {
       try {
         const res = await fetch(`${ING_API}/${id}`, { method: "DELETE" });
         const data = await res.json().catch(() => ({}));
-        
-        if (res.ok && data?.ok) {
-          successCount++;
-        } else {
-          errorCount++;
-          console.error(`Failed to delete ingredient ${id}:`, data?.error);
-        }
-      } catch (error) {
-        errorCount++;
-        console.error(`Error deleting ingredient ${id}:`, error);
+        if (res.ok && data?.ok) success++; else failed++;
+      } catch { failed++; }
+    }
+    // refresh minimalistically
+    try {
+      const res = await fetch(ING_API, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.ok) {
+        const list = (data.ingredients ?? []).map((x) => ({
+          id: x.id,
+          name: x.name || "",
+          category: x.category || "Uncategorized",
+          type: x.type || "",
+          currentStock: Number(x.currentStock || 0),
+          lowStock: Number(x.lowStock || 0),
+          price: Number(x.price || 0),
+        }));
+        setIngredients(list);
       }
-    }
-    
-    // Reload ingredients to reflect changes
-    const res = await fetch(ING_API, { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data?.ok) {
-      const list = (data.ingredients ?? []).map((x) => ({
-        id: x.id,
-        name: x.name || "",
-        category: x.category || "Uncategorized",
-        type: x.type || "",
-        currentStock: Number(x.currentStock || 0),
-        lowStock: Number(x.lowStock || 0),
-        price: Number(x.price || 0),
-      }));
-      setIngredients(list);
-    }
-    
+    } catch {}
     setSelected([]);
-    
-    if (successCount > 0) {
-      alert.success(`Successfully deleted ${successCount} ingredient${successCount > 1 ? 's' : ''}`);
-    }
-    if (errorCount > 0) {
-      alert.error(`Failed to delete ${errorCount} ingredient${errorCount > 1 ? 's' : ''}. They may be used in menu items.`);
-    }
+    if (success) alert.success(`Deleted ${success} ingredient${success > 1 ? "s" : ""}`);
+    if (failed) alert.error(`Failed to delete ${failed} ingredient${failed > 1 ? "s" : ""}`);
   };
 
-  // Add Ingredient dialog state & handlers
+  // Add Ingredient dialog
   const [openAdd, setOpenAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCat, setNewCat] = useState("");
@@ -331,14 +308,13 @@ export default function InventoryPage() {
   const [addFormChanged, setAddFormChanged] = useState(false);
   const [showAddConfirm, setShowAddConfirm] = useState(false);
 
-  const UNIT_OPTIONS = ["KG", "Liter", "Slices", "Pcs", "Grams", "ML", "Bottle"];
+  const UNIT_OPTIONS = [
+    { value: "kg",   label: "KG" },
+    { value: "pack", label: "PACK" },
+    { value: "pcs",  label: "PCS" },
+  ];
 
-  const handleAddFormChange = () => {
-    if (!addFormChanged) {
-      setAddFormChanged(true);
-    }
-  };
-
+  const handleAddFormChange = () => { if (!addFormChanged) setAddFormChanged(true); };
   const resetAddForm = () => {
     setNewName("");
     setNewCat("");
@@ -346,30 +322,19 @@ export default function InventoryPage() {
     setAddFormChanged(false);
     setShowAddConfirm(false);
   };
-
-  const handleAddClose = () => {
-    if (addFormChanged) {
-      setShowAddConfirm(true);
-    } else {
-      setOpenAdd(false);
-      resetAddForm();
-    }
-  };
-
-  const handleAddConfirmClose = () => {
-    setOpenAdd(false);
-    resetAddForm();
-  };
-
-  const handleAddCancelClose = () => {
-    setShowAddConfirm(false);
-  };
+  const handleAddClose = () => { addFormChanged ? setShowAddConfirm(true) : (setOpenAdd(false), resetAddForm()); };
+  const handleAddConfirmClose = () => { setOpenAdd(false); resetAddForm(); };
+  const handleAddCancelClose = () => setShowAddConfirm(false);
 
   const handleAddIngredient = async () => {
-    const name = String(newName ?? "").trim();
-    const category = String(newCat ?? "Uncategorized").trim();
-    const unit = newUnit || "Pcs";
-    if (!name) return;
+    const name = normalize(newName);
+    const category = normalize(newCat || "Uncategorized");
+    const unit = String(newUnit || "pcs");
+
+    if (!isValidName(name)) {
+      alert.error("Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).");
+      return;
+    }
 
     try {
       const res = await fetch(ING_API, {
@@ -380,47 +345,44 @@ export default function InventoryPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
 
-      // If API returned id, use it; otherwise fallback to generated id
       const id = data.id || `ing-${Date.now()}`;
-
-      // Prepend the new ingredient so it appears immediately at the top of the table
       setIngredients((list) => [
-        { 
-          id, 
-          name, 
-          category, 
-          type: unit, 
-          currentStock: 0, 
-          lowStock: 0, 
+        {
+          id,
+          name,
+          category,
+          type: unit,
+          currentStock: 0,
+          lowStock: 0,
           price: 0,
-          createdAt: new Date().toISOString(), // Add client-side timestamp
-          updatedAt: new Date().toISOString()
+          createdAt: NOW(),
+          updatedAt: NOW(),
         },
         ...list,
       ]);
 
-      // reset form and close
       resetAddForm();
       setOpenAdd(false);
+      alert.success("Ingredient added");
     } catch (e) {
       console.error("[ingredients] create failed:", e);
-      // keep modal open so user can retry — optionally show error to user
+      alert.error(e?.message || "Create failed");
     }
   };
 
-  // Stock In/Out dialog state & handlers
+  // Stock In/Out
   const [openStock, setOpenStock] = useState(false);
   const [stockForm, setStockForm] = useState({
     ingId: "",
     cat: "",
-    type: "",           // unit (e.g., KG, Pcs)
+    type: "",
     direction: "IN",
     qty: "",
     current: 0,
     low: "",
     price: "",
     cost: 0,
-    date: "",
+    date: todayDate(),
     remarks: "",
   });
   const [initialStockForm, setInitialStockForm] = useState(null);
@@ -430,9 +392,7 @@ export default function InventoryPage() {
   const handleStockFormChange = (newForm) => {
     if (!stockFormChanged && initialStockForm) {
       const hasChanges = JSON.stringify(newForm) !== JSON.stringify(initialStockForm);
-      if (hasChanges) {
-        setStockFormChanged(true);
-      }
+      if (hasChanges) setStockFormChanged(true);
     }
   };
 
@@ -455,26 +415,7 @@ export default function InventoryPage() {
     setShowStockConfirm(false);
   };
 
-  const handleStockClose = () => {
-    if (stockFormChanged) {
-      setShowStockConfirm(true);
-    } else {
-      setOpenStock(false);
-      resetStockForm();
-    }
-  };
-
-  const handleStockConfirmClose = () => {
-    setOpenStock(false);
-    resetStockForm();
-  };
-
-  const handleStockCancelClose = () => {
-    setShowStockConfirm(false);
-  };
-
-  // Open stock dialog (without a chosen ingredient)
-  const openStockDialog = (initialIngId) => {
+  const openStockDialog = () => {
     const initialForm = {
       ingId: "",
       cat: "",
@@ -488,7 +429,6 @@ export default function InventoryPage() {
       date: todayDate(),
       remarks: "",
     };
-    
     setStockForm(initialForm);
     setInitialStockForm(initialForm);
     setStockFormChanged(false);
@@ -496,7 +436,6 @@ export default function InventoryPage() {
     setOpenStock(true);
   };
 
-  // Called when user picks ingredient from the select or via row click
   const onPickIngredient = (id) => {
     const ing = ingredients.find((i) => i.id === id);
     const newForm = {
@@ -511,19 +450,18 @@ export default function InventoryPage() {
     handleStockFormChange(newForm);
   };
 
-  // New handler when clicking a table row to quick-fill the dialog for restock
   const handleRowClick = (ing) => {
     const newForm = {
       ingId: ing.id,
       cat: ing.category || "",
       type: ing.type || "",
-      direction: "IN", // default quick-restock
+      direction: "IN",
       qty: "",
       current: ing.currentStock || 0,
       low: ing.lowStock || "",
       price: ing.price || "",
       cost: 0,
-      date: todayDate(), // prefill today's date
+      date: todayDate(),
       remarks: "",
     };
     setStockForm(newForm);
@@ -564,7 +502,6 @@ export default function InventoryPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
 
-      // Prepend to UI activity
       const r = data.row || {};
       const row = {
         id: data.id || r.id || `a-${Date.now()}`,
@@ -579,96 +516,65 @@ export default function InventoryPage() {
       };
       setActivity((a) => [row, ...a]);
 
-      // Update ingredient's current stock and price locally
-      // Also update the updatedAt timestamp to maintain proper ordering
+      // Update ingredient locally
       setIngredients((arr) =>
         arr.map((i) => {
           if (i.id !== picked.id) return i;
           const delta = io === "In" ? qty : -qty;
-          return { 
-            ...i, 
-            currentStock: Math.max(0, (i.currentStock || 0) + delta), 
-            price, 
-            type: stockForm.type, 
+          return {
+            ...i,
+            currentStock: Math.max(0, (i.currentStock || 0) + delta),
+            price,
+            type: stockForm.type,
             category: stockForm.cat,
-            updatedAt: new Date().toISOString() // Update timestamp for ordering
+            updatedAt: NOW(),
           };
         })
       );
 
-      // Try to persist the unit (type) and category change back to ingredients endpoint if available.
-      // This is a best-effort update — if the backend doesn't support PATCH, we ignore errors.
+      // Best-effort PATCH to persist unit/category/price/stock
       (async () => {
         try {
           await fetch(`${ING_API}/${picked.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              type: stockForm.type, 
+            body: JSON.stringify({
+              type: stockForm.type,
               category: stockForm.cat,
-              price: price,
-              currentStock: Math.max(0, (picked.currentStock || 0) + (io === "In" ? qty : -qty))
+              price,
+              currentStock: Math.max(0, (picked.currentStock || 0) + (io === "In" ? qty : -qty)),
             }),
           });
-        } catch (e) {
-          // ignore failures — UI state already updated locally
-        }
+        } catch {}
       })();
 
       setOpenStock(false);
       resetStockForm();
+      alert.success("Stock updated");
     } catch (e) {
       console.error("[inv-activity] save failed:", e);
+      alert.error(e?.message || "Save failed");
     }
   };
 
-  // UI
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
         <Box p={2}>
-          <Stack
-            direction="row"
-            useFlexGap
-            alignItems="center"
-            flexWrap="wrap"
-            rowGap={1.5}
-            columnGap={2}
-            sx={{ minWidth: 0 }}
-          >
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={() => {
-                resetAddForm();
-                setOpenAdd(true);
-              }}
-              sx={{ flexShrink: 0 }}
-            >
+          <Stack direction="row" useFlexGap alignItems="center" flexWrap="wrap" rowGap={1.5} columnGap={2} sx={{ minWidth: 0 }}>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetAddForm(); setOpenAdd(true); }} sx={{ flexShrink: 0 }}>
               Add ING
             </Button>
 
-            <Button
-              variant="contained"
-              color="success"
-              startIcon={<Inventory2OutlinedIcon />}
-              onClick={() => openStockDialog()}
-              sx={{ flexShrink: 0 }}
-            >
+            <Button variant="contained" color="success" startIcon={<Inventory2OutlinedIcon />} onClick={() => openStockDialog()} sx={{ flexShrink: 0 }}>
               STOCK IN/OUT
             </Button>
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
 
-            {/* Bulk Delete Button */}
             <Tooltip title={selected.length ? `Delete ${selected.length} selected ingredient${selected.length > 1 ? 's' : ''}` : "Select ingredients to delete"}>
               <span>
-                <IconButton
-                  aria-label="Delete selected"
-                  onClick={handleBulkDelete}
-                  disabled={!selected.length}
-                  sx={{ flexShrink: 0 }}
-                >
+                <IconButton aria-label="Delete selected" onClick={handleBulkDelete} disabled={!selected.length} sx={{ flexShrink: 0 }}>
                   <DeleteOutlineIcon />
                 </IconButton>
               </span>
@@ -680,13 +586,7 @@ export default function InventoryPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               sx={{ width: { xs: "100%", sm: 320 }, flex: { xs: "1 1 220px", sm: "0 0 auto" } }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              }}
+              InputProps={{ startAdornment: (<InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment>) }}
             />
           </Stack>
         </Box>
@@ -711,12 +611,7 @@ export default function InventoryPage() {
               <TableHead>
                 <TableRow>
                   <TableCell padding="checkbox">
-                    <Checkbox
-                      checked={allChecked}
-                      indeterminate={someChecked}
-                      onChange={toggleAll}
-                      onClick={(e) => e.stopPropagation()}
-                    />
+                    <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} onClick={(e) => e.stopPropagation()} />
                   </TableCell>
                   <TableCell><Typography fontWeight={600}>Ingredient Name</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Categories</Typography></TableCell>
@@ -733,21 +628,12 @@ export default function InventoryPage() {
                 {paged.map((ing) => {
                   const lastIn = lastActivity(ing.id, "In");
                   const lastOut = lastActivity(ing.id, "Out");
-
                   const lastInLabel = lastIn ? `${formatShortDate(lastIn.ts)} • +${lastIn.qty}` : "-";
                   const lastOutLabel = lastOut ? `${formatShortDate(lastOut.ts)} • -${lastOut.qty}` : "-";
-
                   return (
-                    <TableRow
-                      key={ing.id}
-                      hover
-                      sx={{ cursor: "pointer" }}
-                    >
+                    <TableRow key={ing.id} hover sx={{ cursor: "pointer" }}>
                       <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={selected.includes(ing.id)}
-                          onChange={() => toggleOne(ing.id)}
-                        />
+                        <Checkbox checked={selected.includes(ing.id)} onChange={() => toggleOne(ing.id)} />
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
                         <Typography fontWeight={600}>{ing.name}</Typography>
@@ -772,14 +658,7 @@ export default function InventoryPage() {
                       </TableCell>
                       <TableCell>
                         <Tooltip title="Delete ingredient">
-                          <IconButton
-                            size="small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteClick(ing);
-                            }}
-                            color="error"
-                          >
+                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleDeleteClick(ing); }} color="error">
                             <DeleteOutlineIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>
@@ -815,10 +694,8 @@ export default function InventoryPage() {
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          <Typography variant="h6" fontWeight={600}>
-            Delete Ingredient
-          </Typography>
+        <DialogTitle component="div">
+          <Typography variant="h6" fontWeight={600}>Delete Ingredient</Typography>
         </DialogTitle>
         <DialogContent>
           {deleteCheckResult?.isUsed ? (
@@ -831,14 +708,10 @@ export default function InventoryPage() {
               </Typography>
               <Box component="ul" sx={{ pl: 2, mt: 1 }}>
                 {deleteCheckResult.usedInItems.map((itemName, index) => (
-                  <Typography component="li" key={index} variant="body2">
-                    {itemName}
-                  </Typography>
+                  <Typography component="li" key={index} variant="body2">{itemName}</Typography>
                 ))}
                 {deleteCheckResult.usedInItems.length >= 5 && (
-                  <Typography component="li" variant="body2" fontStyle="italic">
-                    ...and more
-                  </Typography>
+                  <Typography component="li" variant="body2" fontStyle="italic">...and more</Typography>
                 )}
               </Box>
               <Typography variant="body2" sx={{ mt: 1 }}>
@@ -861,27 +734,16 @@ export default function InventoryPage() {
             {deleteCheckResult?.isUsed ? "Close" : "Cancel"}
           </Button>
           {!deleteCheckResult?.isUsed && (
-            <Button 
-              onClick={handleConfirmDelete} 
-              color="error" 
-              variant="contained"
-              disabled={deleting}
-            >
+            <Button onClick={handleConfirmDelete} color="error" variant="contained" disabled={deleting}>
               {deleting ? "Deleting..." : "Delete"}
             </Button>
           )}
         </DialogActions>
       </Dialog>
 
-      {/* Rest of the dialogs (Add Ingredient, Stock In/Out, Confirm Discard) remain the same */}
       {/* Add Ingredient Dialog */}
-      <Dialog 
-        open={openAdd} 
-        onClose={handleAddClose}
-        maxWidth="xs" 
-        fullWidth
-      >
-        <DialogTitle>
+      <Dialog open={openAdd} onClose={handleAddClose} maxWidth="xs" fullWidth>
+        <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>Add Ingredient</Typography>
           </Stack>
@@ -889,29 +751,24 @@ export default function InventoryPage() {
         <Divider />
         <DialogContent>
           <Stack spacing={2} mt={1}>
-            <TextField 
-              label="Name" 
-              value={newName} 
-              onChange={(e) => {
-                setNewName(e.target.value);
-                handleAddFormChange();
-              }} 
-              autoFocus 
-              fullWidth 
+            <TextField
+              label="Name"
+              value={newName}
+              onChange={(e) => { setNewName(e.target.value); handleAddFormChange(); }}
+              autoFocus
+              fullWidth
+              error={newName.trim().length > 0 && !isValidName(normalize(newName))}
+              helperText={
+                newName
+                  ? `${normalize(newName).length}/${NAME_MAX}${!isValidName(normalize(newName)) ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /" : ""}`
+                  : `Max ${NAME_MAX} chars`
+              }
             />
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <FormControl fullWidth>
                 <InputLabel id="cat-label">Categories</InputLabel>
-                <Select 
-                  labelId="cat-label" 
-                  label="Categories" 
-                  value={newCat} 
-                  onChange={(e) => {
-                    setNewCat(e.target.value);
-                    handleAddFormChange();
-                  }}
-                >
+                <Select labelId="cat-label" label="Categories" value={newCat} onChange={(e) => { setNewCat(e.target.value); handleAddFormChange(); }}>
                   <MenuItem value=""><em>Existing categories</em></MenuItem>
                   {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
@@ -919,17 +776,11 @@ export default function InventoryPage() {
 
               <FormControl fullWidth>
                 <InputLabel id="unit-label">Unit</InputLabel>
-                <Select 
-                  labelId="unit-label" 
-                  label="Unit" 
-                  value={newUnit} 
-                  onChange={(e) => {
-                    setNewUnit(e.target.value);
-                    handleAddFormChange();
-                  }}
-                >
+                <Select labelId="unit-label" label="Unit" value={newUnit} onChange={(e) => { setNewUnit(e.target.value); handleAddFormChange(); }}>
                   <MenuItem value=""><em>Select unit</em></MenuItem>
-                  {UNIT_OPTIONS.map((u) => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  {UNIT_OPTIONS.map((u) => (
+                    <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
+                  ))}
                 </Select>
               </FormControl>
             </Stack>
@@ -937,13 +788,15 @@ export default function InventoryPage() {
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button variant="outlined" onClick={handleAddClose}>CANCEL</Button>
-          <Button variant="contained" onClick={handleAddIngredient} disabled={!newName.trim()}>ADD</Button>
+          <Button variant="contained" onClick={handleAddIngredient} disabled={!normalize(newName)}>
+            ADD
+          </Button>
         </DialogActions>
       </Dialog>
 
       {/* Confirm Discard Dialog for Add Ingredient */}
       <Dialog open={showAddConfirm} onClose={handleAddCancelClose} maxWidth="xs" fullWidth>
-        <DialogTitle>
+        <DialogTitle component="div">
           <Typography variant="h6" fontWeight={600}>Discard Changes?</Typography>
         </DialogTitle>
         <DialogContent>
@@ -956,13 +809,8 @@ export default function InventoryPage() {
       </Dialog>
 
       {/* Stock In/Out Dialog */}
-      <Dialog 
-        open={openStock} 
-        onClose={handleStockClose}
-        maxWidth="md" 
-        fullWidth
-      >
-        <DialogTitle>
+      <Dialog open={openStock} onClose={handleStockClose} maxWidth="md" fullWidth>
+        <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>Inventory (Stock In/Out)</Typography>
           </Stack>
@@ -973,47 +821,25 @@ export default function InventoryPage() {
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <FormControl fullWidth>
                 <InputLabel id="name-label">Name</InputLabel>
-                <Select 
-                  labelId="name-label" 
-                  label="Name" 
-                  value={stockForm.ingId} 
-                  onChange={(e) => onPickIngredient(e.target.value)}
-                >
+                <Select labelId="name-label" label="Name" value={stockForm.ingId} onChange={(e) => onPickIngredient(e.target.value)}>
                   {ingredients.map((i) => <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>)}
                 </Select>
               </FormControl>
 
               <FormControl fullWidth>
                 <InputLabel id="cat2-label">Categories</InputLabel>
-                <Select 
-                  labelId="cat2-label" 
-                  label="Categories" 
-                  value={stockForm.cat} 
-                  onChange={(e) => {
-                    const newForm = { ...stockForm, cat: e.target.value };
-                    setStockForm(newForm);
-                    handleStockFormChange(newForm);
-                  }}
-                >
+                <Select labelId="cat2-label" label="Categories" value={stockForm.cat} onChange={(e) => { const newForm = { ...stockForm, cat: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
                   {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
               </FormControl>
 
-              {/* NEW: Unit field editable similar to Categories */}
               <FormControl fullWidth>
                 <InputLabel id="unit3-label">Unit</InputLabel>
-                <Select
-                  labelId="unit3-label"
-                  label="Unit"
-                  value={stockForm.type}
-                  onChange={(e) => {
-                    const newForm = { ...stockForm, type: e.target.value };
-                    setStockForm(newForm);
-                    handleStockFormChange(newForm);
-                  }}
-                >
+                <Select labelId="unit3-label" label="Unit" value={stockForm.type} onChange={(e) => { const newForm = { ...stockForm, type: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
                   <MenuItem value=""><em>Select unit</em></MenuItem>
-                  {UNIT_OPTIONS.map((u) => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  {UNIT_OPTIONS.map((u) => (
+                    <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
+                  ))}
                 </Select>
               </FormControl>
             </Stack>
@@ -1023,44 +849,24 @@ export default function InventoryPage() {
                 label="Quantity"
                 value={stockForm.qty}
                 onChange={(e) => {
-                  // allow digits and single decimal point (e.g., 3.6)
                   let v = String(e.target.value ?? "");
-                  // remove invalid chars (keep digits and dot)
                   v = v.replace(/[^0-9.]/g, "");
-                  // ensure only a single dot
                   const parts = v.split(".");
-                  if (parts.length > 2) {
-                    v = parts[0] + "." + parts.slice(1).join("");
-                  }
+                  if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
                   const newForm = { ...stockForm, qty: v, cost: recalcCost(v, stockForm.price) };
                   setStockForm(newForm);
                   handleStockFormChange(newForm);
                 }}
                 inputMode="decimal"
                 fullWidth
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <Typography variant="body2" color="text.secondary">{stockForm.type || "pcs"}</Typography>
-                    </InputAdornment>
-                  ),
-                }}
+                InputProps={{ endAdornment: (<InputAdornment position="end"><Typography variant="body2" color="text.secondary">{stockForm.type || "pcs"}</Typography></InputAdornment>) }}
               />
               <TextField label="Current Stock" value={stockForm.current} InputProps={{ readOnly: true }} fullWidth />
               <TextField label="Low Stock" value={stockForm.low} helperText="Inventory quantity at which you will be notified about low stock" disabled fullWidth />
             </Stack>
 
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-              <TextField 
-                label="Remarks" 
-                value={stockForm.remarks} 
-                onChange={(e) => {
-                  const newForm = { ...stockForm, remarks: e.target.value };
-                  setStockForm(newForm);
-                  handleStockFormChange(newForm);
-                }} 
-                fullWidth 
-              />
+              <TextField label="Remarks" value={stockForm.remarks} onChange={(e) => { const newForm = { ...stockForm, remarks: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }} fullWidth />
             </Stack>
 
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
@@ -1078,16 +884,7 @@ export default function InventoryPage() {
                 fullWidth
               />
               <TextField label="Cost" value={formatPhp(stockForm.cost)} InputProps={{ readOnly: true }} fullWidth />
-              {/* Date is disabled/readOnly and auto-filled with today's date */}
-              <TextField
-                label="Date"
-                type="date"
-                value={stockForm.date}
-                fullWidth
-                InputLabelProps={{ shrink: true }}
-                InputProps={{ readOnly: true }}
-                disabled
-              />
+              <TextField label="Date" type="date" value={stockForm.date} fullWidth InputLabelProps={{ shrink: true }} InputProps={{ readOnly: true }} disabled />
             </Stack>
           </Stack>
         </DialogContent>
@@ -1100,16 +897,16 @@ export default function InventoryPage() {
       </Dialog>
 
       {/* Confirm Discard Dialog for Stock In/Out */}
-      <Dialog open={showStockConfirm} onClose={handleStockCancelClose} maxWidth="xs" fullWidth>
-        <DialogTitle>
+      <Dialog open={showStockConfirm} onClose={() => setShowStockConfirm(false)} maxWidth="xs" fullWidth>
+        <DialogTitle component="div">
           <Typography variant="h6" fontWeight={600}>Discard Changes?</Typography>
         </DialogTitle>
         <DialogContent>
           <Typography>You have unsaved changes. Are you sure you want to discard them?</Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button variant="outlined" onClick={handleStockCancelClose}>CANCEL</Button>
-          <Button variant="contained" color="error" onClick={handleStockConfirmClose}>DISCARD</Button>
+          <Button variant="outlined" onClick={() => setShowStockConfirm(false)}>CANCEL</Button>
+          <Button variant="contained" color="error" onClick={() => { setOpenStock(false); resetStockForm(); }}>DISCARD</Button>
         </DialogActions>
       </Dialog>
     </Box>

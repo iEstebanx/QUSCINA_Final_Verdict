@@ -42,6 +42,8 @@ module.exports = ({ db } = {}) => {
   if (!db) throw new Error("DB pool not available");
 
   const router = express.Router();
+  // Ensure JSON body is parsed for bulk DELETE (and any JSON posts without multipart)
+  router.use(express.json());
 
   /* ===================== GET /api/items ===================== */
   router.get("/", async (req, res, next) => {
@@ -64,8 +66,7 @@ module.exports = ({ db } = {}) => {
       }
 
       if (where.length) sql += " WHERE " + where.join(" AND ");
-      // We didn’t keep an index on updatedAt here, but you can add it later if needed.
-
+      sql += " ORDER BY updatedAt DESC, nameLower ASC";
       const rows = await db.query(sql, params);
 
       const items = rows.map((x) => ({
@@ -119,23 +120,21 @@ module.exports = ({ db } = {}) => {
       const now = new Date();
       const result = await db.query(
         `INSERT INTO items
-         (name, nameLower, description, categoryId, categoryName, categoryNameLower, categoryKey,
+        (name, description, categoryId, categoryName, categoryKey,
           imageDataUrl, price, ingredients, costOverall, profit, active, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?)`,
         [
           name,
-          name.toLowerCase(),
           description,
           categoryId,
           categoryName,
-          categoryName ? categoryName.toLowerCase() : "",
           categoryKey,
           price,
           JSON.stringify(ingredients || []),
           costOverall,
           profit,
           now,
-          now
+          now,
         ]
       );
       const id = result.insertId;
@@ -173,8 +172,8 @@ module.exports = ({ db } = {}) => {
       if (typeof b.name === "string") {
         const n = b.name.trim();
         if (!n) return res.status(400).json({ ok: false, error: "name is required" });
-        sets.push("name = ?", "nameLower = ?");
-        params.push(n, n.toLowerCase());
+        sets.push("name = ?");
+        params.push(n);
       }
 
       if (typeof b.description === "string") {
@@ -190,8 +189,8 @@ module.exports = ({ db } = {}) => {
 
       if (typeof b.categoryName === "string") {
         const cn = String(b.categoryName || "").trim();
-        sets.push("categoryName = ?", "categoryNameLower = ?", "categoryKey = ?");
-        params.push(cn, cn ? cn.toLowerCase() : "", cn ? cn.toLowerCase() : "");
+        sets.push("categoryName = ?", "categoryKey = ?");
+        params.push(cn, cn ? cn.toLowerCase() : "");
       }
 
       if (typeof b.price !== "undefined") {

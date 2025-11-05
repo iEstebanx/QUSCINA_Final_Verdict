@@ -19,7 +19,7 @@ module.exports = ({ db } = {}) => {
   /* ----------------------------- Multer config ----------------------------- */
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB hard cap at transport level
+    limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB cap at transport level
     fileFilter: (_req, file, cb) => {
       const ok = /^(image\/png|image\/jpeg|image\/webp)$/i.test(file.mimetype);
       if (!ok) return cb(new Error("Only PNG, JPEG, or WEBP images are allowed"));
@@ -49,25 +49,144 @@ module.exports = ({ db } = {}) => {
     return true;
   }
 
+  function toSafeLimit(v, max = SAMPLE_LIMIT) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return max;
+    return Math.min(n, max);
+  }
+
+  /* --------- Items.category* column auto-detect (camel vs snake) ---------- */
   let _itemsTableKnownMissing = false;
+  let ITEMS_CATEGORY_COL = "categoryId"; // default expectation in your schema
+  const SAMPLE_LIMIT = 6;
+
+  async function _resolveItemsCategoryColumn(db) {
+    try {
+      const cols = await db.query(`SHOW COLUMNS FROM items`);
+      const fields = new Set((cols || []).map((c) => c.Field));
+      if (fields.has("categoryId")) ITEMS_CATEGORY_COL = "categoryId";
+      else if (fields.has("category_id")) ITEMS_CATEGORY_COL = "category_id";
+      else _itemsTableKnownMissing = true; // items exists but no category column
+    } catch {
+      _itemsTableKnownMissing = true; // items table may not exist yet
+    }
+  }
+
+  // Resolve once at router creation; if it fails we retry lazily later.
+  _resolveItemsCategoryColumn(db);
+
+  async function _ensureItemsCategoryColumnResolved() {
+    if (_itemsTableKnownMissing) return;
+    if (!ITEMS_CATEGORY_COL) await _resolveItemsCategoryColumn(db);
+  }
+
   async function categoryUsageCount(categoryId) {
+    await _ensureItemsCategoryColumnResolved();
     if (_itemsTableKnownMissing) return 0;
     try {
-      // NOTE: expects items.category_id (snake_case). If your column is different, adjust here.
       const rows = await db.query(
-        `SELECT COUNT(*) AS n FROM items WHERE category_id = ?`,
+        `SELECT COUNT(*) AS n FROM items WHERE ${ITEMS_CATEGORY_COL} = ?`,
         [categoryId]
       );
-      return Number(rows[0]?.n || 0);
+      return Number(rows?.[0]?.n || 0);
     } catch (err) {
+      if (err?.code === "ER_BAD_FIELD_ERROR") {
+        // Column changed after startup; re-detect once and retry
+        await _resolveItemsCategoryColumn(db);
+        if (_itemsTableKnownMissing) return 0;
+        const rows = await db.query(
+          `SELECT COUNT(*) AS n FROM items WHERE ${ITEMS_CATEGORY_COL} = ?`,
+          [categoryId]
+        );
+        return Number(rows?.[0]?.n || 0);
+      }
       if (err?.code === "ER_NO_SUCH_TABLE") {
-        _itemsTableKnownMissing = true; // cache to avoid re-checking each call
+        _itemsTableKnownMissing = true;
         return 0;
       }
       throw err;
     }
   }
 
+  // Get up to SAMPLE_LIMIT recent item names for a single category
+  async function sampleItemNames(categoryId, limit = SAMPLE_LIMIT) {
+    await _ensureItemsCategoryColumnResolved();
+    if (_itemsTableKnownMissing) return [];
+
+    // Prefer updatedAt if present; fall back to id
+    let orderExpr = "updatedAt DESC, id DESC";
+    try {
+      const cols = await db.query(`SHOW COLUMNS FROM items`);
+      const fields = new Set((cols || []).map((c) => c.Field));
+      if (!fields.has("updatedAt")) orderExpr = "id DESC";
+    } catch {
+      orderExpr = "id DESC";
+    }
+
+    const L = toSafeLimit(limit);
+    const rows = await db.query(
+      `SELECT name
+        FROM items
+        WHERE ${ITEMS_CATEGORY_COL} = ?
+        ORDER BY ${orderExpr}
+        LIMIT ${L}`,
+      [categoryId]
+    );
+    return (rows || []).map((r) => r.name).filter(Boolean);
+  }
+
+  // Get up to SAMPLE_LIMIT names per category for many categories
+  async function sampleItemNamesForMany(categoryIds, limit = SAMPLE_LIMIT) {
+    await _ensureItemsCategoryColumnResolved();
+    const map = new Map();
+    if (_itemsTableKnownMissing || !categoryIds?.length) return map;
+
+    // Prefer updatedAt if present; fall back to id
+    let orderExpr = "updatedAt DESC, id DESC";
+    try {
+      const cols = await db.query(`SHOW COLUMNS FROM items`);
+      const fields = new Set((cols || []).map((c) => c.Field));
+      if (!fields.has("updatedAt")) orderExpr = "id DESC";
+    } catch {
+      orderExpr = "id DESC";
+    }
+
+    const L = toSafeLimit(limit);
+    const placeholders = categoryIds.map(() => "?").join(",");
+
+    // Try MySQL 8+ window function version first
+    const sql = `
+      SELECT cid, name FROM (
+        SELECT ${ITEMS_CATEGORY_COL} AS cid,
+              name,
+              ROW_NUMBER() OVER (PARTITION BY ${ITEMS_CATEGORY_COL} ORDER BY ${orderExpr}) AS rn
+          FROM items
+        WHERE ${ITEMS_CATEGORY_COL} IN (${placeholders})
+      ) t
+      WHERE rn <= ${L}
+    `;
+
+    try {
+      const rows = await db.query(sql, categoryIds);
+      for (const r of rows || []) {
+        const key = String(r.cid);
+        if (!map.has(key)) map.set(key, []);
+        if (r.name) map.get(key).push(r.name);
+      }
+      return map;
+    } catch (e) {
+      // Fallback for MariaDB / older MySQL without window functions
+      // or any SQL mode that rejects the above.
+      if (!["ER_PARSE_ERROR", "ER_NOT_SUPPORTED_YET", "ER_WRONG_FIELD_WITH_GROUP"].includes(e?.code)) {
+        throw e;
+      }
+      for (const id of categoryIds) {
+        const names = await sampleItemNames(id, L);
+        map.set(String(id), names);
+      }
+      return map;
+    }
+  }
   /* --------------------------------- Routes -------------------------------- */
 
   /** GET /api/categories */
@@ -107,9 +226,9 @@ module.exports = ({ db } = {}) => {
       const now = new Date();
       // Unique by name_lower (case-insensitive)
       const result = await db.query(
-        `INSERT INTO categories (name, name_lower, image_data_url, active, created_at, updated_at)
-         VALUES (?, ?, '', 1, ?, ?)`,
-        [nameRaw, nameRaw.toLowerCase(), now, now]
+        `INSERT INTO categories (name, image_data_url, active, created_at, updated_at)
+          VALUES (?, '', 1, ?, ?)`,
+        [nameRaw, now, now]
       );
       const id = result.insertId;
 
@@ -144,27 +263,35 @@ module.exports = ({ db } = {}) => {
   router.patch("/:id", upload.single("image"), async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "invalid id" });
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
 
       const sets = ["updated_at = ?"];
       const params = [new Date()];
+      let nameChanged = false;
+      let newName = null;
 
       if (typeof req.body?.name === "string") {
         const n = normalizeName(req.body.name);
         if (!isValidName(n)) {
           return res.status(400).json({
             ok: false,
-            error: `Invalid name. Must be at least ${NAME_MIN} characters (max ${NAME_MAX}); allowed letters, numbers, spaces, - ' & . , ( ) /.`,
+            error: `Invalid name. Must be ${NAME_MIN}-${NAME_MAX} chars; allowed letters, numbers, and simple punctuation.`,
           });
         }
-        sets.push("name = ?", "name_lower = ?");
-        params.push(n, n.toLowerCase());
+        sets.push("name = ?");
+        params.push(n);
+        nameChanged = true;
+        newName = n;
       }
 
       if (req.file && req.file.buffer && req.file.mimetype) {
         const raw = req.file.buffer;
         if (raw.length > MAX_RAW_IMAGE_BYTES) {
-          return res.status(413).json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
+          return res
+            .status(413)
+            .json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
         }
         const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
         sets.push("image_data_url = ?");
@@ -173,18 +300,32 @@ module.exports = ({ db } = {}) => {
 
       params.push(id);
       await db.query(`UPDATE categories SET ${sets.join(", ")} WHERE id = ?`, params);
-      return res.json({ ok: true });
+
+      // Return how many items are linked, plus up to 5 recent item names
+      let affectedItems = 0;
+      let sample = [];
+      if (nameChanged) {
+        const rows = await db.query(
+          `SELECT COUNT(*) AS n FROM items WHERE categoryId = ?`,
+          [id]
+        );
+        affectedItems = Number(rows?.[0]?.n || 0);
+        sample = await sampleItemNames(id, 5); // <= add up to 5 names
+      }
+
+      return res.json({ ok: true, affectedItems, sample });
     } catch (e) {
       if (e?.code === "ER_DUP_ENTRY" || e?.errno === 1062) {
-        return res
-          .status(409)
-          .json({ ok: false, error: "That category name already exists (names are case-insensitive)." });
+        return res.status(409).json({
+          ok: false,
+          error: "That category name already exists (case-insensitive).",
+        });
       }
       return res.status(400).json({ ok: false, error: e?.message || "Failed to update category" });
     }
   });
 
-  /** DELETE /api/categories/:id  — single delete with referential check */
+  /** DELETE /api/categories/:id — single delete with referential check (with samples) */
   router.delete("/:id", async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -192,9 +333,13 @@ module.exports = ({ db } = {}) => {
 
       const inUse = await categoryUsageCount(id);
       if (inUse > 0) {
-        return res
-          .status(409)
-          .json({ ok: false, error: `Cannot delete category; ${inUse} item(s) still reference it.` });
+        const sample = await sampleItemNames(id, SAMPLE_LIMIT);
+        return res.status(409).json({
+          ok: false,
+          error: `Cannot delete category; ${inUse} item(s) are assigned to it.`,
+          count: inUse,
+          sample, // array of item names (up to 6)
+        });
       }
 
       await db.query(`DELETE FROM categories WHERE id = ?`, [id]);
@@ -205,22 +350,36 @@ module.exports = ({ db } = {}) => {
   });
 
   /**
-   * DELETE /api/categories  — bulk delete
+   * DELETE /api/categories — bulk delete (with per-category samples)
    * Body: { ids: string[] | number[] }
-   * Only deletes categories not in use; reports blocked ones.
+   * Only deletes categories not in use; reports blocked ones (with counts & samples).
    */
   router.delete("/", async (req, res, next) => {
     try {
-      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite) : [];
-      if (!ids.length) return res.status(400).json({ ok: false, error: "ids array required" });
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite)
+        : [];
+      if (!ids.length) {
+        return res.status(400).json({ ok: false, error: "ids array required" });
+      }
 
       const deletable = [];
-      const blocked = [];
+      const blocked = []; // { id, reason: "in-use", count, sample[] }
 
+      // First pass: counts
       for (const id of ids) {
         const count = await categoryUsageCount(id);
         if (count > 0) blocked.push({ id: String(id), reason: "in-use", count });
         else deletable.push(id);
+      }
+
+      // Fetch samples for the blocked ones in one shot (MySQL 8 window fn)
+      const blockedIds = blocked.map((b) => Number(b.id));
+      if (blockedIds.length) {
+        const map = await sampleItemNamesForMany(blockedIds, SAMPLE_LIMIT);
+        for (const b of blocked) {
+          b.sample = map.get(String(b.id)) || [];
+        }
       }
 
       if (deletable.length) {

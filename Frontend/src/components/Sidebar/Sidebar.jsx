@@ -306,20 +306,6 @@ function SidebarContent({ collapsed }) {
           <NavLeaf to="/inventory/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
         </NavGroup>
 
-        {/* Audit Trail: Audit + Inventory History + Shift History */}
-        <NavGroup
-          label="Audit Trail"
-          icon={TimelineIcon}
-          collapsed={collapsed}
-          open={openAudit}
-          onToggle={() => setOpenAudit((v) => !v)}
-          active={isAuditActive}
-        >
-          <NavLeaf to="/audit-trail" label="Audit" icon={TimelineIcon} collapsed={collapsed} end />
-          <NavLeaf to="/audit-trail/inventory-history" label="Inventory History" icon={HistoryIcon} collapsed={collapsed} />
-          <NavLeaf to="/audit-trail/shift-history" label="Shift History" icon={HistoryIcon} collapsed={collapsed} />
-        </NavGroup>
-
         <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} />
         <NavLeaf to="/users" label="User Management" icon={PeopleIcon} collapsed={collapsed} />
 
@@ -335,6 +321,20 @@ function SidebarContent({ collapsed }) {
           <NavLeaf to="/settings/taxes" label="Taxes" icon={PercentIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/notifications" label="Notifications" icon={NotificationsIcon} collapsed={collapsed} />
           <NavLeaf to="/settings/backup-restore" label="Backup & Restore" icon={BackupIcon} collapsed={collapsed} />
+        </NavGroup>
+
+        {/* Audit Trail: Audit + Inventory History + Shift History */}
+        <NavGroup
+          label="Audit Trail"
+          icon={TimelineIcon}
+          collapsed={collapsed}
+          open={openAudit}
+          onToggle={() => setOpenAudit((v) => !v)}
+          active={isAuditActive}
+        >
+          <NavLeaf to="/audit-trail" label="Audit" icon={TimelineIcon} collapsed={collapsed} end />
+          <NavLeaf to="/audit-trail/inventory-history" label="Inventory History" icon={HistoryIcon} collapsed={collapsed} />
+          <NavLeaf to="/audit-trail/shift-history" label="Shift History" icon={HistoryIcon} collapsed={collapsed} />
         </NavGroup>
       </Box>
 
