@@ -27,6 +27,7 @@ import {
   IconButton,
   Tooltip,
   Checkbox,
+  ToggleButton, ToggleButtonGroup,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -484,6 +485,14 @@ export default function InventoryPage() {
       const io = stockForm.direction === "IN" ? "In" : "Out";
       const picked = ingredients.find((i) => i.id === stockForm.ingId);
       if (!picked) return;
+      if (qty <= 0) {
+        alert.error("Quantity must be greater than zero.");
+        return;
+      }
+      if (io === "Out" && qty > (picked.currentStock || 0)) {
+        alert.error("You cannot stock out more than the current stock.");
+        return;
+      }
 
       const res = await fetch(INV_ACTIVITY_API, {
         method: "POST",
@@ -812,12 +821,31 @@ export default function InventoryPage() {
       <Dialog open={openStock} onClose={handleStockClose} maxWidth="md" fullWidth>
         <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
-            <Typography variant="h5" fontWeight={800}>Inventory (Stock In/Out)</Typography>
+            <Typography variant="h5" fontWeight={800}>
+              {stockForm.direction === "IN" ? "Inventory — Stock In" : "Inventory — Stock Out"}
+            </Typography>
           </Stack>
         </DialogTitle>
         <Divider />
         <DialogContent>
           <Stack spacing={2}>
+            {/* Direction toggle */}
+            <ToggleButtonGroup
+              value={stockForm.direction}
+              exclusive
+              onChange={(_, v) => {
+                if (!v) return;
+                const newForm = { ...stockForm, direction: v };
+                setStockForm(newForm);
+                handleStockFormChange(newForm);
+              }}
+              color={stockForm.direction === "IN" ? "success" : "error"}
+              size="small"
+              sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+            >
+              <ToggleButton value="IN">Stock In</ToggleButton>
+              <ToggleButton value="OUT">Stock Out</ToggleButton>
+            </ToggleButtonGroup>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <FormControl fullWidth>
                 <InputLabel id="name-label">Name</InputLabel>
@@ -859,7 +887,22 @@ export default function InventoryPage() {
                 }}
                 inputMode="decimal"
                 fullWidth
-                InputProps={{ endAdornment: (<InputAdornment position="end"><Typography variant="body2" color="text.secondary">{stockForm.type || "pcs"}</Typography></InputAdornment>) }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Typography variant="body2" color={stockForm.direction === "IN" ? "success.main" : "error.main"}>
+                        {stockForm.direction === "IN" ? "+" : "−"}
+                      </Typography>
+                    </InputAdornment>
+                  ),
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <Typography variant="body2" color="text.secondary">
+                        {stockForm.type || "pcs"}
+                      </Typography>
+                    </InputAdornment>
+                  ),
+                }}
               />
               <TextField label="Current Stock" value={stockForm.current} InputProps={{ readOnly: true }} fullWidth />
               <TextField label="Low Stock" value={stockForm.low} helperText="Inventory quantity at which you will be notified about low stock" disabled fullWidth />
@@ -882,6 +925,8 @@ export default function InventoryPage() {
                 InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
                 inputMode="decimal"
                 fullWidth
+                disabled={stockForm.direction === "OUT"}
+                helperText={stockForm.direction === "OUT" ? "Not required for Stock Out" : ""}
               />
               <TextField label="Cost" value={formatPhp(stockForm.cost)} InputProps={{ readOnly: true }} fullWidth />
               <TextField label="Date" type="date" value={stockForm.date} fullWidth InputLabelProps={{ shrink: true }} InputProps={{ readOnly: true }} disabled />

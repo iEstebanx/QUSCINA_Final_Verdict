@@ -351,3 +351,94 @@ CREATE TABLE IF NOT EXISTS `inventory_activity` (
 -- ------------------------------------------------------------
 -- 
 -- ------------------------------------------------------------
+
+
+-- POS SHIFTS
+CREATE TABLE IF NOT EXISTS pos_shifts (
+  shift_id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  terminal_id         VARCHAR(60) NOT NULL,
+  employee_id         CHAR(9) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  status              ENUM('Open','Remitted','Voided') NOT NULL DEFAULT 'Open',
+
+  opened_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  closed_at           DATETIME NULL,
+
+  opening_float       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  opening_note        VARCHAR(255) NULL,
+
+  total_gross_sales   DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_refunds       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_discounts     DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_tax           DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  total_cash_payments   DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_card_payments   DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_online_payments DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  total_cash_in       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  total_cash_out      DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  expected_cash       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  declared_cash       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  variance_cash       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  closing_note        VARCHAR(255) NULL,
+
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (shift_id),
+  KEY ix_shift_employee (employee_id, status),
+  KEY ix_shift_terminal (terminal_id, status),
+  CONSTRAINT fk_shift_employee
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SHIFT DENOMINATIONS
+CREATE TABLE IF NOT EXISTS pos_shift_denoms (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  shift_id     BIGINT UNSIGNED NOT NULL,
+  denom_value  DECIMAL(10,2) NOT NULL,
+  qty          INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_denoms_shift (shift_id),
+  CONSTRAINT fk_denoms_shift
+    FOREIGN KEY (shift_id) REFERENCES pos_shifts(shift_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- CASH DRAWER MOVEMENTS
+CREATE TABLE IF NOT EXISTS pos_cash_moves (
+  move_id      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  shift_id     BIGINT UNSIGNED NOT NULL,
+  type         ENUM('cash_in','cash_out','safe_drop','payout','refund_cash') NOT NULL,
+  amount       DECIMAL(12,2) NOT NULL,
+  reason       VARCHAR(255) NULL,
+  created_by   CHAR(9) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (move_id),
+  KEY ix_moves_shift (shift_id, type),
+  CONSTRAINT fk_moves_shift
+    FOREIGN KEY (shift_id) REFERENCES pos_shifts(shift_id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_moves_user
+    FOREIGN KEY (created_by) REFERENCES employees(employee_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS pos_cash_move_denoms (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  move_id       BIGINT UNSIGNED NOT NULL,
+  denom_value   DECIMAL(10,2) NOT NULL,
+  qty           INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_move_denoms (move_id),
+  CONSTRAINT fk_move_denoms_move
+    FOREIGN KEY (move_id) REFERENCES pos_cash_moves(move_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
