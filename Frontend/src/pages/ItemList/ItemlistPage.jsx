@@ -1,5 +1,5 @@
 // Frontend/src/pages/ItemList/ItemlistPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   Box, Paper, Stack, Button, FormControl, InputLabel, Select, MenuItem,
   Table, TableHead, TableBody, TableRow, TableCell, TableContainer,
@@ -47,12 +47,6 @@ export default function ItemlistPage() {
   const [discardOpen, setDiscardOpen] = useState(false);
   const [discardTarget, setDiscardTarget] = useState(null); // "create" or "edit"
 
-  function hasUnsavedChanges() {
-    const isEmptyF = JSON.stringify(f) === JSON.stringify(emptyForm);
-    const hasIngredients = itemIngredients.length > 0;
-    return !isEmptyF || hasIngredients;
-  }
-
   // table filter
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -75,6 +69,7 @@ export default function ItemlistPage() {
 
   // confirm delete selected dialog
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteOne, setDeleteOne] = useState({ open: false, id: null, name: "" });
 
   const emptyForm = {
     name: "",
@@ -101,6 +96,11 @@ export default function ItemlistPage() {
   // pagination
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(5); // -1 for "All"
+
+  function nameExistsCaseInsensitive(name, exceptId = null) {
+    const t = normalizeName(name).toLowerCase();
+    return rows.some(r => r.name && r.name.trim().toLowerCase() === t && String(r.id) !== String(exceptId || ""));
+  }
 
   // Build query string for items
   const qs = useMemo(() => {
@@ -180,6 +180,15 @@ export default function ItemlistPage() {
 
   // reset page when data/filter/page-size changes
   useEffect(() => { setPage(0); }, [qs, rowsPerPage, rows.length]);
+
+  useEffect(() => {
+    // When imagePreview changes, this cleanup will revoke the PREVIOUS blob URL
+    if (!f.imagePreview?.startsWith("blob:")) return;
+
+    return () => {
+      try { URL.revokeObjectURL(f.imagePreview); } catch {}
+    };
+  }, [f.imagePreview]);
 
   // helpers
   const resetForm = () => {
@@ -268,23 +277,35 @@ export default function ItemlistPage() {
     return itemIngredients.reduce((s, r) => s + (Number(r.cost || 0)), 0);
   };
 
-  /* ============== Create ============== */
+  // ========== CREATE ==========
   async function saveItem() {
     setSaving(true);
     setSaveErr("");
     try {
       const cleanName = normalizeName(f.name);
       if (!isValidName(cleanName)) {
-        throw new Error("Please enter a valid item name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /).");
+        throw new Error(
+          "Please enter a valid item name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /)."
+        );
       }
 
-      let cleanCatName = "";
-      if (f.categoryId) {
-        const candidate = normalizeName(f.categoryName);
-        if (candidate && !isValidName(candidate)) {
-          throw new Error("Please enter a valid category name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /).");
-        }
-        cleanCatName = candidate;
+      // Local pre-check (UX only; DB is the final authority)
+      if (nameExistsCaseInsensitive(cleanName)) {
+        throw new Error(
+          "That item name already exists. Names are not case-sensitive. Try a different name."
+        );
+      }
+
+      // 🔴 Category is required
+      if (!f.categoryId) {
+        throw new Error("Category is required.");
+      }
+
+      // Prefer the canonical name from cats; fall back to f.categoryName
+      const pickedCatName = (cats.find(c => String(c.id) === String(f.categoryId))?.name) || f.categoryName;
+      const cleanCatName = normalizeName(pickedCatName);
+      if (!cleanCatName || !isValidName(cleanCatName)) {
+        throw new Error("Invalid category name.");
       }
 
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
@@ -308,17 +329,24 @@ export default function ItemlistPage() {
       form.append("name", cleanName);
       form.append("description", cleanDesc);
       form.append("price", String(itemPrice));
-      if (f.categoryId) {
-        form.append("categoryId", f.categoryId);
-        form.append("categoryName", cleanCatName);
-      }
+      form.append("categoryId", f.categoryId);          // 🔴 always
+      form.append("categoryName", cleanCatName);        // 🔴 always
       if (f.imageFile) form.append("image", f.imageFile);
       form.append("ingredients", JSON.stringify(ingPayload));
       form.append("costOverall", String(costOverall));
 
       const res = await fetch(`/api/items`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
+
+      if (res.status === 409 && data?.code === "name_taken") {
+        throw new Error(
+          data?.error ||
+            "That item name already exists. Names are not case-sensitive. Try a different name."
+        );
+      }
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
+      }
 
       await loadItems();
       setOpenCreate(false);
@@ -327,6 +355,94 @@ export default function ItemlistPage() {
     } catch (e) {
       setSaveErr(e?.message || "Save failed");
       alert.error(e?.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ========== EDIT ==========
+  async function updateItem() {
+    if (!editingId) return;
+    setSaving(true);
+    setSaveErr("");
+    try {
+      const cleanName = normalizeName(f.name);
+      if (!isValidName(cleanName)) {
+        throw new Error(
+          "Please enter a valid item name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /)."
+        );
+      }
+
+      // Local pre-check (ignore the item being edited)
+      if (nameExistsCaseInsensitive(cleanName, editingId)) {
+        throw new Error(
+          "That item name already exists. Names are not case-sensitive. Try a different name."
+        );
+      }
+
+      // 🔴 Category is required for edit, too
+      if (!f.categoryId) {
+        throw new Error("Category is required.");
+      }
+
+      // Prefer canonical name from cats; fall back to f.categoryName
+      const pickedCatName = (cats.find(c => String(c.id) === String(f.categoryId))?.name) || f.categoryName;
+      const cleanCatName = normalizeName(pickedCatName);
+      if (!cleanCatName || !isValidName(cleanCatName)) {
+        throw new Error("Invalid category name.");
+      }
+
+      const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
+      const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
+
+      const ingPayload = itemIngredients
+        .filter(r => r.ingredientId && (String(r.qty).trim() || String(r.price).trim()))
+        .map(r => ({
+          ingredientId: r.ingredientId,
+          name: r.name,
+          category: r.category,
+          unit: r.unit,
+          qty: Number(r.qty || 0),
+          price: Number(r.price || 0),
+          cost: Number(r.cost || 0),
+        }));
+
+      const costOverall = ingPayload.reduce((s, x) => s + (Number(x.cost || 0)), 0);
+
+      const form = new FormData();
+      form.append("name", cleanName);
+      form.append("description", cleanDesc);
+      form.append("price", String(itemPrice));
+      form.append("categoryId", f.categoryId);         // 🔴 always (no empty string)
+      form.append("categoryName", cleanCatName);       // 🔴 always (no empty string)
+      form.append("ingredients", JSON.stringify(ingPayload));
+      form.append("costOverall", String(costOverall));
+      if (f.imageFile) form.append("image", f.imageFile);
+
+      const res = await fetch(`/api/items/${encodeURIComponent(editingId)}`, {
+        method: "PATCH",
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 409 && data?.code === "name_taken") {
+        throw new Error(
+          data?.error ||
+            "That item name already exists. Names are not case-sensitive. Try a different name."
+        );
+      }
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || `Update failed (HTTP ${res.status})`);
+      }
+
+      await loadItems();
+      setOpenEdit(false);
+      setEditingId("");
+      resetForm();
+      alert.success("Item updated.");
+    } catch (e) {
+      setSaveErr(e?.message || "Update failed");
+      alert.error(e?.message || "Update failed");
     } finally {
       setSaving(false);
     }
@@ -365,70 +481,10 @@ export default function ItemlistPage() {
     setItemIngredients(initialIngredients);
     setSaveErr("");
     setOpenEdit(true);
-  }
-
-  async function updateItem() {
-    if (!editingId) return;
-    setSaving(true);
-    setSaveErr("");
-    try {
-      const cleanName = normalizeName(f.name);
-      if (!isValidName(cleanName)) {
-        throw new Error("Please enter a valid item name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /).");
-      }
-      let cleanCatName = "";
-      if (f.categoryId) {
-        const candidate = normalizeName(f.categoryName);
-        if (candidate && !isValidName(candidate)) {
-          throw new Error("Please enter a valid category name (max 60 chars; allowed letters, numbers, spaces, - ' & . , ( ) /).");
-        }
-        cleanCatName = candidate;
-      }
-      const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
-      const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
-
-      const ingPayload = itemIngredients
-        .filter(r => r.ingredientId && (String(r.qty).trim() || String(r.price).trim()))
-        .map(r => ({
-          ingredientId: r.ingredientId,
-          name: r.name,
-          category: r.category,
-          unit: r.unit,
-          qty: Number(r.qty || 0),
-          price: Number(r.price || 0),
-          cost: Number(r.cost || 0),
-        }));
-
-      const costOverall = ingPayload.reduce((s, x) => s + (Number(x.cost || 0)), 0);
-
-      const form = new FormData();
-      form.append("name", cleanName);
-      form.append("description", cleanDesc);
-      form.append("price", String(itemPrice));
-      form.append("categoryId", f.categoryId || "");
-      form.append("categoryName", cleanCatName || "");
-      form.append("ingredients", JSON.stringify(ingPayload));
-      form.append("costOverall", String(costOverall));
-      if (f.imageFile) form.append("image", f.imageFile);
-
-      const res = await fetch(`/api/items/${encodeURIComponent(editingId)}`, {
-        method: "PATCH",
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) throw new Error(data?.error || `Update failed (HTTP ${res.status})`);
-
-      await loadItems();
-      setOpenEdit(false);
-      setEditingId("");
-      resetForm();
-      alert.success("Item updated.");
-    } catch (e) {
-      setSaveErr(e?.message || "Update failed");
-      alert.error(e?.message || "Update failed");
-    } finally {
-      setSaving(false);
-    }
+    setTimeout(() => {
+      initialEditRef.current = snapshotForm();
+      editTouchedRef.current = false;
+    }, 0);
   }
 
   function cancelEdit() {
@@ -457,6 +513,31 @@ export default function ItemlistPage() {
     }
   };
 
+  async function onDeleteOneConfirmed() {
+    if (!deleteOne.id) return;
+    try {
+      const res = await fetch(`/api/items/${encodeURIComponent(deleteOne.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+
+      // If it was selected, unselect it
+      setSelected(prev => prev.filter(x => x !== deleteOne.id));
+
+      // If you were editing it, close the dialog
+      if (String(editingId) === String(deleteOne.id)) {
+        setOpenEdit(false);
+        setEditingId("");
+        resetForm();
+      }
+
+      alert.info(`Deleted "${deleteOne.name || "item"}".`);
+      setDeleteOne({ open: false, id: null, name: "" });
+      await loadItems();
+    } catch (e) {
+      alert.error(e?.message || "Failed to delete item.");
+    }
+  }
+
   // selection helpers
   const allChecked = rows.length > 0 && rows.every(r => selected.includes(r.id));
   const someChecked = rows.some(r => selected.includes(r.id)) && !allChecked;
@@ -482,6 +563,104 @@ export default function ItemlistPage() {
     setPage(0);
   };
 
+
+  // ✦ Track "touched" + initial snapshots
+  const createTouchedRef = useRef(false);
+  const editTouchedRef   = useRef(false);
+  const initialCreateRef = useRef(null); // { f, itemIngredients }
+  const initialEditRef   = useRef(null);
+
+  // ✦ Normalize the form for stable comparison
+  function snapshotForm() {
+    const cleanF = {
+      ...f,
+      // trim strings so whitespace edits don't false-trigger
+      name: String(f.name || "").trim(),
+      description: String(f.description || "").trim(),
+      categoryId: String(f.categoryId || ""),
+      categoryName: String(f.categoryName || "").trim(),
+      price: String(f.price || "").trim(),
+      imageFile: !!f.imageFile,      // only presence matters for "dirty" detection
+      imagePreview: !!f.imagePreview // ditto
+    };
+
+    // Only fields we actually edit on ingredients
+    const ings = itemIngredients.map(r => ({
+      ingredientId: String(r.ingredientId || ""),
+      qty: String(r.qty || "").trim(),
+      price: String(r.price || "").trim(),
+      // name/category/unit/currentStock/cost are derived; we don’t include them
+    }));
+
+    return { f: cleanF, ings };
+  }
+
+  function deepEqual(a, b) {
+    try { return JSON.stringify(a) === JSON.stringify(b); }
+    catch { return false; }
+  }
+
+  // ✦ Is dialog dirty?
+  function isDirty(target /* "create" | "edit" */) {
+    const snapNow = snapshotForm();
+    if (target === "create") {
+      if (!initialCreateRef.current) return false;
+      if (createTouchedRef.current) return true;
+      return !deepEqual(snapNow, initialCreateRef.current);
+    }
+    if (target === "edit") {
+      if (!initialEditRef.current) return false;
+      if (editTouchedRef.current) return true;
+      return !deepEqual(snapNow, initialEditRef.current);
+    }
+    return false;
+  }
+
+  const canUpdate = useMemo(() => {
+    if (!openEdit) return false;
+    const hasValidName = isValidName(normalizeName(f.name || ""));
+    if (!hasValidName) return false;
+    if (!f.categoryId) return false;               // 🔴 must have category
+    return isDirty("edit");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openEdit, f, itemIngredients]);
+
+  // ✦ Centralized close attempt
+  function tryClose(target) {
+    if (saving) return;
+    if (isDirty(target)) {
+      setDiscardTarget(target);
+      setDiscardOpen(true);
+    } else {
+      if (target === "create") { setOpenCreate(false); resetForm(); }
+      if (target === "edit")   { cancelEdit(); }
+    }
+  }
+
+  // Reusable menu styling: same scrollbar + full-bleed highlight
+  const dropdownMenuProps = {
+    MenuListProps: { disablePadding: true },   // remove default List padding
+    PaperProps: {
+      className: "scroll-x",                   // ✅ picks up your global scrollbar design
+      sx: {
+        maxHeight: 320,
+        "& .MuiList-root": { py: 0 },          // extra safety
+        "& .MuiMenuItem-root": {
+          px: 1.5,                             // keep text inset
+          mx: -1.5,                            // make hover/selected bg reach edges
+          borderRadius: 0,
+        },
+        "& .MuiMenuItem-root.Mui-disabled": {
+          px: 1.5,
+          mx: -1.5,
+          opacity: 1,
+          color: "text.secondary",
+          fontStyle: "italic",
+        },
+      },
+    },
+  };
+
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
@@ -499,7 +678,15 @@ export default function ItemlistPage() {
             <Button
               variant="contained"
               startIcon={<AddIcon />}
-              onClick={() => { resetForm(); setOpenCreate(true); }}
+              onClick={() => {
+                resetForm();
+                setOpenCreate(true);
+                // snapshot AFTER reset so "empty form" is the baseline
+                setTimeout(() => {
+                  initialCreateRef.current = snapshotForm();
+                  createTouchedRef.current = false;
+                }, 0);
+              }}
               sx={{ flexShrink: 0 }}
             >
               Add Item
@@ -577,6 +764,7 @@ export default function ItemlistPage() {
                   <TableCell><Typography fontWeight={600}>Price</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Cost Overall</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Description</Typography></TableCell>
+                  <TableCell align="center"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
               </TableHead>
 
@@ -647,6 +835,17 @@ export default function ItemlistPage() {
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Typography noWrap title={r.description || ""}>{r.description || "—"}</Typography>
                       </TableCell>
+                      <TableCell align="center" onClick={(e) => e.stopPropagation()} sx={{ width: 64 }}>
+                        <Tooltip title="Delete item">
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => setDeleteOne({ open: true, id: r.id, name: r.name })}
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -671,15 +870,7 @@ export default function ItemlistPage() {
       {/* Create Dialog (Responsive) */}
       <Dialog
         open={openCreate}
-        onClose={() => {
-          if (!saving && hasUnsavedChanges()) {
-            setDiscardTarget("create");
-            setDiscardOpen(true);
-          } else if (!saving) {
-            setOpenCreate(false);
-            resetForm();
-          }
-        }}
+        onClose={(_e, _reason) => tryClose("create")}
         fullWidth
         fullScreen={fullScreen}
         maxWidth="md"
@@ -702,6 +893,8 @@ export default function ItemlistPage() {
 
         <DialogContent
           dividers
+          onInputCapture={() => { createTouchedRef.current = true; }}
+          onChangeCapture={() => { createTouchedRef.current = true; }}
           sx={{
             display: "flex",
             flexDirection: "column",
@@ -738,15 +931,16 @@ export default function ItemlistPage() {
                 }
               />
 
-              <FormControl fullWidth size="small">
-                <InputLabel id="add-item-category-label">Category (optional)</InputLabel>
+              <FormControl fullWidth size="small" required error={!f.categoryId}>
+                <InputLabel id="add-item-category-label">Category</InputLabel>
                 <Select
                   labelId="add-item-category-label"
                   value={f.categoryId || ""}
-                  label="Category (optional)"
+                  label="Category"
                   onChange={(e) => onPickCategory(e.target.value)}
+                  MenuProps={dropdownMenuProps}
                 >
-                  <MenuItem value="">None</MenuItem>
+                  {/* 🔴 remove "None" */}
                   {cats.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
                       {c.name}
@@ -889,7 +1083,7 @@ export default function ItemlistPage() {
                             value={row.ingredientId || ""}
                             displayEmpty
                             onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                            MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+                            MenuProps={dropdownMenuProps}
                           >
                             <MenuItem value=""><em>Select ingredient</em></MenuItem>
                             {inventory.map(i => (
@@ -1007,10 +1201,10 @@ export default function ItemlistPage() {
         </DialogContent>
 
         <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
-          <Button onClick={() => { resetForm(); setOpenCreate(false); }} disabled={saving}>
+          <Button onClick={() => tryClose("create")} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={saveItem} variant="contained" disabled={saving || !f.name.trim()}>
+          <Button onClick={saveItem} variant="contained" disabled={saving || !f.name.trim() || !f.categoryId}>
             {saving ? "Saving..." : "Save"}
           </Button>
         </DialogActions>
@@ -1019,14 +1213,7 @@ export default function ItemlistPage() {
       {/* Edit Dialog (Responsive) */}
       <Dialog
         open={openEdit}
-        onClose={() => {
-          if (!saving && hasUnsavedChanges()) {
-            setDiscardTarget("edit");
-            setDiscardOpen(true);
-          } else if (!saving) {
-            cancelEdit();
-          }
-        }}
+        onClose={(_e, _reason) => tryClose("edit")}
         fullWidth
         fullScreen={fullScreen}
         maxWidth="md"
@@ -1049,6 +1236,8 @@ export default function ItemlistPage() {
 
         <DialogContent
           dividers
+          onInputCapture={() => { editTouchedRef.current = true; }}
+          onChangeCapture={() => { editTouchedRef.current = true; }}
           sx={{
             display: "flex",
             flexDirection: "column",
@@ -1084,13 +1273,14 @@ export default function ItemlistPage() {
                 }
               />
 
-              <FormControl fullWidth>
-                <InputLabel id="add-item-category-label">Category (optional)</InputLabel>
+              <FormControl fullWidth required error={!f.categoryId}>
+                <InputLabel id="edit-item-category-label">Category</InputLabel>
                 <Select
-                  labelId="add-item-category-label"
+                  labelId="edit-item-category-label"
                   value={f.categoryId || ""}
-                  label="Category (optional)"
+                  label="Category"
                   onChange={(e) => onPickCategory(e.target.value)}
+                  MenuProps={dropdownMenuProps}
                   sx={{
                     height: "56px",
                     display: "flex",
@@ -1098,7 +1288,7 @@ export default function ItemlistPage() {
                     "& .MuiSelect-select": { paddingY: "16.5px" },
                   }}
                 >
-                  <MenuItem value="">None</MenuItem>
+                  {/* 🔴 remove "None" */}
                   {cats.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
                       {c.name}
@@ -1241,7 +1431,7 @@ export default function ItemlistPage() {
                               value={row.ingredientId || ""}
                               displayEmpty
                               onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                              MenuProps={{ PaperProps: { sx: { maxHeight: 320 } } }}
+                              MenuProps={dropdownMenuProps}
                             >
                               <MenuItem value=""><em>Select ingredient</em></MenuItem>
                               {inventory.map(i => (
@@ -1360,8 +1550,10 @@ export default function ItemlistPage() {
         </DialogContent>
 
         <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
-          <Button onClick={cancelEdit} disabled={saving}>Cancel</Button>
-          <Button onClick={updateItem} variant="contained" disabled={saving || !f.name.trim()}>
+          <Button onClick={() => tryClose("edit")} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={updateItem} variant="contained" disabled={saving || !canUpdate}>
             {saving ? "Updating..." : "Update"}
           </Button>
         </DialogActions>
@@ -1403,6 +1595,33 @@ export default function ItemlistPage() {
             variant="contained"
           >
             Discard
+          </Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Single-delete Confirm Dialog */}
+      <Dialog
+        open={deleteOne.open}
+        onClose={() => setDeleteOne({ open: false, id: null, name: "" })}
+        maxWidth="xs"
+        fullWidth
+        fullScreen={fullScreen}
+        PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, m: { xs: 0, sm: 2 } } }}
+      >
+        <DialogTitle>Delete item?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete <strong>{deleteOne.name || "this item"}</strong>? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOne({ open: false, id: null, name: "" })}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={onDeleteOneConfirmed}
+          >
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

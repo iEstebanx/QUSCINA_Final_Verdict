@@ -3,7 +3,7 @@ import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Typography, TextField, Button, Divider,
   FormControlLabel, Switch, InputAdornment, IconButton, Dialog,
-  AppBar, Toolbar, Slide, MenuItem, FormHelperText, CircularProgress,
+  AppBar, Toolbar, Slide, MenuItem, CircularProgress, LinearProgress,
   Select, FormControl, InputLabel,
 } from "@mui/material";
 import { useTheme, alpha } from "@mui/material/styles";
@@ -11,10 +11,12 @@ import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import CloseIcon from "@mui/icons-material/Close";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import CancelOutlinedIcon from "@mui/icons-material/CancelOutlined";
+
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAlert } from "@/context/Snackbar/AlertContext";
-import { ALNUM_DASH_RE } from "@/utils/patterns";
 
 const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
 const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
@@ -28,6 +30,34 @@ async function safeJson(res) {
 const Transition = forwardRef(function Transition(props, ref) {
   return <Slide direction="up" ref={ref} {...props} />;
 });
+
+/* ===== Password helpers (same concept as User Management) ===== */
+function scorePassword(pw) {
+  if (!pw) return 0;
+  let s = 0;
+  const len = pw.length;
+  const hasLower = /[a-z]/.test(pw);
+  const hasUpper = /[A-Z]/.test(pw);
+  const hasDigit = /\d/.test(pw);
+  const hasSpecial = /[^A-Za-z0-9]/.test(pw);
+  s += Math.min(50, len * 5);
+  s += (hasLower ? 10 : 0) + (hasUpper ? 10 : 0) + (hasDigit ? 15 : 0) + (hasSpecial ? 15 : 0);
+  if (len >= 12 && hasDigit && hasSpecial) s += 10;
+  return Math.max(0, Math.min(100, s));
+}
+const ruleChecks = (pw) => ({
+  len8: pw.length >= 8,
+  num: /\d/.test(pw),
+  lower: /[a-z]/.test(pw),
+  upper: /[A-Z]/.test(pw),
+  special: /[^A-Za-z0-9]/.test(pw),
+});
+const PW_REGEX_ENFORCE = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).{8,}$/;
+
+/* ===== Cooldown (fixed message, no countdown UI) ===== */
+const COOLDOWN_MESSAGE =
+  "A verification code is already active. Please wait 10 minutes before requesting another.";
+const nowMs = () => Date.now();
 
 export default function LoginPage() {
   // --------- Login state ---------
@@ -54,10 +84,12 @@ export default function LoginPage() {
 
   // Step: email verification (OTP path)
   const [fpEmail, setFpEmail] = useState("");
-  const [fpVerifyType, setFpVerifyType] = useState("employeeId");
-  const [fpVerifyValue, setFpVerifyValue] = useState("");
   const [fpEmailSubmitting, setFpEmailSubmitting] = useState(false);
   const [fpEmailError, setFpEmailError] = useState("");
+
+  // OTP cooldown state (authoritative comes from server via expiresAt)
+  const [otpCooldownUntil, setOtpCooldownUntil] = useState(null); // ISO string
+  const [cooldownLeft, setCooldownLeft] = useState(0); // used only for disabling logic (silent)
 
   // Step: OTP
   const [otpValues, setOtpValues] = useState(["", "", "", "", "", ""]);
@@ -88,6 +120,7 @@ export default function LoginPage() {
   // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
 
+  // Focus first empty OTP box when step opens
   useEffect(() => {
     if (fpStep !== "otp") return;
     const idx = Math.max(0, otpValues.findIndex((d) => !d));
@@ -95,6 +128,19 @@ export default function LoginPage() {
     const t = setTimeout(() => { if (el && typeof el.focus === "function") el.focus(); }, 0);
     return () => clearTimeout(t);
   }, [fpStep, otpValues]);
+
+  // Silent cooldown ticking (for disabling buttons), based on otpCooldownUntil
+  useEffect(() => {
+    if (!otpCooldownUntil) return;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((new Date(otpCooldownUntil).getTime() - nowMs()) / 1000));
+      setCooldownLeft(left);
+      if (left <= 0) setOtpCooldownUntil(null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [otpCooldownUntil]);
 
   // ---------- Login handlers ----------
   const onSubmit = async (e) => {
@@ -127,9 +173,10 @@ export default function LoginPage() {
 
   // ---------- Forgot Password: choose handlers ----------
   const onChooseEmailOtp = () => {
-    setFpEmail(""); setFpVerifyType("employeeId"); setFpVerifyValue("");
+    setFpEmail("");
     setFpEmailError(""); setResetToken(""); setNewPw(""); setConfirmPw("");
     setOtpValues(["", "", "", "", "", ""]);
+    // keep existing cooldown if present (email can be changed after)
     goEmail();
   };
 
@@ -147,37 +194,46 @@ export default function LoginPage() {
   };
 
   // ---------- Forgot Password: email verify submit (OTP path) ----------
+  const DUP_RE = /duplicate entry/i;
+
   const onEmailVerifySubmit = async (e) => {
     e.preventDefault();
     setFpEmailError("");
+
     const email = fpEmail.trim().toLowerCase();
-    if (!email) {
-      setFpEmailError("Email is required.");
-      return;
-    }
-    const extra = fpVerifyValue.trim();
-    if (extra && fpVerifyType === "employeeId" && !ALNUM_DASH_RE.test(extra)) {
-      setFpEmailError("Employee ID contains invalid characters.");
+    if (!email) { setFpEmailError("Email is required."); return; }
+
+    // Local guard: if we already have an active cooldown, block immediately with fixed message
+    if (otpCooldownUntil && new Date(otpCooldownUntil).getTime() > nowMs()) {
+      setFpEmailError(COOLDOWN_MESSAGE);
       return;
     }
 
     setFpEmailSubmitting(true);
     try {
-      const payload = {
-        email,
-        verifyType: extra ? fpVerifyType : undefined,
-        verifyValue: extra || undefined,
-      };
-
       const resp = await fetch(join("/api/auth/forgot/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ email }),
       });
-      const j = await safeJson(resp);
-      if (!resp.ok) throw new Error(j?.error || "Failed to send code");
 
+      const j = await safeJson(resp);
+
+      // Server-enforced cooldown (429). Keep expiresAt silently; show fixed message.
+      if (resp.status === 429) {
+        if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+        throw new Error(j?.error || COOLDOWN_MESSAGE);
+      }
+
+      if (!resp.ok) {
+        // Sanitize any leaked duplicate-key text
+        const msg = String(j?.error || resp.statusText || "Failed to send code");
+        if (DUP_RE.test(msg)) throw new Error(COOLDOWN_MESSAGE);
+        throw new Error(msg);
+      }
+
+      if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
@@ -185,6 +241,38 @@ export default function LoginPage() {
       setFpEmailError(err?.message || "Unable to verify right now.");
     } finally {
       setFpEmailSubmitting(false);
+    }
+  };
+
+  const onResend = async () => {
+    // Local guard
+    if (otpCooldownUntil && new Date(otpCooldownUntil).getTime() > nowMs()) {
+      return alert.info(COOLDOWN_MESSAGE);
+    }
+    try {
+      const resp = await fetch(join("/api/auth/forgot/resend"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: fpEmail.trim().toLowerCase() }),
+      });
+      const j = await safeJson(resp);
+
+      if (resp.status === 429) {
+        if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+        return alert.info(COOLDOWN_MESSAGE);
+      }
+
+      if (!resp.ok) {
+        const msg = String(j?.error || resp.statusText || "Could not resend yet.");
+        if (DUP_RE.test(msg)) return alert.info(COOLDOWN_MESSAGE);
+        throw new Error(msg);
+      }
+
+      if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+      alert.info("A new code has been sent.");
+    } catch (err) {
+      alert.error(err?.message || "Resend failed.");
     }
   };
 
@@ -226,22 +314,6 @@ export default function LoginPage() {
       alert.error(err?.message || "Invalid code. Please try again.");
     } finally {
       setOtpSubmitting(false);
-    }
-  };
-
-  const onResend = async () => {
-    try {
-      const resp = await fetch(join("/api/auth/forgot/resend"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email: fpEmail.trim().toLowerCase() }),
-      });
-      const j = await safeJson(resp);
-      if (!resp.ok) throw new Error(j?.error || "Could not resend yet. Try again shortly.");
-      alert.info("A new code has been sent.");
-    } catch (err) {
-      alert.error(err?.message || "Resend failed.");
     }
   };
 
@@ -306,10 +378,17 @@ export default function LoginPage() {
   };
 
   // ---------- Reset password (shared) ----------
+  const rules = ruleChecks(newPw);
+  const pwScore = scorePassword(newPw);
+  const rulesPass = rules.len8 && rules.num && rules.lower && rules.upper && rules.special;
+  const confirmPass = newPw && confirmPw && newPw === confirmPw;
+
   const onResetSubmit = async (e) => {
     e.preventDefault();
     if (!resetToken) return alert.error("Missing reset token.");
-    if (!newPw || newPw.length < 8) return alert.error("Password must be at least 8 characters.");
+    if (!PW_REGEX_ENFORCE.test(newPw)) {
+      return alert.error("Password must be 8+ chars with 1 number, 1 lowercase, 1 uppercase, and 1 special character.");
+    }
     if (newPw !== confirmPw) return alert.error("Passwords do not match.");
 
     setResetSubmitting(true);
@@ -331,6 +410,8 @@ export default function LoginPage() {
       setResetSubmitting(false);
     }
   };
+
+  const cooldownActive = !!otpCooldownUntil && cooldownLeft > 0;
 
   return (
     <>
@@ -374,12 +455,7 @@ export default function LoginPage() {
         <Divider />
 
         {/* Form */}
-        <Box
-          component="form"
-          onSubmit={onSubmit}
-          noValidate
-          sx={{ p: { xs: 2.5, sm: 3, md: 4 } }}
-        >
+        <Box component="form" onSubmit={onSubmit} noValidate sx={{ p: { xs: 2.5, sm: 3, md: 4 } }}>
           <Stack spacing={{ xs: 1.75, sm: 2, md: 2.25 }}>
             <TextField
               name="identifier"
@@ -466,34 +542,45 @@ export default function LoginPage() {
           {fpStep === "email" && (
             <Box component="form" onSubmit={onEmailVerifySubmit} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>Verify your email</Typography>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  Verify your email
+                </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Please enter your registered email address and (optionally) one of the extra details below for verification.
+                  Please enter your registered email address for verification.
                 </Typography>
 
-                <TextField label="Registered Email Address *" type="email" value={fpEmail}
-                  onChange={(e) => setFpEmail(e.target.value)} placeholder="e.g. admin@quscina.com" fullWidth required />
-
-                <TextField select label="Choose information for verification (optional)"
-                  value={fpVerifyType} onChange={(e) => setFpVerifyType(e.target.value)} fullWidth>
-                  <MenuItem value="employeeId">Employee ID</MenuItem>
-                  <MenuItem value="username">Username</MenuItem>
-                </TextField>
-
                 <TextField
-                  label={fpVerifyType === "employeeId" ? "Enter your Employee ID (optional)" : "Enter your Username (optional)"}
-                  value={fpVerifyValue} onChange={(e) => setFpVerifyValue(e.target.value)} fullWidth
+                  label="Registered Email Address *"
+                  type="email"
+                  value={fpEmail}
+                  onChange={(e) => setFpEmail(e.target.value)}
+                  placeholder="e.g. admin@quscina.com"
+                  fullWidth
+                  required
                 />
-                <FormHelperText>
-                  If you provide the extra info, it must match our records for this email.
-                </FormHelperText>
 
-                {!!fpEmailError && <Typography color="error" variant="body2">{fpEmailError}</Typography>}
+                {!!fpEmailError && (
+                  <Typography color="error" variant="body2">
+                    {fpEmailError}
+                  </Typography>
+                )}
+
+                {cooldownActive && (
+                  <Typography variant="body2" color="text.secondary">
+                    {COOLDOWN_MESSAGE}
+                  </Typography>
+                )}
 
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={goChoose} variant="text" disabled={fpEmailSubmitting}>Back</Button>
+                  <Button onClick={goChoose} variant="text" disabled={fpEmailSubmitting}>
+                    Back
+                  </Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button type="submit" variant="contained" disabled={fpEmailSubmitting}>
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    disabled={fpEmailSubmitting || cooldownActive}
+                  >
                     {fpEmailSubmitting ? "Checking..." : "Submit"}
                   </Button>
                 </Stack>
@@ -511,6 +598,12 @@ export default function LoginPage() {
                 <Typography variant="body2" color="text.secondary" align="center">
                   We sent a 6-digit code to <strong>{fpEmail}</strong>. Enter it below to continue.
                 </Typography>
+
+                {cooldownActive && (
+                  <Typography variant="body2" color="text.secondary" align="center">
+                    {COOLDOWN_MESSAGE}
+                  </Typography>
+                )}
 
                 <Stack direction="row" spacing={1.25} sx={{ mt: 1 }}>
                   {otpValues.map((val, idx) => (
@@ -541,7 +634,13 @@ export default function LoginPage() {
                   </Button>
                 </Stack>
 
-                <Button variant="text" disabled={otpSubmitting} onClick={onResend}>Resend code</Button>
+                <Button
+                  variant="text"
+                  disabled={otpSubmitting || cooldownActive}
+                  onClick={onResend}
+                >
+                  {cooldownActive ? "Resend code (after cooldown)" : "Resend code"}
+                </Button>
               </Stack>
             </Box>
           )}
@@ -627,18 +726,83 @@ export default function LoginPage() {
             <Box component="form" onSubmit={onResetSubmit} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
                 <Typography variant="h6" sx={{ fontWeight: 700 }}>Set a new password</Typography>
+
                 <TextField
-                  label="New password" type="password" value={newPw}
-                  onChange={(e) => setNewPw(e.target.value)} required fullWidth
+                  label="New password"
+                  type="password"
+                  value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)}
+                  required
+                  fullWidth
                 />
+
+                {newPw.length > 0 && (
+                  <>
+                    <LinearProgress
+                      variant="determinate"
+                      value={pwScore}
+                      sx={{
+                        height: 6,
+                        borderRadius: 4,
+                        "& .MuiLinearProgress-bar": (theme) => ({
+                          backgroundColor:
+                            pwScore < 40
+                              ? theme.palette.error.main
+                              : pwScore < 70
+                              ? theme.palette.warning.main
+                              : theme.palette.success.main,
+                        }),
+                      }}
+                    />
+                    <Box>
+                      <Typography variant="subtitle2" sx={{ mt: 0.5, mb: 0.25 }}>
+                        Must contain:
+                      </Typography>
+                      <Stack spacing={0.25}>
+                        {[
+                          { ok: rules.len8, text: "At least 8 characters" },
+                          { ok: rules.num, text: "At least 1 number" },
+                          { ok: rules.lower, text: "At least 1 lowercase letter" },
+                          { ok: rules.upper, text: "At least 1 uppercase letter" },
+                          { ok: rules.special, text: "At least 1 special character" },
+                        ].map((r, i) => (
+                          <Stack key={i} direction="row" spacing={0.75} alignItems="center">
+                            {r.ok ? (
+                              <CheckCircleOutlineIcon fontSize="small" color="success" />
+                            ) : (
+                              <CancelOutlinedIcon fontSize="small" color="error" />
+                            )}
+                            <Typography variant="body2" color={r.ok ? "success.main" : "text.primary"}>
+                              {r.text}
+                            </Typography>
+                          </Stack>
+                        ))}
+                      </Stack>
+                    </Box>
+                  </>
+                )}
+
                 <TextField
-                  label="Confirm new password" type="password" value={confirmPw}
-                  onChange={(e) => setConfirmPw(e.target.value)} required fullWidth
+                  label="Confirm new password"
+                  type="password"
+                  value={confirmPw}
+                  onChange={(e) => setConfirmPw(e.target.value)}
+                  required
+                  fullWidth
+                  error={!!confirmPw && !confirmPass}
+                  helperText={!!confirmPw && !confirmPass ? "Passwords do not match." : " "}
                 />
+
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={() => setFpStep("choose")} variant="text" disabled={resetSubmitting}>Back</Button>
+                  <Button onClick={() => setFpStep("choose")} variant="text" disabled={resetSubmitting}>
+                    Back
+                  </Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button type="submit" variant="contained" disabled={resetSubmitting}>
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    disabled={resetSubmitting || !rulesPass || !confirmPass}
+                  >
                     {resetSubmitting ? "Saving..." : "Update Password"}
                   </Button>
                 </Stack>

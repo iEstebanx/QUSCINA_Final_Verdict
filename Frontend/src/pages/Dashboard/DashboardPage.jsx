@@ -83,7 +83,7 @@ export default function DashboardPage() {
     height: "100%",
     display: "flex",
     flexDirection: "column",
-    borderRadius: 3,
+    borderRadius: 1,
     overflow: "hidden",
     border: `1px solid ${theme.palette.divider}`,
     background: theme.palette.background.paper,

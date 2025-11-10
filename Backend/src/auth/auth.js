@@ -10,6 +10,11 @@ try { sharedDb = require("../shared/db/mysql").db; } catch { /* ok until DI pass
 // Keep your email sender
 const { sendOtpEmail } = require("../shared/email/mailer");
 
+const {
+  safeCreateEmailOtp,
+  getLatestPendingOtp,
+} = require("../shared/OTP/EmailOTP/otp");
+
 module.exports = function authRouterFactory({ db } = {}) {
   db = db || sharedDb;
   if (!db) throw new Error("DB pool not available. Pass { db } from server.js or ensure ../shared/db/mysql exists.");
@@ -191,47 +196,11 @@ module.exports = function authRouterFactory({ db } = {}) {
     res.json({ ok: true });
   });
 
-  // -------------------- OTP (Email) --------------------
-
-  async function createEmailOtp({ employeeId, emailLower, ttlSec }) {
-    const code = (Math.floor(100000 + Math.random() * 900000)).toString(); // 6-digit
-    const codeHash = await bcrypt.hash(code, 10);
-    const expiresAt = new Date(Date.now() + ttlSec * 1000);
-
-    const r = await db.query(
-      `INSERT INTO otp (employee_id, email_lower, code_hash, status, attempts, created_at, expires_at)
-       VALUES (?, ?, ?, 'pending', 0, NOW(), ?)`,
-      [employeeId || null, emailLower, codeHash, expiresAt]
-    );
-    return { otpId: r.insertId, code, expiresAt };
-  }
-
-  async function latestPendingOtp(emailLower) {
-    const rows = await db.query(
-      `SELECT * FROM otp WHERE email_lower = ? AND status = 'pending'
-       ORDER BY created_at DESC LIMIT 1`,
-      [emailLower]
-    );
-    return rows[0] || null;
-  }
-
-  async function updateOtp(id, patch) {
-    const sets = [];
-    const params = [];
-    for (const [k, v] of Object.entries(patch)) {
-      sets.push(`${k} = ?`);
-      params.push(v);
-    }
-    if (!sets.length) return;
-    params.push(id);
-    await db.query(`UPDATE otp SET ${sets.join(", ")} WHERE id = ?`, params);
-  }
-
   // POST /api/auth/forgot/start
   router.post("/forgot/start", async (req, res, next) => {
     try {
       const email = lower(req.body?.email);
-      const verifyType = req.body?.verifyType;   // 'employeeId' | 'username' | undefined
+      const verifyType = req.body?.verifyType;
       const verifyValue = String(req.body?.verifyValue || "").trim();
 
       if (!email) return res.status(400).json({ error: "Email is required" });
@@ -247,24 +216,38 @@ module.exports = function authRouterFactory({ db } = {}) {
         (verifyType === "username" && lower(emp.username) === lower(verifyValue));
       if (!okExtra) return res.status(400).json({ error: "We couldn't verify your details. Please try again." });
 
-      const { code, expiresAt } = await createEmailOtp({
-        employeeId: emp.employee_id,
+      // Use shared, race-safe creator (UTC inside)
+      const r = await safeCreateEmailOtp({
+        db,
         emailLower: email,
+        employeeId: emp.employee_id,
         ttlSec: OTP_TTL_SEC,
       });
 
-      if (DEBUG) console.log("[forgot/start] OTP for", email, "exp", expiresAt);
+      // Cooldown already active?
+      if (!r.ok) {
+        if (r.reason === "cooldown_active") {
+          return res.status(429).json({
+            error: "A verification code is already active. Please wait 10 minutes before requesting another.",
+            expiresAt: r.expiresAt ?? null,
+          });
+        }
+        return res.status(500).json({ error: "Unable to start verification" });
+      }
 
+      // Send the code via your existing mailer
       try {
-        await sendOtpEmail(email, code, {
+        await sendOtpEmail(email, r.code, {
           appName: "Quscina",
           expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
         });
       } catch (mailErr) {
         console.error("[forgot/start] email send failed:", mailErr?.message || mailErr);
+        // (optional) you can still return 200 since OTP row exists
       }
 
-      res.json({ ok: true, message: "We’ve sent a 6-digit code to your email." });
+      // Also return expiresAt for the silent cooldown UI
+      return res.json({ ok: true, expiresAt: r.expiresAt });
     } catch (e) {
       next(e);
     }
@@ -280,24 +263,25 @@ module.exports = function authRouterFactory({ db } = {}) {
       const emp = await findByEmail(email);
       if (!emp) return res.status(404).json({ error: "That email is not registered." });
 
-      const latest = await latestPendingOtp(email);
-      if (latest) {
-        const lastMs = new Date(latest.created_at).getTime();
-        if ((Date.now() - lastMs) / 1000 < RESEND_MIN_INTERVAL_SEC) {
-          return res.status(429).json({ error: "Please wait before requesting another code." });
-        }
-      }
-
-      const { code, expiresAt } = await createEmailOtp({
-        employeeId: emp.employee_id,
+      const r = await safeCreateEmailOtp({
+        db,
         emailLower: email,
+        employeeId: emp.employee_id,
         ttlSec: OTP_TTL_SEC,
       });
 
-      if (DEBUG) console.log("[forgot/resend] OTP for", email, "exp", expiresAt);
+      if (!r.ok) {
+        if (r.reason === "cooldown_active") {
+          return res.status(429).json({
+            error: "A verification code is already active. Please wait 10 minutes before requesting another.",
+            expiresAt: r.expiresAt ?? null,
+          });
+        }
+        return res.status(500).json({ error: "Unable to resend code" });
+      }
 
       try {
-        await sendOtpEmail(email, code, {
+        await sendOtpEmail(email, r.code, {
           appName: "Quscina",
           expiresMinutes: Math.ceil(OTP_TTL_SEC / 60),
         });
@@ -305,7 +289,7 @@ module.exports = function authRouterFactory({ db } = {}) {
         console.error("[forgot/resend] email send failed:", mailErr?.message || mailErr);
       }
 
-      res.json({ ok: true, message: "A new code has been sent." });
+      return res.json({ ok: true, expiresAt: r.expiresAt });
     } catch (e) {
       next(e);
     }
@@ -318,39 +302,37 @@ module.exports = function authRouterFactory({ db } = {}) {
       const code = String(req.body?.code || "").trim();
       if (!email || !code) return res.status(400).json({ error: "Email and code are required" });
 
-      const rec = await latestPendingOtp(email);
-      if (!rec || rec.status !== "pending") {
+      const rec = await getLatestPendingOtp(email, { db });
+      if (!rec || rec.data.status !== "pending") {
         return res.status(400).json({ error: "Invalid or expired code" });
       }
 
-      const now = Date.now();
-      const expMs = new Date(rec.expires_at).getTime();
-      if (!expMs || now > expMs) {
-        await updateOtp(rec.id, { status: "expired", expired_at: new Date() });
+      // Expired? (rec.data.expiresAt is from DB; helper used UTC in logic)
+      if (Date.now() > new Date(rec.data.expiresAt).getTime()) {
+        await db.query(`UPDATE otp SET status='expired', expired_at=UTC_TIMESTAMP() WHERE id=?`, [rec.id]);
         return res.status(400).json({ error: "Invalid or expired code" });
       }
 
-      const attempts = Number(rec.attempts || 0);
+      const attempts = Number(rec.data.attempts || 0);
       if (attempts >= OTP_MAX_ATTEMPTS) {
-        await updateOtp(rec.id, { status: "blocked", blocked_at: new Date() });
+        await db.query(`UPDATE otp SET status='blocked', blocked_at=UTC_TIMESTAMP() WHERE id=?`, [rec.id]);
         return res.status(400).json({ error: "Too many attempts. Request a new code." });
       }
 
-      const ok = await bcrypt.compare(code, rec.code_hash);
+      const ok = await bcrypt.compare(code, rec.data.codeHash);
       if (!ok) {
-        await updateOtp(rec.id, { attempts: attempts + 1, last_attempt_at: new Date() });
+        await db.query(
+          `UPDATE otp SET attempts=attempts+1, last_attempt_at=UTC_TIMESTAMP() WHERE id=?`,
+          [rec.id]
+        );
         return res.status(400).json({ error: "Invalid or expired code" });
       }
 
-      await updateOtp(rec.id, { status: "used", used_at: new Date() });
+      await db.query(`UPDATE otp SET status='used', used_at=UTC_TIMESTAMP() WHERE id=?`, [rec.id]);
 
       const emp = await findByEmail(email);
       const resetToken = jwt.sign(
-        {
-          purpose: "password-reset",
-          employeeId: emp ? emp.employee_id : null,
-          emailLower: email,
-        },
+        { purpose: "password-reset", employeeId: emp ? emp.employee_id : null, emailLower: email },
         RESET_JWT_SECRET,
         { expiresIn: RESET_TOKEN_TTL }
       );

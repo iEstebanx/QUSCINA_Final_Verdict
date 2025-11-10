@@ -1,5 +1,5 @@
 // Frontend/src/pages/Settings/PaymentTypes/PaymentTypePage.jsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Paper,
@@ -19,22 +19,25 @@ import {
   TableRow,
   TextField,
   Typography,
+  IconButton,
+  Tooltip,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import AddIcon from "@mui/icons-material/Add";
-
-function newId() {
-  return `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import { useAlert } from "@/context/Snackbar/AlertContext";
 
 export default function PaymentTypePage() {
-  // Data
-  const [rows, setRows] = useState([
-    { id: newId(), name: "Cash" },
-    { id: newId(), name: "Card" },
-  ]);
+  const alert = useAlert();
+  // If you renamed to PaymentTypes/index.js, change to "/api/settings/payment-types".
+  const API_BASE = "/api/settings/payment-type";
 
-  // Selection (header checkbox like DiscountPage)
+  // Data
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Selection
   const [selected, setSelected] = useState([]);
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
   const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
@@ -51,23 +54,96 @@ export default function PaymentTypePage() {
   };
 
   // Dialog (create only)
-  const [open, setOpen] = useState(false);
+  const [openCreate, setOpenCreate] = useState(false);
   const [name, setName] = useState("");
   const nameError = name.trim().length === 0;
 
-  const onSave = () => {
+  // Delete confirms
+  const [deleteOpen, setDeleteOpen] = useState(false); // bulk confirm
+  const [deleteOne, setDeleteOne] = useState({ open: false, id: null, name: "" }); // single confirm
+
+  // Load
+  async function loadPaymentTypes() {
+    setLoading(true);
+    setErr("");
+    try {
+      const res = await fetch(API_BASE, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `Load failed (HTTP ${res.status})`);
+      const list = Array.isArray(data.paymentTypes) ? data.paymentTypes : [];
+      setRows(list.map((x) => ({ id: String(x.id), name: x.name, active: x.active, sortOrder: x.sortOrder })));
+    } catch (e) {
+      setErr(e?.message || "Failed to load payment types.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { loadPaymentTypes(); }, []);
+
+  // Create
+  async function onSave() {
     if (nameError) return;
-    setRows((prev) => [...prev, { id: newId(), name: name.trim() }]);
-    setName("");
-    setOpen(false);
-  };
+    try {
+      const payload = { name: name.trim() };
+      const res = await fetch(API_BASE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data?.code === "name_taken") throw new Error("Payment type already exists.");
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
+      alert.success("Payment type added.");
+      setName("");
+      setOpenCreate(false);
+      await loadPaymentTypes();
+    } catch (e) {
+      alert.error(e?.message || "Failed to save.");
+    }
+  }
+
+  // Bulk delete
+  async function onDeleteSelected() {
+    if (!selected.length) return;
+    try {
+      const res = await fetch(API_BASE, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selected }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+      alert.info(`Deleted ${selected.length} payment type${selected.length > 1 ? "s" : ""}.`);
+      setSelected([]);
+      await loadPaymentTypes();
+    } catch (e) {
+      alert.error(e?.message || "Failed to delete.");
+    }
+  }
+
+  // Single delete
+  async function onDeleteOneConfirmed() {
+    if (!deleteOne.id) return;
+    try {
+      const res = await fetch(`${API_BASE}/${encodeURIComponent(deleteOne.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `Delete failed (HTTP ${res.status})`);
+      // unselect if selected
+      setSelected((prev) => prev.filter((x) => x !== deleteOne.id));
+      alert.info(`Deleted "${deleteOne.name || "payment type"}".`);
+      setDeleteOne({ open: false, id: null, name: "" });
+      await loadPaymentTypes();
+    } catch (e) {
+      alert.error(e?.message || "Failed to delete.");
+    }
+  }
 
   const displayRows = useMemo(() => rows, [rows]);
 
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
-        {/* Header (consistent with other pages) */}
+        {/* Header */}
         <Box p={2}>
           <Stack
             direction="row"
@@ -81,19 +157,34 @@ export default function PaymentTypePage() {
             <Button
               variant="contained"
               startIcon={<AddIcon />}
-              onClick={() => setOpen(true)}
+              onClick={() => setOpenCreate(true)}
               sx={{ flexShrink: 0 }}
             >
               Add Payment Type
             </Button>
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
+
+            {/* Bulk delete icon button */}
+            <Tooltip title={selected.length ? "Delete selected" : "Nothing selected"}>
+              <span>
+                <IconButton
+                  aria-label="Delete selected"
+                  color="error"
+                  disabled={!selected.length}
+                  onClick={() => setDeleteOpen(true)}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <DeleteOutlineIcon />
+                </IconButton>
+              </span>
+            </Tooltip>
           </Stack>
         </Box>
 
         <Divider />
 
-        {/* Table area (mirrors container/sticky approach) */}
+        {/* Table */}
         <Box p={2} sx={{ minWidth: 0 }}>
           <TableContainer
             component={Paper}
@@ -106,34 +197,47 @@ export default function PaymentTypePage() {
               borderRadius: 2,
             }}
           >
-            <Table
-              stickyHeader
-              aria-label="payment types table"
-              sx={{ tableLayout: "fixed", minWidth: 520 }}
-            >
-              {/* Column sizing (rendered from array to avoid whitespace text nodes) */}
+            <Table stickyHeader aria-label="payment types table" sx={{ tableLayout: "fixed", minWidth: 560 }}>
               <colgroup>
-                {[56, null].map((w, i) => (
-                  <col key={i} style={w ? { width: w } : undefined} />
-                ))}
+                <col style={{ width: 56 }} />
+                <col />
+                <col style={{ width: 72 }} />
               </colgroup>
 
               <TableHead>
                 <TableRow>
                   <TableCell padding="checkbox">
-                    <Checkbox
-                      checked={allChecked}
-                      indeterminate={someChecked}
-                      onChange={toggleAll}
-                    />
+                    <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
                   </TableCell>
                   <TableCell>
                     <Typography fontWeight={600}>Name</Typography>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Typography fontWeight={600}>Actions</Typography>
                   </TableCell>
                 </TableRow>
               </TableHead>
 
               <TableBody>
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2">Loading…</Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!loading && err && (
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2" color="error">{err}</Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                )}
+
                 {displayRows.map((r) => (
                   <TableRow
                     key={r.id}
@@ -144,22 +248,30 @@ export default function PaymentTypePage() {
                     })}
                   >
                     <TableCell padding="checkbox">
-                      <Checkbox
-                        checked={selected.includes(r.id)}
-                        onChange={() => toggleOne(r.id)}
-                      />
+                      <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
                     </TableCell>
+
                     <TableCell sx={{ overflow: "hidden" }}>
-                      <Typography noWrap title={r.name}>
-                        {r.name}
-                      </Typography>
+                      <Typography noWrap title={r.name}>{r.name}</Typography>
+                    </TableCell>
+
+                    <TableCell align="center">
+                      <Tooltip title="Delete">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDeleteOne({ open: true, id: r.id, name: r.name })}
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
                     </TableCell>
                   </TableRow>
                 ))}
 
-                {displayRows.length === 0 && (
+                {displayRows.length === 0 && !loading && !err && (
                   <TableRow>
-                    <TableCell colSpan={2}>
+                    <TableCell colSpan={3}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           No payment types yet. Click <strong>Add Payment Type</strong> to create one.
@@ -175,11 +287,9 @@ export default function PaymentTypePage() {
       </Paper>
 
       {/* Create dialog */}
-      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>
-          <Typography variant="h6" fontWeight={800}>
-            Add Payment Type
-          </Typography>
+      <Dialog open={openCreate} onClose={() => setOpenCreate(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>
+          Add Payment Type
         </DialogTitle>
         <Divider />
         <DialogContent>
@@ -197,11 +307,56 @@ export default function PaymentTypePage() {
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button variant="outlined" onClick={() => setOpen(false)}>
-            Cancel
+          <Button variant="outlined" onClick={() => setOpenCreate(false)}>Cancel</Button>
+          <Button variant="contained" onClick={onSave} disabled={nameError}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Single-delete Confirm Dialog */}
+      <Dialog
+        open={deleteOne.open}
+        onClose={() => setDeleteOne({ open: false, id: null, name: "" })}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Delete payment type?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete <strong>{deleteOne.name || "this payment type"}</strong>? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOne({ open: false, id: null, name: "" })}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={onDeleteOneConfirmed}>
+            Delete
           </Button>
-          <Button variant="contained" onClick={onSave} disabled={nameError}>
-            Save
+        </DialogActions>
+      </Dialog>
+
+      {/* Bulk-delete Confirm Dialog */}
+      <Dialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Delete selected?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete {selected.length} payment type{selected.length > 1 ? "s" : ""}? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={async () => {
+              setDeleteOpen(false);
+              await onDeleteSelected();
+            }}
+          >
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

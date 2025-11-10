@@ -251,7 +251,7 @@ module.exports = ({ db } = {}) => {
           try {
             await conn.execute(
               `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
-               VALUES (?, ?, ?, ?, NOW())`,
+              VALUES (?, ?, ?, ?, NOW())`,
               [key, type, valueLower, id]
             );
           } catch (err) {
@@ -333,9 +333,63 @@ module.exports = ({ db } = {}) => {
       const now = new Date();
 
       await db.tx(async (conn) => {
+        // BEFORE you build params/sets; still inside the transaction
         for (const key of toCreate) {
-          const a = await conn.query(`SELECT alias_key, employee_id FROM aliases WHERE alias_key = ? LIMIT 1`, [key]);
-          if (a.length && String(a[0].employee_id) !== String(employeeId)) throw new Error("Credential (alias) already in use");
+          const [type, valueLower] = key.split(":");
+
+          // Exact key hit?
+          const exist = await conn.query(
+            `SELECT alias_key, employee_id FROM aliases WHERE alias_key = ? LIMIT 1`,
+            [key]
+          );
+
+          if (!exist.length) continue;
+
+          const ownerId = String(exist[0].employee_id);
+          if (ownerId === String(employeeId)) {
+            // Already mine — allow idempotent insert later.
+            continue;
+          }
+
+          // Does the recorded owner still exist?
+          const ownerRows = await conn.query(
+            `SELECT employee_id, email, username,
+                    login_email, login_username, login_employee_id
+            FROM employees
+            WHERE employee_id = ? LIMIT 1`,
+            [ownerId]
+          );
+
+          if (!ownerRows.length) {
+            // Orphan alias → clean up and reclaim
+            await conn.execute(`DELETE FROM aliases WHERE alias_key = ?`, [key]);
+            continue;
+          }
+
+          const owner = ownerRows[0];
+
+          // Determine if that owner STILL legitimately "wants" this alias
+          let ownerStillWants = false;
+          if (type === "email") {
+            const ownerEmailLower = String(owner.email || "").trim().toLowerCase();
+            ownerStillWants = !!owner.login_email && ownerEmailLower === valueLower;
+          } else if (type === "username") {
+            const ownerUnameLower = String(owner.username || "").trim().toLowerCase();
+            ownerStillWants = !!owner.login_username && ownerUnameLower === valueLower;
+          } else if (type === "employee_id") {
+            ownerStillWants = !!owner.login_employee_id && String(owner.employee_id) === valueLower;
+          }
+
+          if (!ownerStillWants) {
+            // Alias is stale (belongs to an employee who no longer uses it) → reclaim it
+            await conn.execute(`DELETE FROM aliases WHERE alias_key = ?`, [key]);
+            continue;
+          }
+
+          // Real conflict: other employee still legitimately owns this alias
+          if (type === "username") throw new Error("Username already in use");
+          if (type === "email") throw new Error("Email already in use");
+          throw new Error("Credential (alias) already in use");
         }
 
         const sets = ["updated_at = NOW()"];
@@ -371,9 +425,12 @@ module.exports = ({ db } = {}) => {
         for (const key of toDelete) await conn.execute(`DELETE FROM aliases WHERE alias_key = ?`, [key]);
         for (const key of toCreate) {
           const [type, valueLower] = key.split(":");
+          // Insert if missing; if it already belongs to me, do nothing.
           await conn.execute(
             `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
-             VALUES (?, ?, ?, ?, NOW())`,
+            VALUES (?, ?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE
+              employee_id = IF(employee_id = VALUES(employee_id), employee_id, employee_id)`,
             [key, type, valueLower, employeeId]
           );
         }
@@ -404,7 +461,11 @@ module.exports = ({ db } = {}) => {
   router.delete("/:employeeId", async (req, res) => {
     try {
       const { employeeId } = req.params;
-      await db.execute(`DELETE FROM employees WHERE employee_id = ?`, [String(employeeId)]);
+      await db.tx(async (conn) => {
+        // Defensive: remove stale aliases first
+        await conn.execute(`DELETE FROM aliases WHERE employee_id = ?`, [String(employeeId)]);
+        await conn.execute(`DELETE FROM employees WHERE employee_id = ?`, [String(employeeId)]);
+      });
       res.json({ ok: true });
     } catch (e) {
       console.error("[DELETE /api/users/:employeeId] fail:", e);

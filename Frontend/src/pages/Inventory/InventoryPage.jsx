@@ -1,5 +1,5 @@
 // Frontend/src/pages/Inventory/InventoryPage.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Paper,
@@ -71,13 +71,16 @@ export default function InventoryPage() {
   const [deleteCheckResult, setDeleteCheckResult] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Close handler for the Stock In/Out dialog
+  const addTouchedRef = useRef(false);
+  const stockTouchedRef = useRef(false);
+
+  const markAddTouched = () => { if (!addTouchedRef.current) addTouchedRef.current = true; };
+  const markStockTouched = () => { if (!stockTouchedRef.current) stockTouchedRef.current = true; };
+
   const handleStockClose = () => {
-    if (stockFormChanged) {
-      // show discard confirmation dialog
-      setShowStockConfirm(true);
+    if (stockFormChanged || stockTouchedRef.current) {
+      setShowStockConfirm(true);   // ✅ show Cancel / Discard
     } else {
-      // safe to close immediately
       setOpenStock(false);
       resetStockForm();
     }
@@ -116,8 +119,8 @@ export default function InventoryPage() {
         const list = (data.ingredients ?? []).map((x) => ({
           id: x.id,
           name: x.name || "",
-          category: x.category || "Uncategorized",
-          type: x.type || "",
+          category: x.category,
+          type: x.type,
           currentStock: Number(x.currentStock || 0),
           lowStock: Number(x.lowStock || 0),
           price: Number(x.price || 0),
@@ -233,17 +236,33 @@ export default function InventoryPage() {
   // Delete flow
   const handleDeleteClick = async (ingredient) => {
     setIngredientToDelete(ingredient);
-    setDeleteCheckResult(null);
+
     try {
       const res = await fetch(`${ING_API}/${ingredient.id}/usage`);
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.ok) setDeleteCheckResult(data);
-      else setDeleteCheckResult({ isUsed: false, usedInItems: [] });
+
+      if (res.ok && data?.ok && data.isUsed) {
+        // Show Category-style blocked modal for SINGLE delete
+        showBlockedModal({
+          ingredientName: ingredient.name,
+          countItems: Array.isArray(data.usedInItems) ? data.usedInItems.length : 0,
+          countActivity: Number.isFinite(data.activityCount) ? data.activityCount : 0,
+          sampleItems: Array.isArray(data.usedInItems) ? data.usedInItems.slice(0, 6) : [],
+          message: "Cannot delete ingredient; item(s) are assigned to it.",
+        });
+
+        // Uncheck this one (same behavior you liked in Categories)
+        setSelected((s) => s.filter((id) => id !== ingredient.id));
+        return; // do not open the confirm dialog
+      }
+
+      // Not used → proceed to confirmation dialog
+      setDeleteDialogOpen(true);
     } catch (e) {
       console.error("usage check error:", e);
-      setDeleteCheckResult({ isUsed: false, usedInItems: [] });
+      // If usage check fails, still allow confirmation (best effort)
+      setDeleteDialogOpen(true);
     }
-    setDeleteDialogOpen(true);
   };
 
   const handleConfirmDelete = async () => {
@@ -268,37 +287,113 @@ export default function InventoryPage() {
     }
   };
 
+  // Blocked-delete modal (inventory)
+  const [blockedDialog, setBlockedDialog] = useState({
+    open: false,
+    ingredientName: "",  // used only for single
+    countItems: 0,
+    countActivity: 0,
+    sampleItems: [],     // names of menu items or activity remarks
+    message: "",
+  });
+
+  function showBlockedModal(payload = {}) {
+    const {
+      ingredientName = "",
+      countItems = 0,
+      countActivity = 0,
+      sampleItems = [],
+      message = "",
+    } = payload || {};
+    setBlockedDialog({
+      open: true,
+      ingredientName,
+      countItems: Number.isFinite(countItems) ? countItems : 0,
+      countActivity: Number.isFinite(countActivity) ? countActivity : 0,
+      sampleItems: Array.isArray(sampleItems) ? sampleItems.slice(0, 6) : [],
+      message: String(message || ""),
+    });
+  }
+
   const handleBulkDelete = async () => {
     if (!selected.length) return;
-    let success = 0;
-    let failed = 0;
-    for (const id of selected) {
-      try {
-        const res = await fetch(`${ING_API}/${id}`, { method: "DELETE" });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data?.ok) success++; else failed++;
-      } catch { failed++; }
-    }
-    // refresh minimalistically
+
     try {
-      const res = await fetch(ING_API, { cache: "no-store" });
+      const res = await fetch(ING_API, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selected }),
+      });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.ok) {
-        const list = (data.ingredients ?? []).map((x) => ({
-          id: x.id,
-          name: x.name || "",
-          category: x.category || "Uncategorized",
-          type: x.type || "",
-          currentStock: Number(x.currentStock || 0),
-          lowStock: Number(x.lowStock || 0),
-          price: Number(x.price || 0),
-        }));
-        setIngredients(list);
+
+      if (!res.ok || data?.ok !== true) {
+        alert.error(data?.error || `Delete failed (HTTP ${res.status})`);
+        return;
       }
-    } catch {}
-    setSelected([]);
-    if (success) alert.success(`Deleted ${success} ingredient${success > 1 ? "s" : ""}`);
-    if (failed) alert.error(`Failed to delete ${failed} ingredient${failed > 1 ? "s" : ""}`);
+
+      // Refresh list minimalistically
+      try {
+        const r = await fetch(ING_API, { cache: "no-store" });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j?.ok) {
+          const list = (j.ingredients ?? []).map((x) => ({
+            id: x.id,
+            name: x.name || "",
+            category: x.category || "Uncategorized",
+            type: x.type || "",
+            currentStock: Number(x.currentStock || 0),
+            lowStock: Number(x.lowStock || 0),
+            price: Number(x.price || 0),
+          }));
+          setIngredients(list);
+        }
+      } catch {}
+
+      // Build helpful dialog summarizing blocked ones
+      const blocked = Array.isArray(data.blocked) ? data.blocked : [];
+      const deleted = Number(data.deleted || 0);
+
+      if (deleted) {
+        alert.success(`Deleted ${deleted} ingredient${deleted > 1 ? "s" : ""}`);
+      }
+
+      if (blocked.length) {
+        const namesById = new Map(ingredients.map((i) => [String(i.id), i.name]));
+        if (blocked.length === 1) {
+          const b = blocked[0];
+          const name = namesById.get(String(b.id)) || "This ingredient";
+          const message =
+            b.reason === "activity-linked"
+              ? `Cannot delete ingredient; ${b.count} activity record(s) are linked to it.`
+              : `Cannot delete ingredient; it is currently used in menu item(s).`;
+          showBlockedModal({
+            ingredientName: name,
+            countItems: b.reason === "item-linked" ? (Number(b.count) || 0) : 0,
+            countActivity: b.reason === "activity-linked" ? (Number(b.count) || 0) : 0,
+            sampleItems: Array.isArray(b.sample) ? b.sample : [],
+            message,
+          });
+        } else {
+          // Multiple blocked → compact summary
+          const preview = blocked
+            .slice(0, 5)
+            .map((b) => namesById.get(String(b.id)) || `#${b.id}`)
+            .join(", ");
+          const more = blocked.length > 5 ? ` and ${blocked.length - 5} more` : "";
+          showBlockedModal({
+            ingredientName: "",
+            message: `Some ingredients were not deleted because they are still linked: ${preview}${more}.`,
+          });
+        }
+      }
+
+      // Keep only still-selected those that remained blocked (uncheck deleted)
+      const blockedIds = new Set(blocked.map((b) => String(b.id)));
+      setSelected([]);
+    } catch (e) {
+      console.error("[ingredients] bulk delete error:", e);
+      alert.error(e?.message || "Bulk delete failed");
+    }
   };
 
   // Add Ingredient dialog
@@ -323,14 +418,21 @@ export default function InventoryPage() {
     setAddFormChanged(false);
     setShowAddConfirm(false);
   };
-  const handleAddClose = () => { addFormChanged ? setShowAddConfirm(true) : (setOpenAdd(false), resetAddForm()); };
+  const handleAddClose = () => {
+    (addFormChanged || addTouchedRef.current)
+      ? setShowAddConfirm(true)
+      : (setOpenAdd(false), resetAddForm());
+  };
   const handleAddConfirmClose = () => { setOpenAdd(false); resetAddForm(); };
   const handleAddCancelClose = () => setShowAddConfirm(false);
 
   const handleAddIngredient = async () => {
     const name = normalize(newName);
-    const category = normalize(newCat || "Uncategorized");
-    const unit = String(newUnit || "pcs");
+    const category = normalize(newCat);
+    const unit = String(newUnit);
+
+    if (!category) { alert.error("Please select a category."); return; }
+    if (!unit) { alert.error("Please select a unit."); return; }
 
     if (!isValidName(name)) {
       alert.error("Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).");
@@ -390,6 +492,28 @@ export default function InventoryPage() {
   const [stockFormChanged, setStockFormChanged] = useState(false);
   const [showStockConfirm, setShowStockConfirm] = useState(false);
 
+    const canSave = useMemo(() => {
+    if (!stockForm.ingId || !stockForm.cat || !stockForm.type) return false;
+
+    const qtyStr = String(stockForm.qty ?? "").trim();
+    const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
+    const qn = hasQty ? Number(qtyStr) : 0;
+
+    // Movement rules
+    if (hasQty) {
+      if (qn <= 0) return false;
+      if (stockForm.direction === "OUT" && qn > Number(stockForm.current || 0)) return false;
+      return true; // valid movement → can save
+    }
+
+    // Edit-only: require an actual change vs baseline
+    if (!initialStockForm) return false;
+    const catChanged   = stockForm.cat   !== initialStockForm.cat;
+    const typeChanged  = stockForm.type  !== initialStockForm.type;
+    const priceChanged = String(stockForm.price ?? "") !== String(initialStockForm.price ?? "");
+    return catChanged || typeChanged || priceChanged;
+  }, [stockForm, initialStockForm]);
+
   const handleStockFormChange = (newForm) => {
     if (!stockFormChanged && initialStockForm) {
       const hasChanges = JSON.stringify(newForm) !== JSON.stringify(initialStockForm);
@@ -416,6 +540,36 @@ export default function InventoryPage() {
     setShowStockConfirm(false);
   };
 
+  const dropdownMenuProps = {
+    MenuListProps: { disablePadding: true },
+
+    PaperProps: {
+      className: "scroll-x",
+      sx: (theme) => ({
+        maxHeight: 320,
+
+        // kill extra List padding just in case
+        "& .MuiList-root": { py: 0 },
+
+        // full-bleed highlight while keeping text inset
+        "& .MuiMenuItem-root": {
+          px: 1.5,                // keep your text indent
+          mx: -1.5,               // bleed background to the paper edges
+          borderRadius: 0,        // ensure highlight hits the edge cleanly
+        },
+
+        // make the header item behave the same
+        "& .MuiMenuItem-root.Mui-disabled": {
+          px: 1.5,
+          mx: -1.5,
+          opacity: 1,
+          color: "text.secondary",
+          fontStyle: "italic",
+        },
+      }),
+    },
+  };
+
   const openStockDialog = () => {
     const initialForm = {
       ingId: "",
@@ -434,6 +588,7 @@ export default function InventoryPage() {
     setInitialStockForm(initialForm);
     setStockFormChanged(false);
     setShowStockConfirm(false);
+    stockTouchedRef.current = false;
     setOpenStock(true);
   };
 
@@ -448,7 +603,8 @@ export default function InventoryPage() {
       price: ing?.price || "",
     };
     setStockForm(newForm);
-    handleStockFormChange(newForm);
+    setInitialStockForm(newForm);     // ⬅️ make the picked values the baseline
+    setStockFormChanged(false);       // ⬅️ clear change flag
   };
 
   const handleRowClick = (ing) => {
@@ -469,6 +625,7 @@ export default function InventoryPage() {
     setInitialStockForm(newForm);
     setStockFormChanged(false);
     setShowStockConfirm(false);
+    stockTouchedRef.current = false;
     setOpenStock(true);
   };
 
@@ -480,20 +637,72 @@ export default function InventoryPage() {
 
   const handleStockSave = async () => {
     try {
-      const qty = Number(stockForm.qty || 0);
-      const price = Number(stockForm.price || 0);
       const io = stockForm.direction === "IN" ? "In" : "Out";
       const picked = ingredients.find((i) => i.id === stockForm.ingId);
       if (!picked) return;
-      if (qty <= 0) {
-        alert.error("Quantity must be greater than zero.");
+
+      // allow edit-only: qty blank or <= 0
+      const qtyStr = String(stockForm.qty ?? "").trim();
+      const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
+      const qty = hasQty ? Number(qtyStr) : 0;
+
+      if (!stockForm.cat || !stockForm.type) {
+        alert.error("Please select both Category and Unit.");
         return;
       }
+
+      // --- Edit-only mode: update category/unit (and optionally price) with no activity ---
+      if (!hasQty || qty <= 0) {
+        // Optional: if you also want to allow price change on edit-only *when IN*:
+        const patchBody = {
+          category: stockForm.cat,
+          type: stockForm.type,
+        };
+        // uncomment if you want manual price edits to stick even in edit-only:
+        // if (stockForm.price !== "" && io === "In") patchBody.price = Number(stockForm.price || 0);
+
+        await fetch(`${ING_API}/${picked.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patchBody),
+        });
+
+        // reflect in UI
+        setIngredients((arr) =>
+          arr.map((i) =>
+            i.id === picked.id
+              ? {
+                  ...i,
+                  category: stockForm.cat,
+                  type: stockForm.type,
+                  // price: (io === "In" && stockForm.price !== "") ? Number(stockForm.price || 0) : i.price,
+                  updatedAt: NOW(),
+                }
+              : i
+          )
+        );
+
+        setOpenStock(false);
+        resetStockForm();
+        alert.success("Details updated");
+        return;
+      }
+
+      // --- Movement path (has qty) ---
       if (io === "Out" && qty > (picked.currentStock || 0)) {
         alert.error("You cannot stock out more than the current stock.");
         return;
       }
 
+      // price rules:
+      // - IN: use entered price (or 0)
+      // - OUT: keep activity’s price informative by falling back to current price when blank
+      const enteredPriceNum = Number(stockForm.price || 0);
+      const price = io === "In"
+        ? enteredPriceNum
+        : Number((stockForm.price !== "" ? stockForm.price : picked.price) || 0);
+
+      // 1) Create activity
       const res = await fetch(INV_ACTIVITY_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -511,50 +720,57 @@ export default function InventoryPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
 
+      // 2) Update activity list
       const r = data.row || {};
-      const row = {
-        id: data.id || r.id || `a-${Date.now()}`,
-        ts: r.ts || NOW(),
-        ingredientId: r.ingredientId || picked.id,
-        ingredientName: r.ingredientName || picked.name,
-        employee: r.employee || "Chef",
-        remarks: r.remarks || (io === "In" ? "Stock In" : "Stock Out"),
-        io,
-        qty,
-        price,
-      };
-      setActivity((a) => [row, ...a]);
+      setActivity((a) => [
+        {
+          id: data.id || r.id || `a-${Date.now()}`,
+          ts: r.ts || NOW(),
+          ingredientId: r.ingredientId || picked.id,
+          ingredientName: r.ingredientName || picked.name,
+          employee: r.employee || "Chef",
+          remarks: r.remarks || (io === "In" ? "Stock In" : "Stock Out"),
+          io,
+          qty,
+          price,
+        },
+        ...a,
+      ]);
 
-      // Update ingredient locally
+      // 3) Update ingredient locally
+      const newCurrent = Math.max(0, (picked.currentStock || 0) + (io === "In" ? qty : -qty));
       setIngredients((arr) =>
-        arr.map((i) => {
-          if (i.id !== picked.id) return i;
-          const delta = io === "In" ? qty : -qty;
-          return {
-            ...i,
-            currentStock: Math.max(0, (i.currentStock || 0) + delta),
-            price,
-            type: stockForm.type,
-            category: stockForm.cat,
-            updatedAt: NOW(),
-          };
-        })
+        arr.map((i) =>
+          i.id === picked.id
+            ? {
+                ...i,
+                currentStock: newCurrent,
+                price: io === "In" ? price : i.price, // don't clobber on OUT
+                category: stockForm.cat,
+                type: stockForm.type,
+                updatedAt: NOW(),
+              }
+            : i
+        )
       );
 
-      // Best-effort PATCH to persist unit/category/price/stock
+      // 4) Persist via PATCH
+      const patchBody = {
+        category: stockForm.cat,
+        type: stockForm.type,
+        currentStock: newCurrent,
+      };
+      if (io === "In" && stockForm.price !== "" && !Number.isNaN(enteredPriceNum)) {
+        patchBody.price = enteredPriceNum;
+      }
       (async () => {
         try {
           await fetch(`${ING_API}/${picked.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: stockForm.type,
-              category: stockForm.cat,
-              price,
-              currentStock: Math.max(0, (picked.currentStock || 0) + (io === "In" ? qty : -qty)),
-            }),
+            body: JSON.stringify(patchBody),
           });
-        } catch {}
+        } catch { /* best-effort */ }
       })();
 
       setOpenStock(false);
@@ -571,7 +787,7 @@ export default function InventoryPage() {
       <Paper sx={{ overflow: "hidden" }}>
         <Box p={2}>
           <Stack direction="row" useFlexGap alignItems="center" flexWrap="wrap" rowGap={1.5} columnGap={2} sx={{ minWidth: 0 }}>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetAddForm(); setOpenAdd(true); }} sx={{ flexShrink: 0 }}>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetAddForm(); addTouchedRef.current = false; setOpenAdd(true); }} sx={{ flexShrink: 0 }}>
               Add ING
             </Button>
 
@@ -651,7 +867,7 @@ export default function InventoryPage() {
                         <Typography>{ing.category}</Typography>
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
-                        <Typography>{ing.type || "pcs"}</Typography>
+                        <Typography>{ing.type}</Typography>
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
                         <Typography fontWeight={700}>{ing.currentStock}</Typography>
@@ -758,7 +974,10 @@ export default function InventoryPage() {
           </Stack>
         </DialogTitle>
         <Divider />
-        <DialogContent>
+          <DialogContent
+            onInputCapture={markAddTouched}     // ✅ any keystroke
+            onChangeCapture={markAddTouched}    // ✅ any select/switch/file change
+          >
           <Stack spacing={2} mt={1}>
             <TextField
               label="Name"
@@ -775,18 +994,33 @@ export default function InventoryPage() {
             />
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <FormControl fullWidth>
+              <FormControl fullWidth required error={addFormChanged && !normalize(newCat)}>
                 <InputLabel id="cat-label">Categories</InputLabel>
-                <Select labelId="cat-label" label="Categories" value={newCat} onChange={(e) => { setNewCat(e.target.value); handleAddFormChange(); }}>
-                  <MenuItem value=""><em>Existing categories</em></MenuItem>
+                <Select
+                  labelId="cat-label"
+                  label="Categories"
+                  value={newCat}
+                  onChange={(e) => { setNewCat(e.target.value); handleAddFormChange(); }}
+                  MenuProps={dropdownMenuProps}
+                >
+                  <MenuItem value="" disabled>
+                    <em>Select a category</em>
+                  </MenuItem>
                   {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth>
+              <FormControl fullWidth required error={addFormChanged && !newUnit}>
                 <InputLabel id="unit-label">Unit</InputLabel>
-                <Select labelId="unit-label" label="Unit" value={newUnit} onChange={(e) => { setNewUnit(e.target.value); handleAddFormChange(); }}>
-                  <MenuItem value=""><em>Select unit</em></MenuItem>
+                <Select
+                  labelId="unit-label"
+                  label="Unit"
+                  value={newUnit}
+                  onChange={(e) => { setNewUnit(e.target.value); handleAddFormChange(); }}
+                >
+                  <MenuItem value="" disabled>
+                    <em>Select unit</em>
+                  </MenuItem>
                   {UNIT_OPTIONS.map((u) => (
                     <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
                   ))}
@@ -797,7 +1031,7 @@ export default function InventoryPage() {
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button variant="outlined" onClick={handleAddClose}>CANCEL</Button>
-          <Button variant="contained" onClick={handleAddIngredient} disabled={!normalize(newName)}>
+          <Button variant="contained" onClick={handleAddIngredient} disabled={!normalize(newName) || !isValidName(normalize(newName)) || !normalize(newCat) || !newUnit}>
             ADD
           </Button>
         </DialogActions>
@@ -827,7 +1061,10 @@ export default function InventoryPage() {
           </Stack>
         </DialogTitle>
         <Divider />
-        <DialogContent>
+        <DialogContent
+          onInputCapture={markStockTouched}     // ✅
+          onChangeCapture={markStockTouched}    // ✅
+        >
           <Stack spacing={2}>
             {/* Direction toggle */}
             <ToggleButtonGroup
@@ -854,14 +1091,24 @@ export default function InventoryPage() {
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth>
+              <FormControl fullWidth required error={!stockForm.cat}>
                 <InputLabel id="cat2-label">Categories</InputLabel>
-                <Select labelId="cat2-label" label="Categories" value={stockForm.cat} onChange={(e) => { const newForm = { ...stockForm, cat: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
+                <Select
+                  labelId="cat2-label"
+                  label="Categories"
+                  value={stockForm.cat}
+                  onChange={(e) => {
+                    const newForm = { ...stockForm, cat: e.target.value };
+                    setStockForm(newForm);
+                    handleStockFormChange(newForm);
+                  }}
+                  MenuProps={dropdownMenuProps}
+                >
                   {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth>
+              <FormControl fullWidth required error={!stockForm.type}>
                 <InputLabel id="unit3-label">Unit</InputLabel>
                 <Select labelId="unit3-label" label="Unit" value={stockForm.type} onChange={(e) => { const newForm = { ...stockForm, type: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
                   <MenuItem value=""><em>Select unit</em></MenuItem>
@@ -898,7 +1145,7 @@ export default function InventoryPage() {
                   endAdornment: (
                     <InputAdornment position="end">
                       <Typography variant="body2" color="text.secondary">
-                        {stockForm.type || "pcs"}
+                        {stockForm.type}
                       </Typography>
                     </InputAdornment>
                   ),
@@ -937,7 +1184,9 @@ export default function InventoryPage() {
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Box sx={{ flexGrow: 1 }} />
           <Button variant="outlined" onClick={handleStockClose}>CANCEL</Button>
-          <Button variant="contained" onClick={handleStockSave} disabled={!stockForm.ingId || !stockForm.qty}>SAVE</Button>
+          <Button variant="contained" onClick={handleStockSave} disabled={!canSave}>
+            SAVE
+          </Button>
         </DialogActions>
       </Dialog>
 
@@ -954,6 +1203,92 @@ export default function InventoryPage() {
           <Button variant="contained" color="error" onClick={() => { setOpenStock(false); resetStockForm(); }}>DISCARD</Button>
         </DialogActions>
       </Dialog>
+
+
+      {/* Blocked Delete Dialog — match Category dialog exactly */}
+      <Dialog
+        open={blockedDialog.open}
+        onClose={() => setBlockedDialog((d) => ({ ...d, open: false }))}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle component="div" sx={{ pb: 1 }}>
+          <Typography variant="h6" fontWeight={700}>
+            {blockedDialog.ingredientName ? "Cannot Delete Ingredient" : "Cannot Delete Ingredients"}
+          </Typography>
+        </DialogTitle>
+
+        <DialogContent sx={{ pt: 0 }}>
+          {/* Top sentence (same tone as Category dialog) */}
+          {blockedDialog.ingredientName ? (
+            <Typography sx={{ mb: 1.5 }}>
+              <strong>{blockedDialog.ingredientName}</strong> is currently in use and can’t be deleted.
+            </Typography>
+          ) : (
+            <Typography sx={{ mb: 1.5 }}>
+              Some selected ingredients are currently in use and can’t be deleted.
+            </Typography>
+          )}
+
+          {/* Linked counts (same label style: "Linked items: X") */}
+          {(blockedDialog.countItems > 0 || blockedDialog.countActivity > 0) && (
+            <Box sx={{ mb: 1 }}>
+              {blockedDialog.countItems > 0 && (
+                <Typography variant="body2" sx={{ mb: 0.25 }}>
+                  <strong>Linked items:</strong> {blockedDialog.countItems}
+                </Typography>
+              )}
+              {blockedDialog.countActivity > 0 && (
+                <Typography variant="body2" sx={{ mb: 0.25 }}>
+                  <strong>Linked activity records:</strong> {blockedDialog.countActivity}
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          {/* Recent items list (same wording) */}
+          {blockedDialog.sampleItems?.length > 0 && (
+            <>
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                Recent items using this ingredient:
+              </Typography>
+              <Box component="ul" sx={{ pl: 3, mt: 0, mb: 1.5 }}>
+                {blockedDialog.sampleItems.map((t, i) => (
+                  <li key={`${t}-${i}`}>
+                    <Typography variant="body2">{t}</Typography>
+                  </li>
+                ))}
+              </Box>
+            </>
+          )}
+
+          {/* Short reason line like the Category dialog */}
+          {blockedDialog.message && (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, whiteSpace: "pre-wrap" }}>
+              {blockedDialog.message}
+            </Typography>
+          )}
+
+          {/* Footer tip (identical wording pattern) */}
+          <Typography variant="body2" color="text.secondary">
+            To delete this {blockedDialog.ingredientName ? "ingredient" : "ingredient(s)"},
+            remove it from all menu items and/or clear related activity records.
+          </Typography>
+        </DialogContent>
+
+        <DialogActions sx={{ pr: 2.5, pb: 2.25 }}>
+          <Button
+            onClick={() => setBlockedDialog((d) => ({ ...d, open: false }))}
+            variant="contained"
+            sx={{ borderRadius: 2 }}
+            autoFocus
+          >
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 }

@@ -20,6 +20,12 @@ function bufferToDataUrl(buffer, mime) {
   return `data:${mime};base64,${b64}`;
 }
 
+const NAME_MAX = 60;
+const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
+const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const isValidName = (s) =>
+  !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
+
 // Keep raw image ≤ ~600 KB
 const MAX_RAW_IMAGE_BYTES = 600 * 1024;
 
@@ -94,51 +100,59 @@ module.exports = ({ db } = {}) => {
   router.post("/", upload.single("image"), async (req, res, next) => {
     try {
       const b = req.body || {};
-      const name = String(b.name || "").trim();
-      if (!name) return res.status(400).json({ ok: false, error: "name is required" });
+
+      // name
+      const name = normalize(b.name);
+      if (!isValidName(name)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid item name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+        });
+      }
+
+      // 🔴 Category is REQUIRED on CREATE
+      const rawCategoryId = Number(b.categoryId);
+      const categoryId = Number.isFinite(rawCategoryId) && rawCategoryId > 0 ? rawCategoryId : null;
+      const categoryName = normalize(b.categoryName);
+      if (!categoryId || !categoryName) {
+        return res.status(400).json({ ok: false, error: "Category is required." });
+      }
+      if (!isValidName(categoryName)) {
+        return res.status(400).json({ ok: false, error: "Invalid category name." });
+      }
+      const categoryKey = categoryName.toLowerCase();
 
       const description = String(b.description || "").trim().slice(0, 300);
-      const categoryId = Number(b.categoryId || 0) || null;
-      const categoryName = String(b.categoryName || "").trim();
-      const categoryKey = categoryName ? categoryName.toLowerCase() : "";
-
       const price = cleanMoney(b.price);
 
+      // ingredients + cost
       let ingredients = [];
       if (typeof b.ingredients === "string" && b.ingredients.trim()) {
         try {
           const parsed = JSON.parse(b.ingredients);
           if (Array.isArray(parsed)) ingredients = parsed;
-        } catch { /* ignore */ }
+        } catch {}
       } else if (Array.isArray(b.ingredients)) {
         ingredients = b.ingredients;
       }
-
       const costOverall = computeCostOverall(ingredients);
       const profit = Number((price - costOverall).toFixed(2));
-
       const now = new Date();
+
       const result = await db.query(
         `INSERT INTO items
-        (name, description, categoryId, categoryName, categoryKey,
+          (name, description, categoryId, categoryName, categoryKey,
           imageDataUrl, price, ingredients, costOverall, profit, active, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?)`,
         [
-          name,
-          description,
-          categoryId,
-          categoryName,
-          categoryKey,
-          price,
-          JSON.stringify(ingredients || []),
-          costOverall,
-          profit,
-          now,
-          now,
+          name, description, categoryId, categoryName, categoryKey,
+          price, JSON.stringify(ingredients || []), costOverall, profit, now, now,
         ]
       );
+
       const id = result.insertId;
 
+      // optional image
       let imageUrl = "";
       if (req.file && req.file.buffer && req.file.mimetype) {
         const raw = req.file.buffer;
@@ -146,15 +160,19 @@ module.exports = ({ db } = {}) => {
           return res.status(413).json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
         }
         const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
-        await db.query(
-          `UPDATE items SET imageDataUrl = ?, updatedAt = ? WHERE id = ?`,
-          [dataUrl, new Date(), id]
-        );
+        await db.query(`UPDATE items SET imageDataUrl = ?, updatedAt = ? WHERE id = ?`, [dataUrl, new Date(), id]);
         imageUrl = dataUrl;
       }
 
       res.status(201).json({ ok: true, id: String(id), imageUrl });
     } catch (e) {
+      if (e?.code === "ER_DUP_ENTRY" && /uq_items_name_lower/i.test(e?.message || "")) {
+        return res.status(409).json({
+          ok: false,
+          code: "name_taken",
+          error: "That item name already exists. Names are not case-sensitive. Try a different name.",
+        });
+      }
       next(e);
     }
   });
@@ -170,8 +188,13 @@ module.exports = ({ db } = {}) => {
       const params = [new Date()];
 
       if (typeof b.name === "string") {
-        const n = b.name.trim();
-        if (!n) return res.status(400).json({ ok: false, error: "name is required" });
+        const n = normalize(b.name);
+        if (!isValidName(n)) {
+          return res.status(400).json({
+            ok: false,
+            error: "Invalid item name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+          });
+        }
         sets.push("name = ?");
         params.push(n);
       }
@@ -181,16 +204,23 @@ module.exports = ({ db } = {}) => {
         params.push(String(b.description).trim().slice(0, 300));
       }
 
-      if (typeof b.categoryId !== "undefined") {
-        const cid = Number(b.categoryId || 0) || null;
-        sets.push("categoryId = ?");
-        params.push(cid);
-      }
+      // 🔴 If either categoryId or categoryName is present, require BOTH and validate
+      const touchingCatId = Object.prototype.hasOwnProperty.call(b, "categoryId");
+      const touchingCatName = Object.prototype.hasOwnProperty.call(b, "categoryName");
+      if (touchingCatId || touchingCatName) {
+        const rawCategoryId = Number(b.categoryId);
+        const categoryId = Number.isFinite(rawCategoryId) && rawCategoryId > 0 ? rawCategoryId : null;
+        const categoryName = normalize(b.categoryName);
 
-      if (typeof b.categoryName === "string") {
-        const cn = String(b.categoryName || "").trim();
-        sets.push("categoryName = ?", "categoryKey = ?");
-        params.push(cn, cn ? cn.toLowerCase() : "");
+        if (!categoryId || !categoryName) {
+          return res.status(400).json({ ok: false, error: "Category is required." });
+        }
+        if (!isValidName(categoryName)) {
+          return res.status(400).json({ ok: false, error: "Invalid category name." });
+        }
+
+        sets.push("categoryId = ?", "categoryName = ?", "categoryKey = ?");
+        params.push(categoryId, categoryName, categoryName.toLowerCase());
       }
 
       if (typeof b.price !== "undefined") {
@@ -198,10 +228,9 @@ module.exports = ({ db } = {}) => {
         params.push(cleanMoney(b.price));
       }
 
-      // ingredients & cost/profit recompute
+      // ingredients + cost/profit (unchanged)
       let ingredients = null;
       let costOverall = null;
-
       if (typeof b.ingredients === "string") {
         try {
           const parsed = JSON.parse(b.ingredients);
@@ -209,29 +238,16 @@ module.exports = ({ db } = {}) => {
             ingredients = parsed;
             costOverall = computeCostOverall(parsed);
           }
-        } catch { /* ignore */ }
+        } catch {}
       } else if (Array.isArray(b.ingredients)) {
         ingredients = b.ingredients;
         costOverall = computeCostOverall(b.ingredients);
       } else if (typeof b.costOverall !== "undefined") {
         costOverall = cleanMoney(b.costOverall);
       }
-
-      if (ingredients) {
-        sets.push("ingredients = ?");
-        params.push(JSON.stringify(ingredients));
-      }
-      if (costOverall != null) {
-        sets.push("costOverall = ?");
-        params.push(costOverall);
-      }
-
-      // compute profit if we changed either price or costOverall
-      const changedPrice = sets.some((s) => s.startsWith("price ="));
-      const changedCost = sets.some((s) => s.startsWith("costOverall ="));
-      if (changedPrice || changedCost) {
-        // profit = price - costOverall
-        // Do it in SQL using current/updated values:
+      if (ingredients) { sets.push("ingredients = ?"); params.push(JSON.stringify(ingredients)); }
+      if (costOverall != null) { sets.push("costOverall = ?"); params.push(costOverall); }
+      if (sets.some(s => s.startsWith("price =")) || sets.some(s => s.startsWith("costOverall ="))) {
         sets.push("profit = (COALESCE(price,0) - COALESCE(costOverall,0))");
       }
 
@@ -247,8 +263,25 @@ module.exports = ({ db } = {}) => {
 
       params.push(id);
       await db.query(`UPDATE items SET ${sets.join(", ")} WHERE id = ?`, params);
+
+      // Extra safety: ensure item has a category after update
+      if (!touchingCatId && !touchingCatName) {
+        const chk = await db.query(`SELECT categoryId, categoryName FROM items WHERE id = ?`, [id]);
+        const row = Array.isArray(chk) ? chk[0] : null;
+        if (!row || !row.categoryId || !row.categoryName) {
+          return res.status(409).json({ ok: false, error: "Item must have a category." });
+        }
+      }
+
       res.json({ ok: true });
     } catch (e) {
+      if (e?.code === "ER_DUP_ENTRY" && /uq_items_name_lower/i.test(e?.message || "")) {
+        return res.status(409).json({
+          ok: false,
+          code: "name_taken",
+          error: "That item name already exists. Names are not case-sensitive. Try a different name.",
+        });
+      }
       next(e);
     }
   });

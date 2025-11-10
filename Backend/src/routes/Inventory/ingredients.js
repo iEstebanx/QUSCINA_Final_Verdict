@@ -16,6 +16,8 @@ module.exports = ({ db } = {}) => {
 
   const router = express.Router();
 
+  const UNIT_ALLOWED = new Set(["kg", "pack", "pcs"]);
+
   // GET /api/inventory/ingredients  (newest first)
   router.get("/", async (_req, res) => {
     try {
@@ -75,31 +77,51 @@ module.exports = ({ db } = {}) => {
     }
   });
 
-  // POST /api/inventory/ingredients  { name, category, type }
+  // POST /api/inventory/ingredients
   router.post("/", async (req, res) => {
     try {
       const name = normalize(req.body?.name);
       const category = normalize(req.body?.category);
-      const type = normalize(req.body?.type) || "";
+      const type = normalize(req.body?.type);
 
       if (!isValidName(name)) {
         return res.status(400).json({
           ok: false,
-          error: "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+          error:
+            "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
         });
       }
-      if (!category) return res.status(400).json({ ok: false, error: "Category is required." });
+      if (!category) {
+        return res.status(400).json({ ok: false, error: "Category is required." });
+      }
+      if (!type) {
+        return res.status(400).json({ ok: false, error: "Unit is required." });
+      }
+      if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(type)) {
+        return res.status(400).json({ ok: false, error: "Unit is not allowed." });
+      }
 
       const now = new Date();
       const result = await db.query(
         `INSERT INTO inventory_ingredients
-         (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
-         VALUES (?, ?, ?, 0, 0, 0, ?, ?)`,
+        (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
+        VALUES (?, ?, ?, 0, 0, 0, ?, ?)`,
         [name, category, type, now, now]
       );
+
       res.status(201).json({ ok: true, id: String(result.insertId) });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e.message || "Create failed" });
+      // 👇 Friendly duplicate error
+      if (e?.code === "ER_DUP_ENTRY" &&
+          /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(e?.message || "")) {
+        return res.status(409).json({
+          ok: false,
+          code: "name_taken",
+          error: `That ingredient name already exists. Names are not case-sensitive. Try a different name.`,
+        });
+      }
+      console.error("[ingredients] create failed:", e);
+      res.status(500).json({ ok: false, error: "Create failed" });
     }
   });
 
@@ -107,7 +129,9 @@ module.exports = ({ db } = {}) => {
   router.patch("/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "invalid id" });
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
 
       const u = {};
       if (req.body?.name !== undefined) {
@@ -115,13 +139,25 @@ module.exports = ({ db } = {}) => {
         if (!isValidName(name)) {
           return res.status(400).json({
             ok: false,
-            error: "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
+            error:
+              "Invalid name. Allowed letters, numbers, spaces, and - ' & . , ( ) / (max 60).",
           });
         }
         u.name = name;
       }
-      if (req.body?.category !== undefined) u.category = normalize(req.body.category);
-      if (req.body?.type !== undefined) u.type = normalize(req.body.type);
+      if (req.body?.category !== undefined) {
+          const cat = normalize(req.body.category);
+          if (!cat) return res.status(400).json({ ok: false, error: "Category cannot be empty." });
+          u.category = cat;
+        }
+        if (req.body?.type !== undefined) {
+          const t = normalize(req.body.type);
+          if (!t) return res.status(400).json({ ok: false, error: "Unit cannot be empty." });
+          if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(t)) {
+            return res.status(400).json({ ok: false, error: "Unit is not allowed." });
+          }
+          u.type = t;
+        }
       if (req.body?.currentStock !== undefined) u.currentStock = Number(req.body.currentStock);
       if (req.body?.lowStock !== undefined) u.lowStock = Number(req.body.lowStock);
       if (req.body?.price !== undefined) u.price = Number(req.body.price);
@@ -134,8 +170,17 @@ module.exports = ({ db } = {}) => {
       await db.query(`UPDATE inventory_ingredients SET ${sets.join(", ")} WHERE id = ?`, params);
       res.json({ ok: true, message: "Ingredient updated successfully" });
     } catch (e) {
+      // 👇 Friendly duplicate error on rename
+      if (e?.code === "ER_DUP_ENTRY" &&
+          /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(e?.message || "")) {
+        return res.status(409).json({
+          ok: false,
+          code: "name_taken",
+          error: `That ingredient name already exists. Names are not case-sensitive. Try a different name.`,
+        });
+      }
       console.error("[ingredients] update failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "Update failed" });
+      res.status(500).json({ ok: false, error: "Update failed" });
     }
   });
 
@@ -143,23 +188,129 @@ module.exports = ({ db } = {}) => {
   router.delete("/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "invalid id" });
+      if (!Number.isFinite(id))
+        return res.status(400).json({ ok: false, error: "invalid id" });
 
-      // usage check
+      // (1) Check if used in menu items
       const usedIn = await ingredientUsage(String(id));
       if (usedIn.length) {
         const names = [...new Set(usedIn.map(r => r.name || "Unnamed Item"))];
-        return res.status(400).json({
+        return res.status(409).json({
           ok: false,
           error: `Cannot delete ingredient: It is currently used in menu items (${names.join(", ")}).`,
+          reason: "item-linked",
+          sample: names.slice(0, 5),
         });
       }
 
+      // (2) Check if used in inventory_activity logs
+      const activityRows = await db.query(
+        `SELECT id, remarks FROM inventory_activity WHERE ingredientId = ? LIMIT 5`,
+        [id]
+      );
+      if (activityRows.length) {
+        const remarks = activityRows.map(a => a.remarks || `Activity #${a.id}`);
+        return res.status(409).json({
+          ok: false,
+          error: `Cannot delete ingredient: It has ${activityRows.length} linked activity record(s).`,
+          reason: "activity-linked",
+          sample: remarks,
+        });
+      }
+
+      // Safe to delete
       await db.query(`DELETE FROM inventory_ingredients WHERE id = ?`, [id]);
       res.json({ ok: true, message: "Ingredient deleted successfully" });
     } catch (e) {
       console.error("[ingredients] delete failed:", e);
       res.status(500).json({ ok: false, error: e.message || "Delete failed" });
+    }
+  });
+
+  const SAMPLE_LIMIT = 6;
+
+  // Helper: count activity per ingredient for a set of ids (one SQL roundtrip)
+  async function activityCountsMap(db, ids) {
+    if (!ids.length) return new Map();
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = await db.query(
+      `SELECT ingredientId AS id, COUNT(*) AS n
+        FROM inventory_activity
+        WHERE ingredientId IN (${placeholders})
+        GROUP BY ingredientId`,
+      ids
+    );
+    const map = new Map();
+    for (const r of rows || []) map.set(Number(r.id), Number(r.n || 0));
+    return map;
+  }
+
+  /**
+   * DELETE /api/inventory/ingredients
+   * Body: { ids: string[] | number[] }
+   * Deletes only ingredients not in use; reports blocked (with counts & samples).
+   */
+  router.delete("/", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids)
+        ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite)
+        : [];
+
+      if (!ids.length) {
+        return res.status(400).json({ ok: false, error: "ids array required" });
+      }
+
+      // Preload activity counts in one shot
+      const actMap = await activityCountsMap(db, ids);
+
+      const deletable = [];
+      const blocked = []; // { id, reason: 'item-linked'|'activity-linked', count, sample[] }
+
+      // First pass: mark activity-linked immediately (stronger reason)
+      for (const id of ids) {
+        const actN = actMap.get(id) || 0;
+        if (actN > 0) {
+          blocked.push({ id: String(id), reason: "activity-linked", count: actN, sample: [] });
+        } else {
+          deletable.push(id); // tentatively deletable; we still need to check items JSON usage
+        }
+      }
+
+      // Second pass: for the ones not blocked by activity, check item JSON usage
+      const finalDeletable = [];
+      const needSamples = [];
+      for (const id of deletable) {
+        const usedIn = await ingredientUsage(String(id)); // returns up to 5 items
+        if (usedIn.length) {
+          blocked.push({
+            id: String(id),
+            reason: "item-linked",
+            count: usedIn.length, // sample length, not full count (OK for UI)
+            sample: [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))].slice(0, SAMPLE_LIMIT),
+          });
+          // no push to finalDeletable
+        } else {
+          finalDeletable.push(id);
+        }
+      }
+
+      // Delete whatever is safe
+      if (finalDeletable.length) {
+        const placeholders = finalDeletable.map(() => "?").join(",");
+        await db.query(
+          `DELETE FROM inventory_ingredients WHERE id IN (${placeholders})`,
+          finalDeletable
+        );
+      }
+
+      return res.json({
+        ok: true,
+        deleted: finalDeletable.length,
+        blocked, // array of {id, reason, count, sample[]}
+      });
+    } catch (e) {
+      console.error("[ingredients] bulk delete failed:", e);
+      res.status(500).json({ ok: false, error: e.message || "Bulk delete failed" });
     }
   });
 

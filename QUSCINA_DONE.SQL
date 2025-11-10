@@ -90,27 +90,57 @@ CREATE TABLE IF NOT EXISTS employee_security_questions (
 -- OTP store for forgot password via email
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS otp (
-  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  employee_id     CHAR(9) NULL,                         -- may be null if email not linked yet
-  email_lower     VARCHAR(191) NOT NULL,
-  code_hash       VARCHAR(100) NOT NULL,
-  status          ENUM('pending','used','expired','blocked') NOT NULL DEFAULT 'pending',
-  attempts        INT NOT NULL DEFAULT 0,
-  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  expires_at      DATETIME NOT NULL,
-  used_at         DATETIME NULL,
-  expired_at      DATETIME NULL,
-  blocked_at      DATETIME NULL,
-  last_attempt_at DATETIME NULL,
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id      CHAR(9) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,  -- must match employees table
+  email_lower      VARCHAR(191) NOT NULL,                                           -- store lowercase email
+  purpose          ENUM('reset','login','verify_email') NOT NULL DEFAULT 'reset',
+  channel          ENUM('email','sms') NOT NULL DEFAULT 'email',
+  code_hash        VARCHAR(100) NOT NULL,
+  status           ENUM('pending','used','expired','blocked') NOT NULL DEFAULT 'pending',
+  attempts         INT NOT NULL DEFAULT 0,
+
+  -- UTC timestamps: always stored in coordinated universal time (UTC)
+  created_at       DATETIME NOT NULL DEFAULT UTC_TIMESTAMP(),
+  expires_at       DATETIME NOT NULL DEFAULT UTC_TIMESTAMP(),
+  used_at          DATETIME NULL,
+  expired_at       DATETIME NULL,
+  blocked_at       DATETIME NULL,
+  last_attempt_at  DATETIME NULL,
+
+  /* Enforce: at most ONE pending row per (email_lower, purpose)
+     NULLs don't participate in UNIQUE, so only 'pending' rows collide. */
+  pending_enforcer TINYINT(1)
+    AS (CASE WHEN status = 'pending' THEN 1 ELSE NULL END) STORED,
 
   PRIMARY KEY (id),
-  KEY ix_otp_email_status (email_lower, status),
+
+  -- Lookups
+  KEY ix_otp_lookup (email_lower, purpose, status, expires_at),
   KEY ix_otp_created (created_at),
   KEY ix_otp_emp (employee_id),
+  KEY ix_otp_expires (expires_at),
+
+  -- One active 'pending' per email+purpose
+  UNIQUE KEY ux_otp_one_pending (email_lower, purpose, pending_enforcer),
+
   CONSTRAINT fk_otp_emp
-    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    FOREIGN KEY (employee_id)
+    REFERENCES employees(employee_id)
     ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ON UPDATE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_0900_ai_ci;
+
+-- ------------------------------------------------------------
+SET GLOBAL event_scheduler = ON;
+
+CREATE EVENT IF NOT EXISTS otp_expire_minutely
+ON SCHEDULE EVERY 1 MINUTE
+DO
+  UPDATE otp
+     SET status='expired', expired_at=UTC_TIMESTAMP()
+   WHERE status='pending' AND expires_at <= UTC_TIMESTAMP();
 
 -- ------------------------------------------------------------
 -- SEED ADMIN (edit the hashes before running)
@@ -195,7 +225,9 @@ CREATE TABLE IF NOT EXISTS `items` (
   KEY `idx_items_categoryId`   (`categoryId`),
   KEY `idx_items_categoryKey`  (`categoryKey`),
   KEY `idx_items_updatedAt`    (`updatedAt`),
-  KEY `idx_items_nameLower`    (`nameLower`),
+
+  -- 🔒 Enforce case-insensitive unique item names
+  UNIQUE KEY `uq_items_name_lower` (`nameLower`),
 
   CONSTRAINT `fk_items_category_opt`
     FOREIGN KEY (`categoryId`)
@@ -294,9 +326,9 @@ CREATE TABLE IF NOT EXISTS `inventory_categories` (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
--- ============================================================
+-- ------------------------------------------------------------
 -- INVENTORY INGREDIENTS
--- ============================================================
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(60) NOT NULL,
@@ -305,7 +337,7 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   `category` VARCHAR(60) NOT NULL,
   `category_lower` VARCHAR(60)
     GENERATED ALWAYS AS (LOWER(`category`)) STORED,
-  `type` VARCHAR(30) NULL,
+  `type` VARCHAR(30) NOT NULL,
   `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -315,14 +347,18 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   UNIQUE KEY `uq_inventory_ingredients_name_lower` (`name_lower`),
   KEY `idx_inventory_ingredients_category` (`category`),
   KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
-  KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`)
+  KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`),
+
+  -- same checks you specified (MySQL 8.0.16+)
+  CONSTRAINT `chk_category_nonempty` CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
+  CONSTRAINT `chk_type_nonempty`     CHECK (CHAR_LENGTH(TRIM(`type`)) > 0)
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
--- ============================================================
+-- ------------------------------------------------------------
 -- INVENTORY ACTIVITY LOG
--- ============================================================
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `inventory_activity` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `ts` DATETIME NULL,
@@ -348,12 +384,9 @@ CREATE TABLE IF NOT EXISTS `inventory_activity` (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
--- ------------------------------------------------------------
--- 
--- ------------------------------------------------------------
-
-
+-- ============================================================
 -- POS SHIFTS
+-- ============================================================
 CREATE TABLE IF NOT EXISTS pos_shifts (
   shift_id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   terminal_id         VARCHAR(60) NOT NULL,
@@ -394,7 +427,9 @@ CREATE TABLE IF NOT EXISTS pos_shifts (
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- SHIFT DENOMINATIONS
+-- ------------------------------------------------------------
+-- POS SHIFT DENOMINATIONS
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pos_shift_denoms (
   id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   shift_id     BIGINT UNSIGNED NOT NULL,
@@ -409,7 +444,9 @@ CREATE TABLE IF NOT EXISTS pos_shift_denoms (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- CASH DRAWER MOVEMENTS
+-- ------------------------------------------------------------
+-- POS CASH DRAWER MOVEMENTS
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pos_cash_moves (
   move_id      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   shift_id     BIGINT UNSIGNED NOT NULL,
@@ -429,6 +466,9 @@ CREATE TABLE IF NOT EXISTS pos_cash_moves (
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ------------------------------------------------------------
+-- POS CASH DRAWER MOVEMENTS DENOMINATIONS
+-- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pos_cash_move_denoms (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   move_id       BIGINT UNSIGNED NOT NULL,
@@ -442,3 +482,35 @@ CREATE TABLE IF NOT EXISTS pos_cash_move_denoms (
     FOREIGN KEY (move_id) REFERENCES pos_cash_moves(move_id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
+-- Settings (Payment Types)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS payment_types (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name         VARCHAR(60)     NOT NULL,
+  name_lower   VARCHAR(60)     NOT NULL,
+  active       TINYINT(1)      NOT NULL DEFAULT 1,
+  sort_order   INT             NOT NULL DEFAULT 0,
+
+  created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_types_name_lower (name_lower),
+  KEY ix_active (active),
+  KEY ix_sort (sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO payment_types (name, name_lower, active, sort_order)
+SELECT s.n, s.nl, s.act, s.so
+FROM (
+  SELECT 'Cash' AS n, 'cash' AS nl, 1 AS act, 10 AS so
+  UNION ALL
+  SELECT 'Card' AS n, 'card' AS nl, 1 AS act, 20 AS so
+) AS s
+LEFT JOIN payment_types p
+  ON p.name_lower = s.nl
+WHERE p.id IS NULL;
