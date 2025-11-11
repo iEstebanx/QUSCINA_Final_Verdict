@@ -12,6 +12,10 @@ async function safeJson(res) {
 
 /**
  * Subscribe to the users list by polling the backend.
+ * NOTE: Each user row now also includes:
+ *   - failedLoginCount: number
+ *   - lockUntil: ISO string | null
+ *   - permanentLock: boolean
  * Usage:
  *   const unsub = subscribeUsers(({ rows }) => setRows(rows), { intervalMs: 5000 });
  *   return () => unsub();
@@ -85,4 +89,22 @@ export async function deleteUser(employeeId, { signal } = {}) {
   if (res.ok || res.status === 404) return { ok: true };
   const data = await safeJson(res);
   throw new Error(data.error || "Delete user failed");
+}
+
+/**
+ * 🔓 Unlock a user account (clears failedLoginCount, lockUntil, permanentLock)
+ * Backend route: POST /api/users/:employeeId/unlock
+ */
+
+export async function unlockUser(employeeId, { app, scope } = {}) {
+  if (!employeeId) throw new Error("employeeId is required");
+  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}/unlock`), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app, scope }), // app: 'backoffice' | 'pos' | 'kiosk' | ... ; scope: 'all'
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.error || "Unlock user failed");
+  return data; // { ok: true }
 }

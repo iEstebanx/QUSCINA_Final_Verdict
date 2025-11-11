@@ -73,16 +73,39 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; };
   }, []);
 
+  // in AuthContext (same file where setUser/setToken live)
   async function login(identifier, password, { remember } = {}) {
-    const res = await fetch(join("/api/auth/login"), {
-      method: "POST",
-      credentials: "include", // needed for cookie on remember=true
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier, password, remember }),
-    });
-    const data = await safeJson(res);
-    if (!res.ok) throw new Error(data?.error || "Login failed");
+    // if this file doesn't have safeJson/join, either import them or inline:
+    // const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+    // async function safeJson(res) { const t = await res.text(); try { return t ? JSON.parse(t) : {}; } catch { return { error: t || res.statusText || "Invalid response" }; } }
 
+    let res;
+    try {
+      res = await fetch(join("/api/auth/login"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+        body: JSON.stringify({ identifier, password, remember, app: "backoffice" }),
+      });
+    } catch (networkErr) {
+      // Network/timeout/etc → throw with status 0 so UI can show a nice message
+      const err = new Error("Unable to reach server. Check your connection.");
+      err.status = 0;
+      err.data = null;
+      throw err;
+    }
+
+    const data = await safeJson(res);
+
+    if (!res.ok) {
+      // ✨ Enrich the error so caller can branch on status (423 temp/permanent lock)
+      const err = new Error(data?.error || res.statusText || "Login failed");
+      err.status = res.status;   // e.g., 401, 403, 423
+      err.data = data || null;   // may contain { remaining_seconds }
+      throw err;
+    }
+
+    // ✅ success → keep your existing behavior
     const u = data.user || null;
     setUser(u);
     setToken(data.token || null);
@@ -92,24 +115,29 @@ export function AuthProvider({ children }) {
     store.setItem("qd_token", data.token || "");
     store.setItem("qd_user", JSON.stringify(u));
 
-    // Clear the other store so we don’t keep stale values
+    // Clear the other store to avoid stale values
     const other = remember ? sessionStorage : localStorage;
     other.removeItem("qd_token");
     other.removeItem("qd_user");
 
-    return u;
+    return u; // (unchanged) callers expecting a user keep working
   }
 
   function logout() {
+    // clear client state first (instant UX)
     setUser(null);
     setToken(null);
-    // Clear both storages
     localStorage.removeItem("qd_token");
     localStorage.removeItem("qd_user");
     sessionStorage.removeItem("qd_token");
     sessionStorage.removeItem("qd_user");
-    // Best-effort cookie clear
-    fetch(join("/api/auth/logout"), { credentials: "include" }).catch(() => {});
+
+    // tell the server to clear the cookie (best-effort)
+    fetch(join("/api/auth/logout"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+    }).catch(() => {});
   }
 
   const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);

@@ -28,9 +28,40 @@ module.exports = function authRouterFactory({ db } = {}) {
 
   const OTP_TTL_SEC = Number(process.env.OTP_TTL_SEC || 10 * 60);
   const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
-  const RESEND_MIN_INTERVAL_SEC = Number(process.env.OTP_RESEND_MIN_INTERVAL_SEC || 60);
   const RESET_TOKEN_TTL = String(process.env.RESET_TOKEN_TTL || "15m");
   const SQ_TOKEN_TTL = String(process.env.SQ_TOKEN_TTL || "10m");
+
+  // ----- App realm + per-app lock helpers -----
+  const APP_DEFAULT = "backoffice";
+  function getAppRealm(req) {
+    const fromBody   = String(req.body?.app || "").trim().toLowerCase();
+    const fromHeader = String(req.headers["x-app"] || "").trim().toLowerCase();
+    const app = fromBody || fromHeader || APP_DEFAULT;
+    return app === "pos" ? "pos" : "backoffice";
+  }
+
+  async function readLockRow(db, employeeId, app) {
+    const rows = await db.query(
+      `SELECT failed_login_count, lock_until, permanent_lock
+        FROM employee_lock_state
+        WHERE employee_id = ? AND app = ? LIMIT 1`,
+      [employeeId, app]
+    );
+    return rows[0] || { failed_login_count: 0, lock_until: null, permanent_lock: 0 };
+  }
+
+  function lockInfoFromRow(row) {
+    const untilMs = row.lock_until ? new Date(row.lock_until).getTime() : 0;
+    const msLeft  = Math.max(0, untilMs - Date.now());
+    return { locked: msLeft > 0, msLeft, permanent: !!row.permanent_lock };
+  }
+
+  const LOCK_POLICY = {
+    step4_minutes: 5,
+    step5_minutes: 15,
+    permanent_on: 6, // the attempt index that triggers permanent
+  };
+  const MIRROR_PERM_LOCK_TO_STATUS_INACTIVE = false;
 
   // ---- Helpers ----
   const lower = (s) => String(s || "").trim().toLowerCase();
@@ -40,6 +71,22 @@ module.exports = function authRouterFactory({ db } = {}) {
     if (/^\d{9}$/.test(s)) return { type: "employee_id", valueLower: s }; // id is digits; not lowercased
     if (s.includes("@")) return { type: "email", valueLower: s.toLowerCase() };
     return { type: "username", valueLower: s.toLowerCase() };
+  }
+
+  function nowUtcSql() { return "UTC_TIMESTAMP()"; }
+
+  function lockInfo(user) {
+    const until = user.lock_until ? new Date(user.lock_until).getTime() : 0;
+    const msLeft = Math.max(0, until - Date.now());
+    return { locked: !!user.lock_until && msLeft > 0, msLeft, permanent: !!user.permanent_lock };
+  }
+
+  function computeNextLock(fails) {
+    // fails is the *new* consecutive count after increment
+    if (fails >= LOCK_POLICY.permanent_on) return { perm: true };
+    if (fails === 5) return { minutes: LOCK_POLICY.step5_minutes };
+    if (fails === 4) return { minutes: LOCK_POLICY.step4_minutes };
+    return { minutes: 0 };
   }
 
   async function findByAlias(identifierRaw) {
@@ -110,36 +157,164 @@ module.exports = function authRouterFactory({ db } = {}) {
   // POST /api/auth/login
   router.post("/login", async (req, res, next) => {
     try {
+      const app = getAppRealm(req); // "backoffice" (default) or "pos" if you ever pass it
       const { identifier, password, remember } = req.body || {};
       if (!identifier || !password) {
         return res.status(400).json({ error: "identifier and password are required" });
       }
 
-      const { user, type } = await findByAlias(identifier);
-      if (!user) return res.status(401).json({ error: "Invalid credentials" });
+      const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || "";
+      const ua = String(req.headers["user-agent"] || "").slice(0, 255);
+      const identLower = String(identifier).trim().toLowerCase();
 
+      const { user, type } = await findByAlias(identifier);
+
+      // No account found → generic error + audit (avoid username enumeration)
+      if (!user) {
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (NULL, ?, ?, 0, 'no_account', ?, ?)`,
+          [app, identLower, ip, ua]
+        );
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      // HR status
       if (String(user.status || "").toLowerCase() !== "active") {
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, 'not_active', ?, ?)`,
+          [user.employee_id, app, identLower, ip, ua]
+        );
         return res.status(403).json({ error: "Account is not active" });
       }
 
-      // Only Admin/Manager can access the Admin Dashboard
-      if (!["admin", "manager"].includes(String(user.role || "").toLowerCase())) {
-        return res.status(403).json({ error: "Not authorized for Admin Dashboard" });
+      // 🔒 Per-app lock check (employee_lock_state)
+      const lockRow = await readLockRow(db, user.employee_id, app);
+      const { locked, msLeft, permanent } = lockInfoFromRow(lockRow);
+
+      if (permanent) {
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, 'perm_locked', ?, ?)`,
+          [user.employee_id, app, identLower, ip, ua]
+        );
+        return res.status(423).json({ error: "Account locked. Please contact an Admin or Manager." });
       }
 
+      if (locked) {
+        const sec = Math.ceil(msLeft / 1000);
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, 'locked', ?, ?)`,
+          [user.employee_id, app, identLower, ip, ua]
+        );
+        return res.status(423).json({
+          error: "Account temporarily locked. Please wait before trying again.",
+          remaining_seconds: sec,
+        });
+      }
+
+      // Method allowed?
       if (!loginMethodAllowed(user, type)) {
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, 'method_disabled', ?, ?)`,
+          [user.employee_id, app, identLower, ip, ua]
+        );
         return res.status(400).json({ error: "This login method is disabled for the account" });
       }
 
+      // Password check
       const ok = await bcrypt.compare(String(password), user.password_hash);
-      if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+      if (!ok) {
+        // ❌ Wrong password → bump per-app counters and set locks in employee_lock_state
+        await db.query(
+          `INSERT INTO employee_lock_state
+            (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+          VALUES (?, ?, 1, NULL, 0, UTC_TIMESTAMP())
+          ON DUPLICATE KEY UPDATE
+            failed_login_count = failed_login_count + 1,
+            last_failed_login  = UTC_TIMESTAMP(),
+            lock_until = CASE
+              WHEN failed_login_count + 1 = 4 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+              WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+              ELSE lock_until
+            END,
+            permanent_lock = CASE
+              WHEN failed_login_count + 1 >= ? THEN 1
+              ELSE permanent_lock
+            END`,
+          [user.employee_id, app, LOCK_POLICY.step4_minutes, LOCK_POLICY.step5_minutes, LOCK_POLICY.permanent_on]
+        );
+
+        // Read back to know exact state for response + audit
+        const fresh = await readLockRow(db, user.employee_id, app);
+        const { locked: nowLocked, msLeft: nowLeft, permanent: nowPerm } = lockInfoFromRow(fresh);
+
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, ?, ?, ?)`,
+          [
+            user.employee_id,
+            app,
+            identLower,
+            nowPerm ? "perm_locked" : nowLocked ? "locked" : "bad_password",
+            ip,
+            ua,
+          ]
+        );
+
+        if (nowPerm) {
+          return res.status(423).json({ error: "Account locked. Please contact an Admin or Manager." });
+        }
+        if (nowLocked) {
+          return res.status(423).json({
+            error: "Account temporarily locked. Please wait before trying again.",
+            remaining_seconds: Math.ceil(nowLeft / 1000),
+          });
+        }
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      // ✅ Success → reset only this app’s lock row; keep last_login_* in employees
+      await db.query(
+        `INSERT INTO employee_lock_state
+          (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+        VALUES (?, ?, 0, NULL, 0, NULL)
+        ON DUPLICATE KEY UPDATE
+          failed_login_count = 0,
+          lock_until = NULL,
+          permanent_lock = 0,
+          last_failed_login = NULL`,
+        [user.employee_id, app]
+      );
+
+      await db.query(
+        `UPDATE employees
+            SET last_login_at = ${nowUtcSql()},
+                last_login_ip = ?
+          WHERE employee_id = ?`,
+        [ip, user.employee_id]
+      );
+
+      await db.query(
+        `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+        VALUES (?, ?, ?, 1, 'ok', ?, ?)`,
+        [user.employee_id, app, identLower, ip, ua]
+      );
+
+      // Role gate (Backoffice)
+      if (!["admin", "manager"].includes(String(user.role || "").toLowerCase())) {
+        return res.status(403).json({ error: "Not authorized for Admin Dashboard" });
+      }
 
       const token = issueAuthToken(user);
       if (remember) {
         res.cookie("qd_token", token, {
           httpOnly: true,
           sameSite: "lax",
-          secure: false, // set true if you run https
+          secure: false, // set to true on HTTPS
           maxAge: 7 * 24 * 60 * 60 * 1000,
           path: "/",
         });

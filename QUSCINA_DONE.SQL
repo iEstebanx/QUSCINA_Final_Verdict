@@ -19,35 +19,46 @@ USE quscina;
 -- EMPLOYEES
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS employees (
-  employee_id            CHAR(9)      NOT NULL,                  -- 9-digit app-generated id
-  first_name             VARCHAR(60)  NOT NULL,
-  last_name              VARCHAR(60)  NOT NULL,
-  phone                  VARCHAR(11)  NOT NULL,                  -- app validates 10–11 digits
-  role                   ENUM('Admin','Manager','Chef','Cashier') NOT NULL,
-  status                 ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
+  employee_id           CHAR(9)      NOT NULL,                         -- 9-digit app-generated ID
+  first_name            VARCHAR(60)  NOT NULL,
+  last_name             VARCHAR(60)  NOT NULL,
+  phone                 VARCHAR(11)  NOT NULL,                         -- app validates 10–11 digits
+  role                  ENUM('Admin','Manager','Chef','Cashier') NOT NULL,
+  status                ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
 
-  username               VARCHAR(60)  NULL,                      -- lowercased in app
-  email                  VARCHAR(191) NULL,
+  username              VARCHAR(60)  DEFAULT NULL,
+  email                 VARCHAR(191) DEFAULT NULL,
 
-  login_employee_id      TINYINT(1)   NOT NULL DEFAULT 1,
-  login_username         TINYINT(1)   NOT NULL DEFAULT 1,
-  login_email            TINYINT(1)   NOT NULL DEFAULT 1,
+  login_employee_id     TINYINT      NOT NULL DEFAULT 1,
+  login_username        TINYINT      NOT NULL DEFAULT 1,
+  login_email           TINYINT      NOT NULL DEFAULT 1,
 
-  password_hash          VARCHAR(100) NOT NULL,                  -- bcrypt (~60 chars)
-  pin_hash               VARCHAR(100) NOT NULL,
+  password_hash         VARCHAR(100) NOT NULL,                         -- bcrypt (~60 chars)
+  pin_hash              VARCHAR(100) NOT NULL,
 
-  password_last_changed  DATETIME NULL,
-  photo_url              TEXT NULL,
+  password_last_changed DATETIME     DEFAULT NULL,
+  photo_url             TEXT         DEFAULT NULL,
 
-  created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  -- 🔐 Security & lock tracking
+  failed_login_count    TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  lock_until            DATETIME DEFAULT NULL,                         -- UTC; null = not locked
+  permanent_lock        TINYINT NOT NULL DEFAULT 0,                    -- permanent lock flag
+  last_failed_login     DATETIME DEFAULT NULL,
+  last_login_at         DATETIME DEFAULT NULL,
+  last_login_ip         VARCHAR(45) DEFAULT NULL,
 
   PRIMARY KEY (employee_id),
   UNIQUE KEY uq_username (username),
-  UNIQUE KEY uq_email    (email),
+  UNIQUE KEY uq_email (email),
   KEY ix_role (role),
-  KEY ix_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  KEY ix_status (status),
+  KEY ix_emp_lock (permanent_lock, lock_until)
+) ENGINE=InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE= utf8mb4_0900_ai_ci
 
 -- ------------------------------------------------------------
 -- ALIASES  (lookup table for login identifiers)
@@ -66,6 +77,44 @@ CREATE TABLE IF NOT EXISTS aliases (
     FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- login_attempts
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id  CHAR(9) NULL,  -- NULL when identifier didn’t resolve to an account
+  app ENUM('backoffice','pos') NOT NULL DEFAULT 'backoffice',
+  identifier   VARCHAR(191) NOT NULL, -- the lowercased identifier the user typed
+  success      TINYINT(1) NOT NULL,   -- 1=ok, 0=fail
+  reason       ENUM('ok','bad_password','no_account','not_active','locked','perm_locked','method_disabled')
+               NOT NULL,
+  ip           VARCHAR(45) DEFAULT NULL,
+  user_agent   VARCHAR(255) DEFAULT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_emp_created (employee_id, created_at),
+  KEY ix_created (created_at),
+  KEY ix_identifier (identifier),
+  KEY ix_app_created (app, created_at),
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- employee_lock_state
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS employee_lock_state (
+  employee_id  CHAR(9) NOT NULL,
+  app          ENUM('backoffice','pos') NOT NULL,
+  failed_login_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  lock_until   DATETIME DEFAULT NULL,   -- UTC
+  permanent_lock TINYINT NOT NULL DEFAULT 0,
+  last_failed_login DATETIME DEFAULT NULL,
+  PRIMARY KEY (employee_id, app),
+  CONSTRAINT fk_lock_emp
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE= utf8mb4_0900_ai_ci
 
 -- ------------------------------------------------------------
 -- SECURITY QUESTIONS

@@ -141,21 +141,51 @@ module.exports = ({ db } = {}) => {
           e.role, e.status, e.username, e.email,
           e.login_employee_id, e.login_username, e.login_email,
           e.password_last_changed, e.photo_url, e.created_at, e.updated_at,
+
+          -- legacy/global counters (kept for back-compat)
+          e.failed_login_count, e.lock_until, e.permanent_lock,
+
+          -- security questions (ids only; text is mapped on API)
           (
             SELECT JSON_ARRAYAGG(JSON_OBJECT('id', sq.question_id))
             FROM employee_security_questions sq
             WHERE sq.employee_id = e.employee_id
-          ) AS sq_json
+          ) AS sq_json,
+
+          -- NEW: per-system lock states, aggregated to a JSON object
+          (
+            SELECT JSON_OBJECTAGG(
+              els.app,
+              JSON_OBJECT(
+                'failedLoginCount', els.failed_login_count,
+                'lockUntil', els.lock_until,
+                'permanentLock', els.permanent_lock,
+                'lastFailedLogin', els.last_failed_login
+              )
+            )
+            FROM employee_lock_state els
+            WHERE els.employee_id = e.employee_id
+          ) AS lock_states_json
+
         FROM employees e
         ORDER BY e.created_at DESC
       `);
 
       const safe = rows.map((r) => {
+        // SQ ids
         let sqIds = [];
         try {
           const parsed = typeof r.sq_json === "string" ? JSON.parse(r.sq_json || "[]") : (r.sq_json || []);
           sqIds = Array.isArray(parsed) ? parsed : [];
         } catch { sqIds = []; }
+
+        // Per-system lock states
+        let lockStates = {};
+        try {
+          lockStates = typeof r.lock_states_json === "string"
+            ? JSON.parse(r.lock_states_json || "{}")
+            : (r.lock_states_json || {});
+        } catch { lockStates = {}; }
 
         return {
           id: String(r.employee_id),
@@ -173,6 +203,21 @@ module.exports = ({ db } = {}) => {
           securityQuestions: sqIdsToDisplay(sqIds),
           createdAt: r.created_at,
           updatedAt: r.updated_at,
+
+          // legacy/global (still returned for existing UI)
+          failedLoginCount: r.failed_login_count ?? 0,
+          lockUntil: r.lock_until,                 // may be null
+          permanentLock: !!r.permanent_lock,       // boolean
+
+          // NEW: explicit per-system states with safe defaults
+          lockStates: {
+            backoffice: lockStates.backoffice || {
+              failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null,
+            },
+            pos: lockStates.pos || {
+              failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null,
+            },
+          },
         };
       });
 
@@ -452,6 +497,55 @@ module.exports = ({ db } = {}) => {
     } catch (e) {
       console.error("[PATCH /api/users/:employeeId] fail:", e);
       res.status(e.statusCode ?? 500).json({ error: e?.message ?? "Failed to update user" });
+    }
+  });
+
+  /* =============================
+    POST /api/users/:employeeId/unlock
+    ============================= */
+  router.post("/:employeeId/unlock", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const app = String(req.body?.app || "").trim().toLowerCase();
+      const scope = String(req.body?.scope || "").trim().toLowerCase();
+
+      // Always clear legacy/global columns so old UIs stay in sync
+      await db.query(
+        `UPDATE employees
+            SET failed_login_count = 0,
+                lock_until = NULL,
+                permanent_lock = 0,
+                updated_at = NOW()
+          WHERE employee_id = ?`,
+        [String(employeeId)]
+      );
+
+      // Helper to clear one app row in employee_lock_state (upsert to ensure row exists)
+      async function clearApp(appKey) {
+        await db.query(
+          `INSERT INTO employee_lock_state
+             (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+           VALUES (?, ?, 0, NULL, 0, NULL)
+           ON DUPLICATE KEY UPDATE
+             failed_login_count = 0,
+             lock_until = NULL,
+             permanent_lock = 0,
+             last_failed_login = NULL`,
+          [String(employeeId), appKey]
+        );
+      }
+
+      if (scope === "all") {
+        await clearApp("backoffice");
+        await clearApp("pos");
+      } else if (app === "pos" || app === "backoffice") {
+        await clearApp(app);
+      } // else: legacy-only clear (kept for backward compatibility)
+
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error("[POST /api/users/:employeeId/unlock] fail:", e);
+      res.status(500).json({ error: e?.message ?? "Failed to unlock user" });
     }
   });
 

@@ -101,6 +101,9 @@ export default function LoginPage() {
   const [confirmPw, setConfirmPw] = useState("");
   const [resetSubmitting, setResetSubmitting] = useState(false);
 
+  const [lockUntilIso, setLockUntilIso] = useState(null);
+  const [lockSecondsLeft, setLockSecondsLeft] = useState(0);
+
   // --------- Security Questions (fixed 5) ---------
   const SQ_CATALOG = [
     { id: "pet",           prompt: "What is the name of your first pet?" },
@@ -142,6 +145,34 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [otpCooldownUntil]);
 
+  useEffect(() => {
+    if (!lockUntilIso) return;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((new Date(lockUntilIso).getTime() - Date.now()) / 1000));
+      setLockSecondsLeft(left);
+      if (left <= 0) setLockUntilIso(null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [lockUntilIso]);
+
+
+  // Normalize like the backend: 9 digits = employee_id (keep), else lowercase
+  const idKey = (s) => {
+    const t = String(s || "").trim();
+    return /^\d{9}$/.test(t) ? t : t.toLowerCase();
+  };
+
+  const [lockedIdKey, setLockedIdKey] = useState(null); // which account is locked
+
+  const fmtMMSS = (t) => {
+    const m = Math.floor(t / 60).toString().padStart(2, "0");
+    const s = (t % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+  const isLockedForCurrentId = lockSecondsLeft > 0 && lockedIdKey === idKey(identifier);
+
   // ---------- Login handlers ----------
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -152,12 +183,38 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
+      // your AuthContext should throw on !ok with {status, data, message}
       await login(idVal, pwVal, { remember });
+
+      // success
       alert.success("Welcome back!");
       const dest = loc.state?.from?.pathname || "/dashboard";
       nav(dest, { replace: true });
     } catch (err) {
-      alert.error(err?.message || "Sign in failed");
+      const status = err?.status ?? err?.response?.status ?? 0;
+      const data   = err?.data   ?? err?.response?.data   ?? {};
+      const msg    = err?.message || data?.error || "Sign in failed";
+
+      if (status === 423) {
+        const seconds = Number(data?.remaining_seconds || 0);
+        if (seconds > 0) {
+          setLockedIdKey(idKey(idVal)); // <— remember which identifier is locked
+          setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+
+          const m = Math.floor(seconds / 60), s = seconds % 60;
+          alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+        } else {
+          alert.error("Account locked. Please contact an Admin or Manager.");
+        }
+      } else if (status === 403) {
+        alert.error(msg);
+      } else if (status === 401) {
+        alert.error("Invalid credentials");
+      } else if (status === 0) {
+        alert.error("Unable to reach server. Check your connection.");
+      } else {
+        alert.error(msg);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -496,9 +553,28 @@ export default function LoginPage() {
               label="Remember me"
             />
 
-            <Button type="submit" variant="contained" size="large" fullWidth disabled={submitting}>
-              {submitting ? "Signing in..." : "Sign In"}
+            <Button
+              type="submit"
+              variant="contained"
+              size="large"
+              fullWidth
+              disabled={submitting || isLockedForCurrentId}
+            >
+              {isLockedForCurrentId
+                ? `Locked: ${fmtMMSS(lockSecondsLeft)}`
+                : (submitting ? "Signing in..." : "Sign In")}
             </Button>
+
+            {isLockedForCurrentId && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ mt: -0.5 }} // optional: tighten spacing
+                aria-live="polite"
+              >
+                This account is locked. Please wait {fmtMMSS(lockSecondsLeft)} or sign in with a different account.
+              </Typography>
+            )}
 
             <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 
