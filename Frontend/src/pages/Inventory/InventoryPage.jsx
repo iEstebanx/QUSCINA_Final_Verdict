@@ -27,7 +27,7 @@ import {
   IconButton,
   Tooltip,
   Checkbox,
-  ToggleButton, ToggleButtonGroup,
+  ToggleButton, ToggleButtonGroup, FormHelperText,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -476,17 +476,8 @@ export default function InventoryPage() {
   // Stock In/Out
   const [openStock, setOpenStock] = useState(false);
   const [stockForm, setStockForm] = useState({
-    ingId: "",
-    cat: "",
-    type: "",
-    direction: "IN",
-    qty: "",
-    current: 0,
-    low: "",
-    price: "",
-    cost: 0,
-    date: todayDate(),
-    remarks: "",
+    ingId: "", name: "", cat: "", type: "", direction: "IN", qty: "",
+    current: 0, low: "", price: "", cost: 0, date: todayDate(), remarks: "",
   });
   const [initialStockForm, setInitialStockForm] = useState(null);
   const [stockFormChanged, setStockFormChanged] = useState(false);
@@ -494,6 +485,10 @@ export default function InventoryPage() {
 
     const canSave = useMemo(() => {
     if (!stockForm.ingId || !stockForm.cat || !stockForm.type) return false;
+
+    // if renaming, validate it
+    const wantsRename = normalize(stockForm.name) !== normalize(initialStockForm?.name || "");
+    if (wantsRename && !isValidName(normalize(stockForm.name))) return false;
 
     const qtyStr = String(stockForm.qty ?? "").trim();
     const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
@@ -503,7 +498,7 @@ export default function InventoryPage() {
     if (hasQty) {
       if (qn <= 0) return false;
       if (stockForm.direction === "OUT" && qn > Number(stockForm.current || 0)) return false;
-      return true; // valid movement → can save
+      return true; // movement is fine; rename/category/unit can ride along
     }
 
     // Edit-only: require an actual change vs baseline
@@ -511,7 +506,7 @@ export default function InventoryPage() {
     const catChanged   = stockForm.cat   !== initialStockForm.cat;
     const typeChanged  = stockForm.type  !== initialStockForm.type;
     const priceChanged = String(stockForm.price ?? "") !== String(initialStockForm.price ?? "");
-    return catChanged || typeChanged || priceChanged;
+    return catChanged || typeChanged || priceChanged || wantsRename;
   }, [stockForm, initialStockForm]);
 
   const handleStockFormChange = (newForm) => {
@@ -572,17 +567,8 @@ export default function InventoryPage() {
 
   const openStockDialog = () => {
     const initialForm = {
-      ingId: "",
-      cat: "",
-      type: "",
-      direction: "IN",
-      qty: "",
-      current: 0,
-      low: "",
-      price: "",
-      cost: 0,
-      date: todayDate(),
-      remarks: "",
+      ingId: "", name: "", cat: "", type: "", direction: "IN", qty: "",
+      current: 0, low: "", price: "", cost: 0, date: todayDate(), remarks: "",
     };
     setStockForm(initialForm);
     setInitialStockForm(initialForm);
@@ -597,6 +583,7 @@ export default function InventoryPage() {
     const newForm = {
       ...stockForm,
       ingId: id,
+      name: ing?.name || "",
       cat: ing?.category || "",
       type: ing?.type || "",
       current: ing?.currentStock || 0,
@@ -610,6 +597,7 @@ export default function InventoryPage() {
   const handleRowClick = (ing) => {
     const newForm = {
       ingId: ing.id,
+      name: ing.name || "",
       cat: ing.category || "",
       type: ing.type || "",
       direction: "IN",
@@ -635,6 +623,13 @@ export default function InventoryPage() {
     return qn * pn;
   };
 
+  const moveIdToFront = (arr, id) => {
+    const idx = arr.findIndex((x) => x.id === id);
+    if (idx < 0) return arr;
+    const item = arr[idx];
+    return [item, ...arr.slice(0, idx), ...arr.slice(idx + 1)];
+  };
+
   const handleStockSave = async () => {
     try {
       const io = stockForm.direction === "IN" ? "In" : "Out";
@@ -651,36 +646,53 @@ export default function InventoryPage() {
         return;
       }
 
+      const wantsRename = normalize(stockForm.name) !== normalize(picked.name);
+      if (wantsRename && !isValidName(normalize(stockForm.name))) {
+        alert.error("Invalid name format.");
+        return;
+      }
+
       // --- Edit-only mode: update category/unit (and optionally price) with no activity ---
       if (!hasQty || qty <= 0) {
         // Optional: if you also want to allow price change on edit-only *when IN*:
         const patchBody = {
           category: stockForm.cat,
           type: stockForm.type,
+          ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
         };
         // uncomment if you want manual price edits to stick even in edit-only:
         // if (stockForm.price !== "" && io === "In") patchBody.price = Number(stockForm.price || 0);
 
-        await fetch(`${ING_API}/${picked.id}`, {
+        const r = await fetch(`${ING_API}/${picked.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patchBody),
         });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j?.ok !== true) {
+          if (r.status === 409 && j?.code === "name_taken") {
+            alert.error(j.error || "Name already exists.");
+            return;
+          }
+          throw new Error(j?.error || `HTTP ${r.status}`);
+        }
 
         // reflect in UI
-        setIngredients((arr) =>
-          arr.map((i) =>
+        setIngredients((arr) => {
+          const next = arr.map((i) =>
             i.id === picked.id
               ? {
                   ...i,
+                  name: wantsRename ? normalize(stockForm.name) : i.name,
                   category: stockForm.cat,
                   type: stockForm.type,
-                  // price: (io === "In" && stockForm.price !== "") ? Number(stockForm.price || 0) : i.price,
                   updatedAt: NOW(),
                 }
               : i
-          )
-        );
+          );
+          return moveIdToFront(next, picked.id);
+        });
+        setPageState((s) => ({ ...s, page: 0 }));
 
         setOpenStock(false);
         resetStockForm();
@@ -714,7 +726,7 @@ export default function InventoryPage() {
           qty,
           price,
           ingredientId: picked.id,
-          ingredientName: picked.name,
+          ingredientName: wantsRename ? normalize(stockForm.name) : picked.name,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -738,12 +750,17 @@ export default function InventoryPage() {
       ]);
 
       // 3) Update ingredient locally
-      const newCurrent = Math.max(0, (picked.currentStock || 0) + (io === "In" ? qty : -qty));
-      setIngredients((arr) =>
-        arr.map((i) =>
+      const newCurrent = Math.max(
+        0,
+        (picked.currentStock || 0) + (io === "In" ? qty : -qty)
+      );
+
+      setIngredients((arr) => {
+        const next = arr.map((i) =>
           i.id === picked.id
             ? {
                 ...i,
+                name: wantsRename ? normalize(stockForm.name) : i.name,
                 currentStock: newCurrent,
                 price: io === "In" ? price : i.price, // don't clobber on OUT
                 category: stockForm.cat,
@@ -751,26 +768,42 @@ export default function InventoryPage() {
                 updatedAt: NOW(),
               }
             : i
-        )
-      );
+        );
+        return moveIdToFront(next, picked.id);
+      });
+      setPageState((s) => ({ ...s, page: 0 }));
 
       // 4) Persist via PATCH
       const patchBody = {
         category: stockForm.cat,
         type: stockForm.type,
         currentStock: newCurrent,
+        ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
       };
       if (io === "In" && stockForm.price !== "" && !Number.isNaN(enteredPriceNum)) {
         patchBody.price = enteredPriceNum;
       }
       (async () => {
         try {
-          await fetch(`${ING_API}/${picked.id}`, {
+        const pr = await fetch(`${ING_API}/${picked.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(patchBody),
           });
-        } catch { /* best-effort */ }
+          const pj = await pr.json().catch(() => ({}));
+          if (!pr.ok || pj?.ok !== true) {
+            if (pr.status === 409 && pj?.code === "name_taken") {
+              alert.error(pj.error || "Name already exists.");
+              // rollback rename (keep stock change)
+              setIngredients((arr) =>
+                arr.map((i) =>
+                  i.id === picked.id ? { ...i, name: picked.name } : i
+                )
+              );
+              return;
+            }
+          }
+        } catch {}
       })();
 
       setOpenStock(false);
@@ -1091,7 +1124,7 @@ export default function InventoryPage() {
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth required error={!stockForm.cat}>
+              <FormControl fullWidth required error={stockTouchedRef.current && !stockForm.cat}>
                 <InputLabel id="cat2-label">Categories</InputLabel>
                 <Select
                   labelId="cat2-label"
@@ -1104,11 +1137,17 @@ export default function InventoryPage() {
                   }}
                   MenuProps={dropdownMenuProps}
                 >
+                <MenuItem value="" disabled>
+                  <em>Select a category</em>
+                </MenuItem>
                   {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
+                {stockTouchedRef.current && !stockForm.cat && (
+                  <FormHelperText>Category is required</FormHelperText>
+                )}
               </FormControl>
 
-              <FormControl fullWidth required error={!stockForm.type}>
+              <FormControl fullWidth required error={stockTouchedRef.current && !stockForm.type}>
                 <InputLabel id="unit3-label">Unit</InputLabel>
                 <Select labelId="unit3-label" label="Unit" value={stockForm.type} onChange={(e) => { const newForm = { ...stockForm, type: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
                   <MenuItem value=""><em>Select unit</em></MenuItem>
@@ -1116,10 +1155,43 @@ export default function InventoryPage() {
                     <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
                   ))}
                 </Select>
+                {stockTouchedRef.current && !stockForm.type && (
+                  <FormHelperText>Unit is required</FormHelperText>
+                )}
               </FormControl>
             </Stack>
-
+            
+            {/* Row 2 — Rename, Quantity, Current, Low */}
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                fullWidth
+                label="Rename (optional)"
+                value={stockForm.name}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const newForm = { ...stockForm, name: v };
+                  setStockForm(newForm);
+                  handleStockFormChange(newForm);
+                }}
+                disabled={!stockForm.ingId}
+                error={
+                  Boolean(stockForm.ingId) &&
+                  stockForm.name.trim().length > 0 &&
+                  !isValidName(normalize(stockForm.name))
+                }
+                helperText={
+                  !stockForm.ingId
+                    ? "Pick an ingredient to rename"
+                    : stockForm.name
+                    ? `${normalize(stockForm.name).length}/${NAME_MAX}${
+                        !isValidName(normalize(stockForm.name))
+                          ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
+                          : ""
+                      }`
+                    : "Leave blank to keep current name"
+                }
+              />
+
               <TextField
                 label="Quantity"
                 value={stockForm.qty}

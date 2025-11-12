@@ -280,19 +280,6 @@ function SidebarContent({ collapsed }) {
       <Box sx={{ px: 1, display: "grid", gap: 0.5 }}>
         <NavLeaf to="/dashboard" label="Dashboard" icon={DashboardIcon} collapsed={collapsed} />
 
-        <NavGroup
-          label="Menu"
-          icon={RestaurantMenuIcon}
-          collapsed={collapsed}
-          open={openMenu}
-          onToggle={() => setOpenMenu((v) => !v)}
-          active={isMenuActive}
-        >
-          <NavLeaf to="/menu/items" label="Item List" icon={ListAltIcon} collapsed={collapsed} />
-          <NavLeaf to="/menu/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
-          <NavLeaf to="/menu/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
-        </NavGroup>
-
         {/* Inventory group with two entries */}
         <NavGroup
           label="Inventory"
@@ -304,6 +291,19 @@ function SidebarContent({ collapsed }) {
         >
           <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} end />
           <NavLeaf to="/inventory/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
+        </NavGroup>
+
+        <NavGroup
+          label="Menu"
+          icon={RestaurantMenuIcon}
+          collapsed={collapsed}
+          open={openMenu}
+          onToggle={() => setOpenMenu((v) => !v)}
+          active={isMenuActive}
+        >
+          <NavLeaf to="/menu/items" label="Item List" icon={ListAltIcon} collapsed={collapsed} />
+          <NavLeaf to="/menu/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
+          <NavLeaf to="/menu/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
         </NavGroup>
 
         <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} />

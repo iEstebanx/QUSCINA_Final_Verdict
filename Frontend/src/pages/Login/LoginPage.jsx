@@ -67,10 +67,14 @@ export default function LoginPage() {
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  const [idError, setIdError] = useState("");
+  const [pwError, setPwError] = useState("");
+
   const { login } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const alert = useAlert();
+  const { user, ready } = useAuth();
   const theme = useTheme();
 
   // --------- Forgot Password dialog state ---------
@@ -122,6 +126,16 @@ export default function LoginPage() {
 
   // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
+
+  useEffect(() => {
+    if (ready && user) {
+      // if the router sent us here with a `from`, respect it; else go dashboard
+      const dest = (loc.state?.from?.pathname && loc.state.from.pathname !== "/")
+        ? loc.state.from.pathname
+        : "/dashboard";
+      nav(dest, { replace: true });
+    }
+  }, [ready, user]); 
 
   // Focus first empty OTP box when step opens
   useEffect(() => {
@@ -190,32 +204,44 @@ export default function LoginPage() {
       alert.success("Welcome back!");
       const dest = loc.state?.from?.pathname || "/dashboard";
       nav(dest, { replace: true });
-    } catch (err) {
-      const status = err?.status ?? err?.response?.status ?? 0;
-      const data   = err?.data   ?? err?.response?.data   ?? {};
-      const msg    = err?.message || data?.error || "Sign in failed";
+      } catch (err) {
+        const status = err?.status ?? err?.response?.status ?? 0;
+        const data   = err?.data   ?? err?.response?.data   ?? {};
+        const code   = data?.code || "";
+        const msg    = err?.message || data?.error || "Sign in failed";
 
-      if (status === 423) {
-        const seconds = Number(data?.remaining_seconds || 0);
-        if (seconds > 0) {
-          setLockedIdKey(idKey(idVal)); // <— remember which identifier is locked
-          setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+        // reset field errors each attempt
+        setIdError("");
+        setPwError("");
 
-          const m = Math.floor(seconds / 60), s = seconds % 60;
-          alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+        if (status === 423) {
+          const seconds = Number(data?.remaining_seconds || 0);
+          if (seconds > 0) {
+            setLockedIdKey(idKey(idVal));
+            setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+            const m = Math.floor(seconds / 60), s = seconds % 60;
+            alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+          } else {
+            alert.error("Account locked. Please contact an Admin or Manager.");
+          }
+        } else if (status === 403) {
+          alert.error(msg);
+        } else if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
+          // Unknown ID → field-level error
+          setIdError("Invalid Login ID");
+          // optional toast:
+          // alert.error("Invalid Login ID");
+        } else if (status === 401 && (code === "INVALID_PASSWORD" || !code)) {
+          // Known ID, wrong password → field-level error
+          setPwError("Invalid Password");
+          // optional toast:
+          // alert.error("Invalid Password");
+        } else if (status === 0) {
+          alert.error("Unable to reach server. Check your connection.");
         } else {
-          alert.error("Account locked. Please contact an Admin or Manager.");
+          alert.error(msg);
         }
-      } else if (status === 403) {
-        alert.error(msg);
-      } else if (status === 401) {
-        alert.error("Invalid credentials");
-      } else if (status === 0) {
-        alert.error("Unable to reach server. Check your connection.");
-      } else {
-        alert.error(msg);
-      }
-    } finally {
+      } finally {
       setSubmitting(false);
     }
   };
@@ -518,11 +544,13 @@ export default function LoginPage() {
               name="identifier"
               label="Employee ID / Username / Email"
               value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
+              onChange={(e) => { setIdentifier(e.target.value); setIdError(""); }}   // ← clear ID error
               autoComplete="username"
               required
               fullWidth
               placeholder="e.g. 202500001 · ced · ced@domain.com"
+              error={!!idError}                   // ← show red state
+              helperText={idError || " "}         // ← space keeps layout height
             />
 
             <TextField
@@ -530,10 +558,12 @@ export default function LoginPage() {
               label="Password"
               type={showPw ? "text" : "password"}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => { setPassword(e.target.value); setPwError(""); }}     // ← clear PW error
               autoComplete="current-password"
               required
               fullWidth
+              error={!!pwError}
+              helperText={pwError || " "}
               slotProps={{
                 input: {
                   endAdornment: (

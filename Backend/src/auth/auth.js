@@ -176,7 +176,8 @@ module.exports = function authRouterFactory({ db } = {}) {
           VALUES (NULL, ?, ?, 0, 'no_account', ?, ?)`,
           [app, identLower, ip, ua]
         );
-        return res.status(401).json({ error: "Invalid credentials" });
+        // Option B: enumerate with clarity
+        return res.status(404).json({ error: "Invalid Login ID", code: "UNKNOWN_IDENTIFIER" });
       }
 
       // HR status
@@ -274,7 +275,8 @@ module.exports = function authRouterFactory({ db } = {}) {
             remaining_seconds: Math.ceil(nowLeft / 1000),
           });
         }
-        return res.status(401).json({ error: "Invalid credentials" });
+        // Option B: known ID, bad password
+        return res.status(401).json({ error: "Invalid Password", code: "INVALID_PASSWORD" });
       }
 
       // ✅ Success → reset only this app’s lock row; keep last_login_* in employees

@@ -24,7 +24,7 @@ module.exports = ({ db } = {}) => {
       const rows = await db.query(
         `SELECT id, name, category, type, currentStock, lowStock, price, createdAt, updatedAt
            FROM inventory_ingredients
-          ORDER BY createdAt DESC, updatedAt DESC, name ASC`
+          ORDER BY updatedAt DESC, createdAt DESC, name ASC`
       );
       // Mirror your old shape
       const ingredients = rows.map(r => ({

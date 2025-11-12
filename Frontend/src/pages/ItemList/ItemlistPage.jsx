@@ -62,10 +62,14 @@ export default function ItemlistPage() {
   const [openCreate, setOpenCreate] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
+  const [createShowErrors, setCreateShowErrors] = useState(false);
+  const [createTouched, setCreateTouched] = useState({ category: false });
 
   // dialog state (edit)
   const [openEdit, setOpenEdit] = useState(false);
   const [editingId, setEditingId] = useState("");
+  const [editShowErrors, setEditShowErrors] = useState(false);
+  const [editTouched, setEditTouched] = useState({ category: false });
 
   // confirm delete selected dialog
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -279,6 +283,7 @@ export default function ItemlistPage() {
 
   // ========== CREATE ==========
   async function saveItem() {
+    setCreateShowErrors(true);
     setSaving(true);
     setSaveErr("");
     try {
@@ -363,6 +368,7 @@ export default function ItemlistPage() {
   // ========== EDIT ==========
   async function updateItem() {
     if (!editingId) return;
+    setEditShowErrors(true);
     setSaving(true);
     setSaveErr("");
     try {
@@ -481,6 +487,8 @@ export default function ItemlistPage() {
     setItemIngredients(initialIngredients);
     setSaveErr("");
     setOpenEdit(true);
+    setEditShowErrors(false);
+    setEditTouched({ category: false });
     setTimeout(() => {
       initialEditRef.current = snapshotForm();
       editTouchedRef.current = false;
@@ -681,7 +689,8 @@ export default function ItemlistPage() {
               onClick={() => {
                 resetForm();
                 setOpenCreate(true);
-                // snapshot AFTER reset so "empty form" is the baseline
+                setCreateShowErrors(false);
+                setCreateTouched({ category: false });
                 setTimeout(() => {
                   initialCreateRef.current = snapshotForm();
                   createTouchedRef.current = false;
@@ -892,6 +901,7 @@ export default function ItemlistPage() {
         </DialogTitle>
 
         <DialogContent
+          className="scroll-x"
           dividers
           onInputCapture={() => { createTouchedRef.current = true; }}
           onChangeCapture={() => { createTouchedRef.current = true; }}
@@ -931,13 +941,19 @@ export default function ItemlistPage() {
                 }
               />
 
-              <FormControl fullWidth size="small" required error={!f.categoryId}>
+              <FormControl
+                fullWidth
+                size="small"
+                required
+                error={(createShowErrors || createTouched.category) && !f.categoryId}
+              >
                 <InputLabel id="add-item-category-label">Category</InputLabel>
                 <Select
                   labelId="add-item-category-label"
                   value={f.categoryId || ""}
                   label="Category"
                   onChange={(e) => onPickCategory(e.target.value)}
+                  onBlur={() => setCreateTouched((s) => ({ ...s, category: true }))}  // mark touched
                   MenuProps={dropdownMenuProps}
                 >
                   {/* 🔴 remove "None" */}
@@ -1235,6 +1251,7 @@ export default function ItemlistPage() {
         </DialogTitle>
 
         <DialogContent
+          className="scroll-x"
           dividers
           onInputCapture={() => { editTouchedRef.current = true; }}
           onChangeCapture={() => { editTouchedRef.current = true; }}
@@ -1273,13 +1290,18 @@ export default function ItemlistPage() {
                 }
               />
 
-              <FormControl fullWidth required error={!f.categoryId}>
+              <FormControl
+                fullWidth
+                required
+                error={(editShowErrors || editTouched.category) && !f.categoryId}
+              >
                 <InputLabel id="edit-item-category-label">Category</InputLabel>
                 <Select
                   labelId="edit-item-category-label"
                   value={f.categoryId || ""}
                   label="Category"
                   onChange={(e) => onPickCategory(e.target.value)}
+                  onBlur={() => setEditTouched((s) => ({ ...s, category: true }))}
                   MenuProps={dropdownMenuProps}
                   sx={{
                     height: "56px",
