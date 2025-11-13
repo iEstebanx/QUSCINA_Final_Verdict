@@ -15,9 +15,10 @@ FLUSH PRIVILEGES;
 
 USE quscina;
 
--- ------------------------------------------------------------
--- EMPLOYEES
--- ------------------------------------------------------------
+
+-- ============================================================
+-- Employees
+-- ============================================================
 CREATE TABLE IF NOT EXISTS employees (
   employee_id           CHAR(9)      NOT NULL,                         -- 9-digit app-generated ID
   first_name            VARCHAR(60)  NOT NULL,
@@ -242,9 +243,9 @@ INSERT INTO employee_security_questions (employee_id, question_id, answer_hash)
 VALUES ('202500001','pet','<PASTE_FLUFFY_HASH>')
 ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);
 
--- ------------------------------------------------------------
--- Items (Menu Items referencing categories)
--- ------------------------------------------------------------
+-- ============================================================
+-- Menu (Items referencing categories)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS `items` (
   `id`                INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name`              VARCHAR(60)  NOT NULL,
@@ -563,3 +564,68 @@ FROM (
 LEFT JOIN payment_types p
   ON p.name_lower = s.nl
 WHERE p.id IS NULL;
+
+-- ------------------------------------------------------------
+-- BACKUP JOBS (logs for both backup & restore actions)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS backup_jobs (
+  id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  action                ENUM('backup','restore') NOT NULL,   -- what we did
+  trigger_source        ENUM('manual','schedule','test-run') NOT NULL DEFAULT 'manual',
+  backup_type           ENUM('full','schema') NOT NULL DEFAULT 'full',
+
+  filename              VARCHAR(255) NOT NULL,               -- e.g. backup-full_2025-03-16_2330.sql
+  size_bytes            BIGINT UNSIGNED DEFAULT NULL,        -- filled in after success
+  status                ENUM('pending','running','success','failed')
+                        NOT NULL DEFAULT 'pending',
+  message               TEXT DEFAULT NULL,                   -- error or notes
+  
+  notes                 VARCHAR(255) DEFAULT NULL,           -- from UI "why are you running this backup?"
+
+  started_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at           DATETIME DEFAULT NULL,
+
+  created_by_employee_id CHAR(9) DEFAULT NULL,               -- FK to employees.employee_id
+
+  PRIMARY KEY (id),
+  KEY ix_action_started (action, started_at),
+  KEY ix_status (status),
+  CONSTRAINT fk_backup_jobs_employee
+    FOREIGN KEY (created_by_employee_id)
+    REFERENCES employees(employee_id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_0900_ai_ci;
+
+-- ------------------------------------------------------------
+-- BACKUP SCHEDULE (single-row config for the shop)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS backup_schedule (
+  id                    TINYINT NOT NULL DEFAULT 1,
+  frequency             ENUM('daily','weekly','monthly') NOT NULL DEFAULT 'daily',
+  time_of_day           CHAR(5) NOT NULL DEFAULT '22:00',  -- 24h HH:MM (e.g. '22:00' = 10pm)
+
+  day_of_week           TINYINT DEFAULT NULL,               -- 0=Sunday..6=Saturday (for weekly)
+  day_of_month          TINYINT DEFAULT NULL,               -- 1..31 (for monthly)
+
+  retention_days        INT NOT NULL DEFAULT 14,
+  next_run_at           DATETIME DEFAULT NULL,
+
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        ON UPDATE CURRENT_TIMESTAMP,
+  updated_by_employee_id CHAR(9) DEFAULT NULL,
+
+  PRIMARY KEY (id),
+  CONSTRAINT fk_backup_schedule_employee
+    FOREIGN KEY (updated_by_employee_id)
+    REFERENCES employees(employee_id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_0900_ai_ci;
+
+-- seed one row
+INSERT INTO backup_schedule (id)
+VALUES (1)
+ON DUPLICATE KEY UPDATE id = id;

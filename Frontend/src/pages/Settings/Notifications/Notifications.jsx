@@ -76,11 +76,22 @@ export default function Notifications() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryId, q, lowOnly]);
 
+  const moveIdToFront = (arr, id) => {
+    const idx = arr.findIndex((x) => x.id === id);
+    if (idx <= 0) return arr; // -1 (not found) or already first
+    const next = arr.slice();
+    const [item] = next.splice(idx, 1);
+    next.unshift(item);
+    return next;
+  };
+
   async function saveLowStock(id, lowStock) {
     const n = Number(lowStock);
     if (!Number.isFinite(n) || n < 0) return;
-    // optimistic update
-    setRows((r) => r.map(x => x.id === id ? { ...x, lowStock: n } : x));
+
+    // optimistic update of the value
+    setRows((r) => r.map((x) => (x.id === id ? { ...x, lowStock: n } : x)));
+
     try {
       const res = await fetch(`/api/settings/notifications/stock-limits/${id}`, {
         method: "PATCH",
@@ -90,6 +101,10 @@ export default function Notifications() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
+
+      // ✅ On success: bump this ingredient to the first row, like ingredients.js
+      setRows((arr) => moveIdToFront(arr, id));
+      setPageState((s) => ({ ...s, page: 0 })); // go back to first page so you see it
     } catch {
       // revert on failure
       loadRows();
