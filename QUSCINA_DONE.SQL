@@ -14,7 +14,9 @@ GRANT ALL PRIVILEGES ON quscina.* TO 'quscina_user'@'127.0.0.1';
 FLUSH PRIVILEGES;
 
 USE quscina;
-
+-- ============================================================
+SET time_zone = '+08:00';
+SELECT @@global.time_zone, @@time_zone;
 
 -- ============================================================
 -- Employees

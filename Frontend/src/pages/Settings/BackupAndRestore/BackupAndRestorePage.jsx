@@ -1,5 +1,5 @@
 // Frontend/src/pages/Settings/BackupAndRestorePage/BackupAndRestorePage.jsx
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   Box,
   Paper,
@@ -28,6 +28,7 @@ import {
   Grid,
   Card,
   CardContent,
+  LinearProgress,
 } from "@mui/material";
 
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
@@ -38,44 +39,30 @@ import BackupIcon from "@mui/icons-material/Backup";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import HistoryIcon from "@mui/icons-material/History";
 
+// not used anymore but safe to keep if you want
 const MOCK_LAST_BACKUP = "Tue, May 23, 2025 - 11:30 PM - Full - 0.3 MB";
 const MOCK_NEXT_SCHEDULE = "Daily at 10:00 PM";
-
-const MOCK_BACKUPS = [
-  {
-    id: 1,
-    dateTime: "Tuesday · April 29, 2025 · 11:30 PM",
-    filename: "backup-04-29-2025_11-30PM.sql",
-    size: "0.6 MB",
-  },
-  {
-    id: 2,
-    dateTime: "Sunday · April 27, 2025 · 11:23 PM",
-    filename: "backup-04-27-2025_11-23PM.sql",
-    size: "0.2 MB",
-  },
-];
-
-const MOCK_ACTIVITIES = [
-  "Backup completed successfully on Mar 16, 2025",
-  "Restore initiated on Feb 01, 2025",
-  "Restore initiated on Feb 01, 2025",
-  "Restore initiated on Feb 01, 2025",
-  "Restore initiated on Feb 01, 2025",
-];
 
 export default function BackupAndRestorePage() {
   const [view, setView] = useState("summary"); // summary | backup | restore | schedule | activities
 
-  // Restore table state (similar layout to CategoriePage)
-  const [backups] = useState(MOCK_BACKUPS);
+  // 🔹 Summary stats state (for the cards)
+  const [summary, setSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryErr, setSummaryErr] = useState("");
+
+  // Restore table state
+  const [backups, setBackups] = useState([]);
   const [search, setSearch] = useState("");
-  const [loadingBackups] = useState(false);
-  const [backupsErr] = useState("");
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [backupsErr, setBackupsErr] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
 
+  // Restore dialog state
   const [restoreTarget, setRestoreTarget] = useState(null);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const [restoreErr, setRestoreErr] = useState("");
 
   // Backup now
   const [backupType, setBackupType] = useState("full");
@@ -83,27 +70,42 @@ export default function BackupAndRestorePage() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupErr, setBackupErr] = useState("");
 
-  // Schedule state
-  const [scheduleFreq, setScheduleFreq] = useState("daily");
-  const [scheduleTime, setScheduleTime] = useState("10:00 PM");
+  // 🔹 Backup progress / result dialog
+  const [backupDialogOpen, setBackupDialogOpen] = useState(false);
+  const [backupStatus, setBackupStatus] = useState("idle");
+  const [backupInfo, setBackupInfo] = useState(null);
+
+  // 🔹 Activities (backup_jobs) state
+  const [activities, setActivities] = useState([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [activitiesErr, setActivitiesErr] = useState("");
+
+  // Schedule state (daily only)
+  const [scheduleTime, setScheduleTime] = useState("22:00"); // 24h format HH:MM
   const [retentionDays, setRetentionDays] = useState("");
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleErr, setScheduleErr] = useState("");
+  const [scheduleSuccess, setScheduleSuccess] = useState("");
+
+  /* -------------------------- Loaders / API calls -------------------------- */
 
   const handleStartBackup = async () => {
     setBackupErr("");
+    setBackupDialogOpen(true);
+    setBackupStatus("running");
+    setBackupInfo(null);
     setBackupLoading(true);
+
     try {
-      const res = await fetch(
-        "/api/settings/backup-and-restore/backup-now",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            backupType,              // "full" for now
-            notes: backupNotes || null,
-            // later you can pass employeeId from auth context
-          }),
-        }
-      );
+      const res = await fetch("/api/settings/backup-and-restore/backup-now", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          backupType, // "full" for now
+          notes: backupNotes || null,
+          // later you can pass employeeId from auth context
+        }),
+      });
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
@@ -113,19 +115,262 @@ export default function BackupAndRestorePage() {
       const data = await res.json();
       console.log("Backup OK:", data);
 
-      // better feedback
-      alert(
-        `Backup created:\n${data.filename}\n\nLocation:\n${data.fullPath || data.dir || "(path not returned)"}`
-      );
+      setBackupStatus("success");
+      setBackupInfo({
+        filename: data.filename,
+        fullPath: data.fullPath || data.dir || "",
+        sizeBytes: data.sizeBytes,
+      });
 
-      // optional: go back to summary or refresh backups list
-      setView("summary");
+      // refresh stats + tables so UI updates
+      await loadSummary();
+      await loadActivities();
+      await loadBackups();
     } catch (err) {
       console.error(err);
-      setBackupErr(err.message || "Backup failed");
+      const msg = err.message || "Backup failed";
+      setBackupErr(msg);
+      setBackupStatus("error");
     } finally {
       setBackupLoading(false);
     }
+  };
+
+  const loadActivities = async () => {
+    try {
+      setActivitiesLoading(true);
+      setActivitiesErr("");
+      const res = await fetch("/api/settings/backup-and-restore/activities");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to load activities");
+      }
+      const data = await res.json();
+      setActivities(data.items || []);
+    } catch (err) {
+      console.error("Activities load error:", err);
+      setActivitiesErr(err.message || "Failed to load activities");
+    } finally {
+      setActivitiesLoading(false);
+    }
+  };
+
+  const loadBackups = async () => {
+    try {
+      setLoadingBackups(true);
+      setBackupsErr("");
+      const res = await fetch("/api/settings/backup-and-restore/backups");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to load backups");
+      }
+      const data = await res.json();
+      setBackups(data.items || []);
+    } catch (err) {
+      console.error("Backups load error:", err);
+      setBackupsErr(err.message || "Failed to load backups");
+    } finally {
+      setLoadingBackups(false);
+    }
+  };
+
+  const loadSummary = async () => {
+    try {
+      setSummaryLoading(true);
+      setSummaryErr("");
+      const res = await fetch("/api/settings/backup-and-restore/summary");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to load summary");
+      }
+      const data = await res.json();
+      setSummary(data);
+
+      // hydrate schedule form from backend
+      if (data.schedule) {
+        if (data.schedule.time_of_day) {
+          setScheduleTime(data.schedule.time_of_day); // assumes "HH:MM"
+        }
+        if (data.schedule.retention_days != null) {
+          setRetentionDays(String(data.schedule.retention_days));
+        }
+      }
+    } catch (err) {
+      console.error("Summary load error:", err);
+      setSummaryErr(err.message || "Failed to load summary");
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  // Load summary, activities, backups once when page mounts
+  useEffect(() => {
+    loadSummary();
+    loadActivities();
+    loadBackups();
+  }, []);
+
+  /* ------------------------------ Formatters ------------------------------ */
+
+  // Treat MySQL DATETIME (or ISO with trailing Z) as LOCAL time
+  function parseMysqlDateTime(value) {
+    if (!value) return null;
+
+    if (value instanceof Date) return value;
+
+    const s = String(value).trim();
+    // normalize: "YYYY-MM-DDTHH:mm:ssZ" -> "YYYY-MM-DD HH:mm:ss"
+    const cleaned = s.replace("T", " ").replace("Z", "");
+    const [datePart, timePart] = cleaned.split(" ");
+    if (!datePart || !timePart) {
+      // fallback – let JS try
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    const [y, m, d] = datePart.split("-").map(Number);
+    const [hh, mm, ss] = timePart.split(":").map(Number);
+    return new Date(y, m - 1, d, hh, mm, ss || 0); // local time
+  }
+
+  const formatBytes = (bytes) => {
+    if (bytes == null || isNaN(bytes)) return "—";
+    if (bytes === 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    const value = bytes / Math.pow(1024, i);
+    return `${value.toFixed(1)} ${units[i]}`;
+  };
+
+  const formatBackupDateTime = (value) => {
+    const d = parseMysqlDateTime(value);
+    if (!d) return "—";
+
+    const weekday = d.toLocaleDateString("en-US", { weekday: "long" });
+    const datePart = d.toLocaleDateString("en-US", {
+      month: "long",
+      day: "2-digit",
+      year: "numeric",
+    });
+    const timePart = d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+
+    // Example: "Tuesday · April 29, 2025 · 11:30 PM"
+    return `${weekday} · ${datePart} · ${timePart}`;
+  };
+
+  const formatActivityLine = (row) => {
+    const actionLabel =
+      row.action === "backup"
+        ? "Backup"
+        : row.action === "restore"
+        ? "Restore"
+        : row.action || "Activity";
+
+    const statusLabel = row.status
+      ? row.status.charAt(0).toUpperCase() + row.status.slice(1)
+      : "";
+
+    // 🔹 New: show where it came from
+    const sourceLabel =
+      row.trigger_source === "schedule"
+        ? "Schedule"
+        : row.trigger_source === "test-run"
+        ? "Test Run"
+        : "Manual";
+
+    const when = parseMysqlDateTime(row.finished_at || row.started_at);
+    const whenStr =
+      !when || isNaN(when)
+        ? ""
+        : when.toLocaleString("en-US", {
+            month: "short",
+            day: "2-digit",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          });
+
+    const filename = row.filename || "";
+
+    const pieces = [
+      `${actionLabel} ${statusLabel}`.trim(), // "Backup Success"
+      sourceLabel && `Source: ${sourceLabel}`,
+      filename && `File: ${filename}`,
+      whenStr && `On ${whenStr}`,
+    ].filter(Boolean);
+
+    return pieces.join(" · ");
+  };
+
+  const formatLastBackup = (last) => {
+    if (!last) return "No successful backups yet.";
+    const d = parseMysqlDateTime(last.finished_at || last.started_at || last.created_at);
+    if (!d) return "No successful backups yet.";
+
+    const dateStr = d.toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+
+    const typeLabel = last.backup_type
+      ? last.backup_type.charAt(0).toUpperCase() + last.backup_type.slice(1)
+      : "Backup";
+
+    const sizeLabel = formatBytes(last.size_bytes);
+
+    // Example: "Tue, May 23, 2025 - 11:30 PM - Full - 0.3 MB"
+    return `${dateStr} · ${typeLabel} · ${sizeLabel}`;
+  };
+
+  const formatSchedule = (sched) => {
+    if (!sched) return "Not configured";
+
+    const freqLabel = sched.frequency === "daily" ? "Daily" : "Custom";
+
+    // sched.time_of_day might be "HH:MM"
+    let timeLabel = "—";
+    if (sched.time_of_day) {
+      if (/^\d{1,2}:\d{2}$/.test(sched.time_of_day)) {
+        const [hh, mm] = sched.time_of_day.split(":").map((n) => parseInt(n, 10));
+        const d = new Date();
+        if (!Number.isNaN(hh) && !Number.isNaN(mm)) {
+          d.setHours(hh, mm, 0, 0);
+          timeLabel = d.toLocaleTimeString("en-US", {
+            hour: "numeric",
+            minute: "2-digit",
+          });
+        } else {
+          timeLabel = sched.time_of_day;
+        }
+      } else {
+        timeLabel = sched.time_of_day;
+      }
+    }
+
+    let nextLabel = "";
+    if (sched.next_run_at) {
+      const d = parseMysqlDateTime(sched.next_run_at);
+      if (d && !Number.isNaN(d.getTime())) {
+        nextLabel =
+          " · Next: " +
+          d.toLocaleString("en-US", {
+            month: "short",
+            day: "2-digit",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          });
+      }
+    }
+
+    return `${freqLabel} at ${timeLabel}${nextLabel}`;
   };
 
   /* ------------------------------ Derived data ------------------------------ */
@@ -133,12 +378,13 @@ export default function BackupAndRestorePage() {
   const filteredBackups = useMemo(() => {
     if (!search.trim()) return backups;
     const q = search.toLowerCase();
-    return backups.filter(
-      (b) =>
-        b.filename.toLowerCase().includes(q) ||
-        b.dateTime.toLowerCase().includes(q) ||
-        b.size.toLowerCase().includes(q)
-    );
+    return backups.filter((b) => {
+      const name = (b.filename || "").toLowerCase();
+      const mtime = b.mtime ? String(b.mtime).toLowerCase() : "";
+      const sizeStr =
+        typeof b.sizeBytes === "number" ? String(b.sizeBytes).toLowerCase() : "";
+      return name.includes(q) || mtime.includes(q) || sizeStr.includes(q);
+    });
   }, [backups, search]);
 
   const pagedBackups = useMemo(() => {
@@ -150,8 +396,186 @@ export default function BackupAndRestorePage() {
 
   const showBackBar = view !== "summary";
 
-  const handleOpenRestoreDialog = (backup) => setRestoreTarget(backup);
-  const handleCloseRestoreDialog = () => setRestoreTarget(null);
+  /* ------------------------- Restore / Delete handlers ------------------------- */
+
+  const handleOpenRestoreDialog = (backup) => {
+    setRestoreErr("");
+    setRestoreTarget(backup);
+  };
+
+  const handleCloseRestoreDialog = () => {
+    if (restoreLoading) return;
+    setRestoreTarget(null);
+    setRestoreErr("");
+  };
+
+  const handleConfirmRestore = async () => {
+    if (!restoreTarget || !restoreTarget.filename) return;
+
+    setRestoreLoading(true);
+    setRestoreErr("");
+
+    try {
+      const res = await fetch("/api/settings/backup-and-restore/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: restoreTarget.filename,
+          // later: employeeId from auth context
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || data.message || "Failed to start restore");
+      }
+
+      await loadActivities(); // show restore job in activities
+      handleCloseRestoreDialog();
+      alert("Restore started successfully. Please wait for it to complete.");
+    } catch (err) {
+      console.error("Restore error:", err);
+      setRestoreErr(err.message || "Restore failed");
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
+  const handleDeleteBackup = async (backup) => {
+    if (!backup || !backup.filename) return;
+
+    const ok = window.confirm(
+      `Delete backup file "${backup.filename}"? This cannot be undone.`
+    );
+    if (!ok) return;
+
+    try {
+      const res = await fetch(
+        `/api/settings/backup-and-restore/backups/${encodeURIComponent(
+          backup.filename
+        )}`,
+        { method: "DELETE" }
+      );
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to delete backup");
+      }
+
+      setBackups((prev) => prev.filter((b) => b.filename !== backup.filename));
+      await loadSummary(); // totalBackups / storageBytes
+    } catch (err) {
+      console.error("Delete backup error:", err);
+      alert(err.message || "Failed to delete backup");
+    }
+  };
+
+  const handleCloseBackupDialog = () => {
+    if (backupStatus === "running") return;
+    setBackupDialogOpen(false);
+    setBackupStatus("idle");
+    setBackupInfo(null);
+    setBackupErr("");
+    setView("summary");
+  };
+
+  /* --------------------------- Schedule handlers --------------------------- */
+
+  const handleSaveSchedule = async () => {
+    setScheduleErr("");
+    setScheduleSuccess("");
+    setScheduleSaving(true);
+
+    try {
+      if (!scheduleTime) {
+        throw new Error("Time is required.");
+      }
+
+      const payload = {
+        frequency: "daily",
+        timeOfDay: scheduleTime, // "HH:MM"
+        retentionDays: retentionDays ? parseInt(retentionDays, 10) : null,
+      };
+
+      const res = await fetch("/api/settings/backup-and-restore/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || body.message || "Failed to save schedule");
+      }
+
+      const data = await res.json();
+
+      // update summary.schedule so the card + "Next run" reflect latest
+      setSummary((prev) =>
+        prev
+          ? {
+              ...prev,
+              schedule: data.schedule || prev.schedule,
+            }
+          : prev
+      );
+
+      setScheduleSuccess("Schedule updated.");
+    } catch (err) {
+      console.error("Save schedule error:", err);
+      setScheduleErr(err.message || "Failed to save schedule");
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const handleTestRunNow = async () => {
+    // reuse the backup dialog + logic, but tag it as test-run
+    setBackupErr("");
+    setBackupDialogOpen(true);
+    setBackupStatus("running");
+    setBackupInfo(null);
+    setBackupLoading(true);
+
+    try {
+      const res = await fetch("/api/settings/backup-and-restore/backup-now", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          backupType: "full",
+          notes: `[SCHEDULE TEST] Daily backup at ${scheduleTime}`,
+          trigger: "test-run", // 👈 enum-safe value
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || errBody.message || "Backup failed");
+      }
+
+      const data = await res.json();
+      console.log("Schedule test backup OK:", data);
+
+      setBackupStatus("success");
+      setBackupInfo({
+        filename: data.filename,
+        fullPath: data.fullPath || data.dir || "",
+        sizeBytes: data.sizeBytes,
+      });
+
+      await loadSummary();
+      await loadActivities();
+      await loadBackups();
+    } catch (err) {
+      console.error(err);
+      const msg = err.message || "Backup failed";
+      setBackupErr(msg);
+      setBackupStatus("error");
+    } finally {
+      setBackupLoading(false);
+    }
+  };
 
   /* ------------------------------ Summary view ------------------------------ */
 
@@ -159,6 +583,7 @@ export default function BackupAndRestorePage() {
     <Stack spacing={3}>
       {/* ★ Stats Cards — Floating outside, no paper wrapper */}
       <Grid container spacing={2}>
+        {/* Last Backup */}
         <Grid item xs={12} sm={6} md={3}>
           <Card sx={{ height: "100%" }}>
             <CardContent>
@@ -169,12 +594,17 @@ export default function BackupAndRestorePage() {
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                {MOCK_LAST_BACKUP}
+                {summaryLoading && "Loading…"}
+                {!summaryLoading && summaryErr && "Failed to load summary"}
+                {!summaryLoading &&
+                  !summaryErr &&
+                  formatLastBackup(summary?.lastBackup)}
               </Typography>
             </CardContent>
           </Card>
         </Grid>
 
+        {/* Next Schedule */}
         <Grid item xs={12} sm={6} md={3}>
           <Card sx={{ height: "100%" }}>
             <CardContent>
@@ -185,12 +615,17 @@ export default function BackupAndRestorePage() {
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                {MOCK_NEXT_SCHEDULE}
+                {summaryLoading && "Loading…"}
+                {!summaryLoading && summaryErr && "Failed to load summary"}
+                {!summaryLoading &&
+                  !summaryErr &&
+                  formatSchedule(summary?.schedule)}
               </Typography>
             </CardContent>
           </Card>
         </Grid>
 
+        {/* Total Backups */}
         <Grid item xs={12} sm={6} md={3}>
           <Card sx={{ height: "100%" }}>
             <CardContent>
@@ -201,12 +636,21 @@ export default function BackupAndRestorePage() {
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                {MOCK_BACKUPS.length} files
+                {summaryLoading && "—"}
+                {!summaryLoading && summaryErr && "—"}
+                {!summaryLoading &&
+                  !summaryErr &&
+                  (summary
+                    ? `${summary.totalBackups} file${
+                        summary.totalBackups === 1 ? "" : "s"
+                      }`
+                    : "0 files")}
               </Typography>
             </CardContent>
           </Card>
         </Grid>
 
+        {/* Storage Used */}
         <Grid item xs={12} sm={6} md={3}>
           <Card sx={{ height: "100%" }}>
             <CardContent>
@@ -217,7 +661,11 @@ export default function BackupAndRestorePage() {
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                0.8 MB total
+                {summaryLoading && "—"}
+                {!summaryLoading && summaryErr && "—"}
+                {!summaryLoading &&
+                  !summaryErr &&
+                  (summary ? formatBytes(summary.storageBytes) : "0 B")}
               </Typography>
             </CardContent>
           </Card>
@@ -292,11 +740,33 @@ export default function BackupAndRestorePage() {
         </Stack>
 
         <Stack spacing={1.5} divider={<Divider flexItem />}>
-          {MOCK_ACTIVITIES.slice(0, 3).map((line, idx) => (
-            <Typography key={idx} variant="body1">
-              {line}
+          {activitiesLoading && (
+            <Typography variant="body2" color="text.secondary">
+              Loading activities…
             </Typography>
-          ))}
+          )}
+
+          {!activitiesLoading && activitiesErr && (
+            <Typography variant="body2" color="error">
+              {activitiesErr}
+            </Typography>
+          )}
+
+          {!activitiesLoading &&
+            !activitiesErr &&
+            activities.length === 0 && (
+              <Typography variant="body2" color="text.secondary">
+                No recent activities yet.
+              </Typography>
+            )}
+
+          {!activitiesLoading &&
+            !activitiesErr &&
+            activities.slice(0, 3).map((row) => (
+              <Typography key={row.id} variant="body1">
+                {formatActivityLine(row)}
+              </Typography>
+            ))}
         </Stack>
       </Paper>
     </Stack>
@@ -366,7 +836,7 @@ export default function BackupAndRestorePage() {
             onClick={handleStartBackup}
             disabled={backupLoading}
           >
-            {backupLoading ? "Backing up..." : "Start Backup"}
+            Start Backup
           </Button>
         </Stack>
       </Stack>
@@ -488,14 +958,14 @@ export default function BackupAndRestorePage() {
                 !backupsErr &&
                 !backupsEmpty &&
                 pagedBackups.map((b) => (
-                  <TableRow key={b.id} hover>
-                    <TableCell>{b.dateTime}</TableCell>
+                  <TableRow key={b.filename} hover>
+                    <TableCell>{formatBackupDateTime(b.mtime)}</TableCell>
                     <TableCell>
                       <Typography noWrap title={b.filename}>
                         {b.filename}
                       </Typography>
                     </TableCell>
-                    <TableCell>{b.size}</TableCell>
+                    <TableCell>{formatBytes(b.sizeBytes)}</TableCell>
                     <TableCell align="center">
                       <Stack
                         direction="row"
@@ -507,6 +977,7 @@ export default function BackupAndRestorePage() {
                             size="small"
                             aria-label="Delete backup"
                             color="error"
+                            onClick={() => handleDeleteBackup(b)}
                           >
                             <DeleteOutlineIcon fontSize="small" />
                           </IconButton>
@@ -550,80 +1021,121 @@ export default function BackupAndRestorePage() {
 
   /* --------------------------- Schedule view --------------------------- */
 
-  const renderScheduleView = () => (
-    <Paper sx={{ p: 3 }}>
-      <Typography variant="h6" fontWeight={700} mb={3}>
-        Backup Schedule
-      </Typography>
+  const renderScheduleView = () => {
+    // helper for "Next Run" label on the page (not the card)
+    const sched = summary?.schedule;
+    let nextRunLabel = "Not yet scheduled";
+    if (sched?.next_run_at) {
+      const d = parseMysqlDateTime(sched.next_run_at);
+      if (d && !Number.isNaN(d.getTime())) {
+        nextRunLabel = d.toLocaleString("en-US", {
+          month: "short",
+          day: "2-digit",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+      }
+    }
 
-      <Stack spacing={3} sx={{ maxWidth: 500 }}>
-        <Box>
-          <Typography fontWeight={600} mb={2}>
-            Scheduled Backups
-          </Typography>
+    return (
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" fontWeight={700} mb={3}>
+          Backup Schedule
+        </Typography>
 
-          <Typography variant="body2" mb={2}>
-            Backup Frequency
-          </Typography>
-          <RadioGroup
-            value={scheduleFreq}
-            onChange={(e) => setScheduleFreq(e.target.value)}
-          >
-            <FormControlLabel value="daily" control={<Radio />} label="Daily" />
-            <FormControlLabel value="weekly" control={<Radio />} label="Weekly" />
-            <FormControlLabel
-              value="monthly"
-              control={<Radio />}
-              label="Monthly"
-            />
-          </RadioGroup>
-        </Box>
+        <Stack spacing={3} sx={{ maxWidth: 500 }}>
+          <Box>
+            <Typography fontWeight={600} mb={1}>
+              Daily backups
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Automatically create a full backup once per day at the time you
+              choose below. Retention will clean up older backup files so your
+              storage doesn&apos;t grow forever.
+            </Typography>
+          </Box>
 
-        <Grid container spacing={2}>
-          <Grid item xs={12} sm={6}>
-            <TextField
-              label="Time"
-              fullWidth
-              size="small"
-              value={scheduleTime}
-              onChange={(e) => setScheduleTime(e.target.value)}
-              helperText="Example: 10:00 PM"
-            />
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Time"
+                fullWidth
+                size="small"
+                type="time"
+                value={scheduleTime}
+                onChange={(e) => setScheduleTime(e.target.value)}
+                inputProps={{
+                  step: 60 * 5, // 5-minute increments
+                }}
+                helperText="Time of day for the daily backup"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Retention Days"
+                fullWidth
+                size="small"
+                placeholder="e.g. 14"
+                value={retentionDays}
+                onChange={(e) => {
+                  // only allow numbers
+                  const v = e.target.value;
+                  if (/^\d*$/.test(v)) setRetentionDays(v);
+                }}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">Days</InputAdornment>
+                  ),
+                }}
+                helperText="Keep backups for this many days"
+              />
+            </Grid>
           </Grid>
-          <Grid item xs={12} sm={6}>
-            <TextField
-              label="Retention Days"
-              fullWidth
-              size="small"
-              placeholder="e.g. 14"
-              value={retentionDays}
-              onChange={(e) => setRetentionDays(e.target.value)}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">Days</InputAdornment>
-                ),
-              }}
-            />
-          </Grid>
-        </Grid>
 
-        <Box>
-          <Typography variant="body2" fontWeight={600} mb={1}>
-            Next Run:
-          </Typography>
-          <Typography variant="body2">Tomorrow at 10:00 PM</Typography>
-        </Box>
+          <Box>
+            <Typography variant="body2" fontWeight={600} mb={0.5}>
+              Next Run:
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {nextRunLabel}
+            </Typography>
+          </Box>
 
-        <Stack direction="row" spacing={2} flexWrap="wrap">
-          <Button variant="contained">Save Changes</Button>
-          <Button variant="outlined">Test Run Now</Button>
-          <Button variant="text" onClick={() => setView("summary")}>
-            Cancel
-          </Button>
+          {scheduleErr && (
+            <Typography variant="body2" color="error">
+              {scheduleErr}
+            </Typography>
+          )}
+          {scheduleSuccess && (
+            <Typography variant="body2" color="success.main">
+              {scheduleSuccess}
+            </Typography>
+          )}
+
+          <Stack direction="row" spacing={2} flexWrap="wrap">
+            <Button
+              variant="contained"
+              onClick={handleSaveSchedule}
+              disabled={scheduleSaving}
+            >
+              {scheduleSaving ? "Saving…" : "Save Changes"}
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={handleTestRunNow}
+              disabled={backupLoading}
+            >
+              {backupLoading ? "Running…" : "Test Run Now"}
+            </Button>
+            <Button variant="text" onClick={() => setView("summary")}>
+              Cancel
+            </Button>
+          </Stack>
         </Stack>
-      </Stack>
-    </Paper>
-  );
+      </Paper>
+    );
+  };
 
   /* ------------------------ Recent Activities view ----------------------- */
 
@@ -633,14 +1145,45 @@ export default function BackupAndRestorePage() {
         Recent Activities
       </Typography>
 
-      <Stack spacing={0}>
-        {MOCK_ACTIVITIES.map((line, idx) => (
-          <Box key={idx} sx={{ py: 2 }}>
-            <Typography>{line}</Typography>
-            {idx !== MOCK_ACTIVITIES.length - 1 && <Divider sx={{ mt: 2 }} />}
-          </Box>
-        ))}
-      </Stack>
+      {activitiesLoading && (
+        <Typography variant="body2" color="text.secondary">
+          Loading activities…
+        </Typography>
+      )}
+
+      {!activitiesLoading && activitiesErr && (
+        <Typography variant="body2" color="error">
+          {activitiesErr}
+        </Typography>
+      )}
+
+      {!activitiesLoading && !activitiesErr && activities.length === 0 && (
+        <Typography variant="body2" color="text.secondary">
+          No backup or restore activity recorded yet.
+        </Typography>
+      )}
+
+      {!activitiesLoading && !activitiesErr && activities.length > 0 && (
+        <Stack spacing={0}>
+          {activities.map((row, idx) => (
+            <Box key={row.id || idx} sx={{ py: 2 }}>
+              <Typography>{formatActivityLine(row)}</Typography>
+
+              {row.notes && (
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 0.5 }}
+                >
+                  Notes: {row.notes}
+                </Typography>
+              )}
+
+              {idx !== activities.length - 1 && <Divider sx={{ mt: 2 }} />}
+            </Box>
+          ))}
+        </Stack>
+      )}
     </Paper>
   );
 
@@ -681,64 +1224,120 @@ export default function BackupAndRestorePage() {
         {view === "activities" && renderActivitiesView()}
       </Box>
 
-      {/* Confirm restore dialog */}
+      {/* Backup progress / result dialog */}
+      <Dialog
+        open={backupDialogOpen}
+        onClose={handleCloseBackupDialog}
+        maxWidth="sm"
+        fullWidth
+        disableEscapeKeyDown={backupStatus === "running"}
+      >
+        <DialogTitle>
+          {backupStatus === "running" && "Creating Backup"}
+          {backupStatus === "success" && "Backup Completed"}
+          {backupStatus === "error" && "Backup Failed"}
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            {backupStatus === "running" && (
+              <>
+                <Typography>
+                  Please wait while we export your database to a{" "}
+                  <strong>.sql</strong> file.
+                </Typography>
+                <LinearProgress />
+                <Typography variant="body2" color="text.secondary">
+                  This may take a moment depending on database size.
+                </Typography>
+              </>
+            )}
+
+            {backupStatus === "success" && backupInfo && (
+              <Stack spacing={1}>
+                <Typography>Backup created successfully.</Typography>
+                <Typography variant="body2">
+                  <strong>Filename:</strong> {backupInfo.filename}
+                </Typography>
+                {backupInfo.fullPath && (
+                  <Typography variant="body2">
+                    <strong>Location:</strong> {backupInfo.fullPath}
+                  </Typography>
+                )}
+                {typeof backupInfo.sizeBytes === "number" && (
+                  <Typography variant="body2">
+                    <strong>Size:</strong> {formatBytes(backupInfo.sizeBytes)}
+                  </Typography>
+                )}
+              </Stack>
+            )}
+
+            {backupStatus === "error" && (
+              <Stack spacing={1}>
+                <Typography color="error">Backup failed.</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {backupErr}
+                </Typography>
+              </Stack>
+            )}
+          </Stack>
+        </DialogContent>
+
+        <DialogActions>
+          {backupStatus === "running" ? (
+            <Button disabled>Working…</Button>
+          ) : (
+            <Button onClick={handleCloseBackupDialog} variant="contained">
+              Close
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Restore confirmation dialog */}
       <Dialog
         open={!!restoreTarget}
         onClose={handleCloseRestoreDialog}
         maxWidth="sm"
         fullWidth
+        disableEscapeKeyDown={restoreLoading}
       >
-        {restoreTarget && (
-          <>
-            <DialogTitle>Confirm Restore</DialogTitle>
-            <DialogContent dividers>
-              <Stack spacing={2}>
-                <Stack
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="flex-start"
-                >
-                  <Box>
-                    <Typography fontWeight={600} mb={1}>
-                      Restore {restoreTarget.filename}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {restoreTarget.dateTime}
-                    </Typography>
-                  </Box>
-                  <Typography fontWeight={700}>{restoreTarget.size}</Typography>
-                </Stack>
+        <DialogTitle>Restore from Backup</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography>
+              You are about to restore the database from this backup file:
+            </Typography>
+            {restoreTarget && (
+              <Typography variant="body2">
+                <strong>Filename:</strong> {restoreTarget.filename}
+              </Typography>
+            )}
+            <Typography variant="body2" color="error">
+              This will overwrite existing data in the database. Make sure no one is
+              using the system while the restore runs.
+            </Typography>
 
-                <Box>
-                  <Typography variant="body2" fontWeight={600} mb={1}>
-                    Safety notes
-                  </Typography>
-                  <Typography variant="body2" mb={1}>
-                    • Pre-restore snapshot – app will create a new backup first,
-                    so you can roll back if needed.
-                  </Typography>
-                  <Typography variant="body2">
-                    • Maintenance mode – puts app in read-only / queue pause to
-                    avoid writes during restore.
-                  </Typography>
-                </Box>
-
-                <Box>
-                  <Typography variant="body2" fontWeight={600} mb={1}>
-                    Type <strong>QUSCINA</strong> to Confirm:
-                  </Typography>
-                  <TextField fullWidth size="small" />
-                </Box>
-              </Stack>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={handleCloseRestoreDialog}>Cancel</Button>
-              <Button color="error" variant="contained">
-                Restore Now
-              </Button>
-            </DialogActions>
-          </>
-        )}
+            {restoreErr && (
+              <Typography variant="body2" color="error">
+                {restoreErr}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseRestoreDialog} disabled={restoreLoading}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleConfirmRestore}
+            color="primary"
+            variant="contained"
+            disabled={restoreLoading}
+          >
+            {restoreLoading ? "Restoring…" : "Confirm Restore"}
+          </Button>
+        </DialogActions>
       </Dialog>
     </Box>
   );
