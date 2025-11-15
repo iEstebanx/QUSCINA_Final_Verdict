@@ -40,7 +40,6 @@ import { useAlert } from "@/context/Snackbar/AlertContext";
 import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext";
 
 const ROLE_OPTIONS = ["Admin", "Manager", "Chef", "Cashier"];
-const STATUS_OPTIONS = ["Active", "Inactive"];
 
 // Same catalog as backend/auth
 const SQ_CATALOG = {
@@ -284,7 +283,6 @@ export default function UserManagementPage() {
     if (!form.lastName.trim()) e.lastName = "Required";
     if (!/^\d{10,11}$/.test(form.phone)) e.phone = "Enter 10–11 digits (e.g. 09559391324)";
     if (!form.role) e.role = "Required";
-    if (!form.status) e.status = "Required";
 
     // password required on create; optional on edit
     const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
@@ -1048,6 +1046,7 @@ export default function UserManagementPage() {
             {/* ===== Name ===== */}
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>First Name, Last Name</Typography>
+            
             <Grid container spacing={3}>
               <Grid size={{ xs: 12, md: 6 }}>
                 <TextField
@@ -1133,18 +1132,6 @@ export default function UserManagementPage() {
                 </FormControl>
               </Grid>
 
-              <Grid size={{ xs: 12, md: 3 }}>
-                <FormControl fullWidth error={!!errors.status} size="small">
-                  <InputLabel required>Status</InputLabel>
-                  <Select
-                    label="Status"
-                    value={form.status}
-                    onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-                  >
-                    {STATUS_OPTIONS.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
-                  </Select>
-                </FormControl>
-              </Grid>
             </Grid>
 
             {/* ===== Credentials ===== */}

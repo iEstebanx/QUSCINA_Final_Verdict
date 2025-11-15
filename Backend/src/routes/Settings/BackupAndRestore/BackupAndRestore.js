@@ -42,10 +42,43 @@ function buildFilename(type = "full") {
   return `backup-${type}_${yyyy}-${mm}-${dd}_${hh}${mi}.sql`;
 }
 
+// small utility for human-readable size (for audit trail detail)
+function formatBytes(bytes) {
+  if (bytes == null || isNaN(bytes)) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(1)} ${units[i]}`;
+}
+
 // --------------------------- MAIN EXPORT ---------------------------
 
 module.exports = function BackupAndRestoreRoutes({ db }) {
   const router = Router();
+
+  /**
+   * 🔹 Central helper: write to audit_trail
+   * Keep it very defensive so backup doesn't fail just because audit logging failed.
+   */
+  async function logAuditTrail({ employee, role, action, detail }) {
+    try {
+      await db.query(
+        `
+          INSERT INTO audit_trail (employee, role, action, detail)
+          VALUES (?, ?, ?, ?)
+        `,
+        [
+          employee || "System",
+          role || "System",
+          action,
+          JSON.stringify(detail || {}),
+        ]
+      );
+    } catch (err) {
+      console.error("[AUDIT] Failed to log audit_trail entry:", err);
+    }
+  }
 
   async function runBackupJob({
     backupType = "full",
@@ -62,6 +95,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
     console.log("[BACKUP] Full path  =", fullPath);
 
     let jobId;
+    let sizeBytes = null;
 
     try {
       // log job as running
@@ -112,6 +146,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
 
       // get size + mark success
       const st = await fsp.stat(fullPath);
+      sizeBytes = st.size;
 
       await db.query(
         `
@@ -121,18 +156,64 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
             finished_at = NOW()
         WHERE id = ?
         `,
-        [st.size, jobId]
+        [sizeBytes, jobId]
       );
+
+      // 🔹 AUDIT TRAIL: BACKUP SUCCESS
+      await logAuditTrail({
+        employee: employeeId || (trigger === "schedule" ? "System (Schedule)" : "System"),
+        role: employeeId ? "Employee" : "System",
+        action:
+          trigger === "schedule"
+            ? "Backup - Scheduled"
+            : trigger === "test-run"
+            ? "Backup - Test Run"
+            : "Backup - Manual",
+        detail: {
+          statusMessage: "Database backup completed successfully.",
+          actionDetails: {
+            actionType: "Database Backup",
+            reference: filename,
+            amount: formatBytes(sizeBytes),
+            reason:
+              notes ||
+              (trigger === "schedule"
+                ? "Daily scheduled backup"
+                : trigger === "test-run"
+                ? "Schedule test-run backup"
+                : "On-demand backup"),
+            triggerSource: trigger,
+            backupType,
+          },
+          affectedData: {
+            items: [],
+            statusChange: `Backup file created in ${BACKUP_DIR}`,
+          },
+          backupJob: {
+            id: jobId,
+            action: "backup",
+            trigger_source: trigger,
+            backup_type: backupType,
+            filename,
+            size_bytes: sizeBytes,
+            status: "success",
+            notes,
+            env: BACKUP_ENV,
+            backup_dir: BACKUP_DIR,
+          },
+        },
+      });
 
       return {
         ok: true,
         filename,
-        sizeBytes: st.size,
+        sizeBytes,
         jobId,
         dir: BACKUP_DIR,
         fullPath,
       };
     } catch (err) {
+      // mark job as failed if we already created one
       if (jobId) {
         await db
           .query(
@@ -145,6 +226,55 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
           )
           .catch(() => {});
       }
+
+      // 🔹 AUDIT TRAIL: BACKUP FAILURE
+      await logAuditTrail({
+        employee: employeeId || (trigger === "schedule" ? "System (Schedule)" : "System"),
+        role: employeeId ? "Employee" : "System",
+        action:
+          trigger === "schedule"
+            ? "Backup Failed - Scheduled"
+            : trigger === "test-run"
+            ? "Backup Failed - Test Run"
+            : "Backup Failed - Manual",
+        detail: {
+          statusMessage: "Database backup failed.",
+          actionDetails: {
+            actionType: "Database Backup",
+            reference: filename,
+            amount: sizeBytes != null ? formatBytes(sizeBytes) : "—",
+            reason:
+              notes ||
+              (trigger === "schedule"
+                ? "Daily scheduled backup"
+                : trigger === "test-run"
+                ? "Schedule test-run backup"
+                : "On-demand backup"),
+            triggerSource: trigger,
+            backupType,
+          },
+          affectedData: {
+            items: [],
+            statusChange: "Backup did not complete.",
+          },
+          backupJob: {
+            id: jobId || null,
+            action: "backup",
+            trigger_source: trigger,
+            backup_type: backupType,
+            filename,
+            size_bytes: sizeBytes,
+            status: "failed",
+            notes,
+            env: BACKUP_ENV,
+            backup_dir: BACKUP_DIR,
+          },
+          error: {
+            message: err.message || String(err),
+          },
+        },
+      });
+
       throw err;
     }
   }
@@ -249,7 +379,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       // Schedule info (optional)
       const [sched] = await db.query(
         `
-        SELECT frequency, time_of_day, next_run_at, retention_days
+        SELECT id, frequency, time_of_day, next_run_at, retention_days
         FROM backup_schedule
         WHERE id = 1
         LIMIT 1
@@ -329,7 +459,8 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
   // POST /api/settings/backup-and-restore/schedule
   // body: { frequency?: 'daily', timeOfDay: 'HH:MM', retentionDays?: number }
   router.post("/schedule", async (req, res, next) => {
-    const { frequency = "daily", timeOfDay, retentionDays = null } = req.body || {};
+    const { frequency = "daily", timeOfDay, retentionDays = null, employeeId = null } =
+      req.body || {};
 
     if (!timeOfDay) {
       return res.status(400).json({ error: "timeOfDay is required" });
@@ -373,12 +504,72 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
 
       const [sched] = await db.query(
         `
-        SELECT frequency, time_of_day, next_run_at, retention_days
+        SELECT id, frequency, time_of_day, next_run_at, retention_days
         FROM backup_schedule
         WHERE id = 1
         LIMIT 1
         `
       );
+
+      try {
+        const parts = [];
+
+        if (sched && sched.time_of_day) {
+          parts.push(`Time: ${sched.time_of_day}`);
+        }
+        if (sched && sched.retention_days != null) {
+          parts.push(
+            `Retention: ${sched.retention_days} day${
+              sched.retention_days === 1 ? "" : "s"
+            }`
+          );
+        }
+
+        const description = parts.join(" · ") || "Schedule updated";
+
+        // 🔹 log as a dedicated "schedule-update" row in backup_jobs
+        await db.query(
+          `
+          INSERT INTO backup_jobs
+            (action, trigger_source, backup_type, filename, status, notes, started_at, finished_at, created_by_employee_id)
+          VALUES
+            ('schedule-update', 'manual', 'full', 'SCHEDULE-UPDATE', 'success', ?, NOW(), NOW(), ?)
+          `,
+          [description, employeeId]
+        );
+
+        // 🔹 AUDIT TRAIL: SCHEDULE UPDATED
+        await logAuditTrail({
+          employee: employeeId || "System",
+          role: employeeId ? "Employee" : "System",
+          action: "Backup Schedule Updated",
+          detail: {
+            statusMessage: "Backup schedule configuration updated.",
+            actionDetails: {
+              actionType: "Backup Schedule Update",
+              reference: `Schedule #${sched.id}`,
+              amount: "—",
+              reason: description,
+            },
+            affectedData: {
+              items: [],
+              statusChange: `Next run at ${sched.next_run_at || "N/A"}`,
+            },
+            schedule: {
+              id: sched.id,
+              frequency: sched.frequency,
+              time_of_day: sched.time_of_day,
+              retention_days: sched.retention_days,
+              next_run_at: sched.next_run_at,
+            },
+          },
+        });
+      } catch (e) {
+        console.error(
+          "[SCHEDULE] Failed to log schedule update in backup_jobs / audit_trail:",
+          e
+        );
+      }
 
       res.json({
         ok: true,
@@ -419,12 +610,13 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       return res.status(400).json({ error: "filename is required" });
     }
 
+    const safeName = path.basename(filename);
+    const fullPath = path.join(BACKUP_DIR, safeName);
+
+    let jobId;
+
     try {
       ensureBackupEnv();
-
-      // safety: strip any path parts like ../../
-      const safeName = path.basename(filename);
-      const fullPath = path.join(BACKUP_DIR, safeName);
 
       // make sure file exists
       await fsp.access(fullPath, fs.constants.R_OK);
@@ -439,7 +631,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         `,
         [safeName, employeeId]
       );
-      const jobId = result.insertId;
+      jobId = result.insertId;
 
       // run mysql < backup.sql
       const args = [
@@ -482,6 +674,34 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         [jobId]
       );
 
+      // 🔹 AUDIT TRAIL: RESTORE SUCCESS
+      await logAuditTrail({
+        employee: employeeId || "System",
+        role: employeeId ? "Employee" : "System",
+        action: "Restore - Manual",
+        detail: {
+          statusMessage: "Database restore completed successfully.",
+          actionDetails: {
+            actionType: "Database Restore",
+            reference: safeName,
+            amount: "—",
+            reason: "Restore from UI",
+          },
+          affectedData: {
+            items: [],
+            statusChange: `Database restored from backup file ${safeName}`,
+          },
+          restoreJob: {
+            id: jobId,
+            action: "restore",
+            trigger_source: "manual",
+            backup_type: "full",
+            filename: safeName,
+            status: "success",
+          },
+        },
+      });
+
       res.json({
         ok: true,
         jobId,
@@ -489,23 +709,53 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       });
     } catch (err) {
       console.error("[RESTORE] Error during restore:", err);
+
       // if we already created a job, mark failed
-      if (err && err.message && /insertId/.test(String(err)) === false) {
-        // best-effort: job may or may not exist, so wrap in try
+      if (jobId) {
         try {
           await db.query(
             `
             UPDATE backup_jobs
             SET status = 'failed',
                 message = ?
-            WHERE action = 'restore' AND filename = ? AND status = 'running'
-            ORDER BY started_at DESC
-            LIMIT 1
+            WHERE id = ?
             `,
-            [err.message || String(err), filename]
+            [err.message || String(err), jobId]
           );
         } catch (_) {}
       }
+
+      // 🔹 AUDIT TRAIL: RESTORE FAILURE
+      await logAuditTrail({
+        employee: employeeId || "System",
+        role: employeeId ? "Employee" : "System",
+        action: "Restore Failed - Manual",
+        detail: {
+          statusMessage: "Database restore failed.",
+          actionDetails: {
+            actionType: "Database Restore",
+            reference: safeName,
+            amount: "—",
+            reason: "Restore from UI",
+          },
+          affectedData: {
+            items: [],
+            statusChange: "Database restore did not complete.",
+          },
+          restoreJob: {
+            id: jobId || null,
+            action: "restore",
+            trigger_source: "manual",
+            backup_type: "full",
+            filename: safeName,
+            status: "failed",
+          },
+          error: {
+            message: err.message || String(err),
+          },
+        },
+      });
+
       next(err);
     }
   });
@@ -517,9 +767,32 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       return res.status(400).json({ error: "filename param required" });
     }
 
-    const fullPath = path.join(BACKUP_DIR, filename);
+    const safeName = path.basename(filename);
+    const fullPath = path.join(BACKUP_DIR, safeName);
+
     try {
       await fsp.unlink(fullPath);
+
+      // 🔹 AUDIT TRAIL: BACKUP FILE DELETED
+      await logAuditTrail({
+        employee: "System",
+        role: "System",
+        action: "Backup File Deleted",
+        detail: {
+          statusMessage: "Backup file deleted from backup directory.",
+          actionDetails: {
+            actionType: "Delete Backup File",
+            reference: safeName,
+            amount: "—",
+            reason: "Deleted from Backup & Restore UI",
+          },
+          affectedData: {
+            items: [],
+            statusChange: `File ${safeName} removed from ${BACKUP_DIR}`,
+          },
+        },
+      });
+
       res.json({ ok: true });
     } catch (err) {
       if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });

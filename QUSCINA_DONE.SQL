@@ -1,3 +1,10 @@
+-- TOO RESET DATA OF THE TABLE
+TRUNCATE TABLE (table name);
+
+-- ============================================================
+-- ============================================================
+-- ============================================================
+-- ============================================================
 -- Create the database (use utf8mb4)
 CREATE DATABASE IF NOT EXISTS quscina
   CHARACTER SET utf8mb4
@@ -572,7 +579,7 @@ WHERE p.id IS NULL;
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS backup_jobs (
   id                    BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  action                ENUM('backup','restore') NOT NULL,   -- what we did
+  action                ENUM('backup','restore', 'schedule-update') NOT NULL,
   trigger_source        ENUM('manual','schedule','test-run') NOT NULL DEFAULT 'manual',
   backup_type           ENUM('full','schema') NOT NULL DEFAULT 'full',
 
@@ -581,12 +588,9 @@ CREATE TABLE IF NOT EXISTS backup_jobs (
   status                ENUM('pending','running','success','failed')
                         NOT NULL DEFAULT 'pending',
   message               TEXT DEFAULT NULL,                   -- error or notes
-  
   notes                 VARCHAR(255) DEFAULT NULL,           -- from UI "why are you running this backup?"
-
   started_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   finished_at           DATETIME DEFAULT NULL,
-
   created_by_employee_id CHAR(9) DEFAULT NULL,               -- FK to employees.employee_id
 
   PRIMARY KEY (id),
@@ -631,3 +635,15 @@ CREATE TABLE IF NOT EXISTS backup_schedule (
 INSERT INTO backup_schedule (id)
 VALUES (1)
 ON DUPLICATE KEY UPDATE id = id;
+
+-- ============================================================
+-- AUDIT TRAIL (Every Actions)
+-- ============================================================
+CREATE TABLE audit_trail (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  employee VARCHAR(100) NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  action VARCHAR(150) NOT NULL,
+  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  detail JSON NOT NULL
+);backup_jobs

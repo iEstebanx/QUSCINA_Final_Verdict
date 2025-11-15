@@ -39,10 +39,6 @@ import BackupIcon from "@mui/icons-material/Backup";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import HistoryIcon from "@mui/icons-material/History";
 
-// not used anymore but safe to keep if you want
-const MOCK_LAST_BACKUP = "Tue, May 23, 2025 - 11:30 PM - Full - 0.3 MB";
-const MOCK_NEXT_SCHEDULE = "Daily at 10:00 PM";
-
 export default function BackupAndRestorePage() {
   const [view, setView] = useState("summary"); // summary | backup | restore | schedule | activities
 
@@ -243,8 +239,24 @@ export default function BackupAndRestorePage() {
   };
 
   const formatBackupDateTime = (value) => {
-    const d = parseMysqlDateTime(value);
-    if (!d) return "—";
+    if (!value) return "—";
+
+    let d;
+
+    // If backend somehow already gave us a Date
+    if (value instanceof Date) {
+      d = value;
+    } else {
+      // ISO string from JSON (e.g. "2025-11-15T16:34:00.000Z")
+      d = new Date(value);
+
+      // fallback to MySQL parser if that fails
+      if (Number.isNaN(d.getTime())) {
+        d = parseMysqlDateTime(value);
+      }
+    }
+
+    if (!d || Number.isNaN(d.getTime())) return "—";
 
     const weekday = d.toLocaleDateString("en-US", { weekday: "long" });
     const datePart = d.toLocaleDateString("en-US", {
@@ -257,23 +269,25 @@ export default function BackupAndRestorePage() {
       minute: "2-digit",
     });
 
-    // Example: "Tuesday · April 29, 2025 · 11:30 PM"
     return `${weekday} · ${datePart} · ${timePart}`;
   };
 
   const formatActivityLine = (row) => {
+    const isScheduleUpdate = row.action === "schedule-update";
+
     const actionLabel =
       row.action === "backup"
         ? "Backup"
         : row.action === "restore"
         ? "Restore"
+        : row.action === "schedule-update"
+        ? "Schedule"
         : row.action || "Activity";
 
     const statusLabel = row.status
       ? row.status.charAt(0).toUpperCase() + row.status.slice(1)
       : "";
 
-    // 🔹 New: show where it came from
     const sourceLabel =
       row.trigger_source === "schedule"
         ? "Schedule"
@@ -295,15 +309,21 @@ export default function BackupAndRestorePage() {
 
     const filename = row.filename || "";
 
+    const baseLabel = isScheduleUpdate
+      ? "Schedule updated"
+      : `${actionLabel} ${statusLabel}`.trim();
+
     const pieces = [
-      `${actionLabel} ${statusLabel}`.trim(), // "Backup Success"
-      sourceLabel && `Source: ${sourceLabel}`,
-      filename && `File: ${filename}`,
+      baseLabel,
+      isScheduleUpdate && row.notes ? row.notes : null,
+      !isScheduleUpdate && sourceLabel ? `Source: ${sourceLabel}` : null,
+      !isScheduleUpdate && filename ? `File: ${filename}` : null,
       whenStr && `On ${whenStr}`,
     ].filter(Boolean);
 
     return pieces.join(" · ");
   };
+
 
   const formatLastBackup = (last) => {
     if (!last) return "No successful backups yet.";
@@ -520,6 +540,8 @@ export default function BackupAndRestorePage() {
             }
           : prev
       );
+
+      await loadActivities();
 
       setScheduleSuccess("Schedule updated.");
     } catch (err) {
@@ -1140,7 +1162,17 @@ export default function BackupAndRestorePage() {
   /* ------------------------ Recent Activities view ----------------------- */
 
   const renderActivitiesView = () => (
-    <Paper sx={{ p: 3 }}>
+    <Paper
+      sx={{
+        p: 3,
+        display: "flex",
+        flexDirection: "column",
+        height: {
+          xs: "calc(100vh - 150px)",
+          md: "calc(100vh - 180px)",
+        },
+      }}
+    >
       <Typography variant="h6" fontWeight={700} mb={3}>
         Recent Activities
       </Typography>
@@ -1164,12 +1196,23 @@ export default function BackupAndRestorePage() {
       )}
 
       {!activitiesLoading && !activitiesErr && activities.length > 0 && (
-        <Stack spacing={0}>
+        <Stack
+          spacing={0}
+          className="scroll-x"            // 👈 reuse your custom scrollbar styles
+          sx={{
+            mt: 1,
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",           // vertical scroll only
+            overflowX: "hidden",
+            pr: 1,
+          }}
+        >
           {activities.map((row, idx) => (
             <Box key={row.id || idx} sx={{ py: 2 }}>
               <Typography>{formatActivityLine(row)}</Typography>
 
-              {row.notes && (
+              {row.notes && row.action !== "schedule-update" && (
                 <Typography
                   variant="body2"
                   color="text.secondary"

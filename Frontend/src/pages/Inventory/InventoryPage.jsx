@@ -1241,13 +1241,40 @@ export default function InventoryPage() {
                   setStockForm(newForm);
                   handleStockFormChange(newForm);
                 }}
-                InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Typography
+                        variant="body2"
+                        color={stockForm.direction === "OUT" ? "text.disabled" : "text.primary"}
+                      >
+                        ₱
+                      </Typography>
+                    </InputAdornment>
+                  ),
+                }}
                 inputMode="decimal"
                 fullWidth
                 disabled={stockForm.direction === "OUT"}
                 helperText={stockForm.direction === "OUT" ? "Not required for Stock Out" : ""}
               />
-              <TextField label="Cost" value={formatPhp(stockForm.cost)} InputProps={{ readOnly: true }} fullWidth />
+              <TextField
+                label="Cost"
+                value={formatPhp(stockForm.cost)}
+                InputProps={{ readOnly: true }}
+                fullWidth
+                disabled={stockForm.direction === "OUT"}
+                sx={
+                  stockForm.direction === "OUT"
+                    ? {
+                        // make the text clearly disabled/grey
+                        "& .MuiInputBase-input.Mui-disabled": {
+                          WebkitTextFillColor: (theme) => theme.palette.text.disabled,
+                        },
+                      }
+                    : undefined
+                }
+              />
               <TextField label="Date" type="date" value={stockForm.date} fullWidth InputLabelProps={{ shrink: true }} InputProps={{ readOnly: true }} disabled />
             </Stack>
           </Stack>
