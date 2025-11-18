@@ -38,8 +38,10 @@ import RestoreIcon from "@mui/icons-material/Restore";
 import BackupIcon from "@mui/icons-material/Backup";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import HistoryIcon from "@mui/icons-material/History";
+import { useAuth } from "@/context/AuthContext";
 
 export default function BackupAndRestorePage() {
+  const { user } = useAuth();
   const [view, setView] = useState("summary"); // summary | backup | restore | schedule | activities
 
   // 🔹 Summary stats state (for the cards)
@@ -92,14 +94,30 @@ export default function BackupAndRestorePage() {
     setBackupInfo(null);
     setBackupLoading(true);
 
+    // map user fields → payload (handle both employeeId/id, role/roleName, etc.)
+    const employeeId =
+      user?.employeeId ?? user?.id ?? null;
+
+    const employeeName =
+      user?.name ??
+      (user?.firstName && user?.lastName
+        ? `${user.firstName} ${user.lastName}`
+        : null);
+
+    const employeeRole =
+      user?.role ?? user?.roleName ?? null;
+
     try {
       const res = await fetch("/api/settings/backup-and-restore/backup-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          backupType, // "full" for now
+          backupType,
           notes: backupNotes || null,
-          // later you can pass employeeId from auth context
+          employeeId,
+          employeeName,
+          employeeRole, // "Admin", "Manager", etc
+          trigger: "manual",
         }),
       });
 
@@ -507,6 +525,9 @@ export default function BackupAndRestorePage() {
     setScheduleSuccess("");
     setScheduleSaving(true);
 
+    // 👇 grab current user id (works for both employeeId or id shape)
+    const employeeId = user?.employeeId ?? user?.id ?? null;
+
     try {
       if (!scheduleTime) {
         throw new Error("Time is required.");
@@ -516,6 +537,7 @@ export default function BackupAndRestorePage() {
         frequency: "daily",
         timeOfDay: scheduleTime, // "HH:MM"
         retentionDays: retentionDays ? parseInt(retentionDays, 10) : null,
+        employeeId, // 👈 send to backend so audit trail can tag the user
       };
 
       const res = await fetch("/api/settings/backup-and-restore/schedule", {
@@ -560,6 +582,17 @@ export default function BackupAndRestorePage() {
     setBackupInfo(null);
     setBackupLoading(true);
 
+    // 👇 map auth user → backup payload
+    const employeeId = user?.employeeId ?? user?.id ?? null;
+
+    const employeeName =
+      user?.name ??
+      (user?.firstName && user?.lastName
+        ? `${user.firstName} ${user.lastName}`
+        : null);
+
+    const employeeRole = user?.role ?? user?.roleName ?? null;
+
     try {
       const res = await fetch("/api/settings/backup-and-restore/backup-now", {
         method: "POST",
@@ -568,6 +601,9 @@ export default function BackupAndRestorePage() {
           backupType: "full",
           notes: `[SCHEDULE TEST] Daily backup at ${scheduleTime}`,
           trigger: "test-run", // 👈 enum-safe value
+          employeeId,
+          employeeName,
+          employeeRole,
         }),
       });
 

@@ -63,6 +63,9 @@ export default function InventoryPage() {
   const [categories, setCategories] = useState([]);
   const [activity, setActivity] = useState([]);
 
+  const [stockFilter, setStockFilter] = useState("all"); // "all" | "low" | "out"
+  const [categoryFilter, setCategoryFilter] = useState("all");
+
   const alert = useAlert();
 
   // Delete dialog state
@@ -166,8 +169,10 @@ export default function InventoryPage() {
 
   // Search / filter
   const qLower = query.trim().toLowerCase();
+
   const filtered = useMemo(() => {
-    const filteredList = ingredients.filter((ing) => {
+    // text search first
+    let filteredList = ingredients.filter((ing) => {
       if (!qLower) return true;
       return (
         ing.name.toLowerCase().includes(qLower) ||
@@ -175,20 +180,43 @@ export default function InventoryPage() {
       );
     });
 
+    // category filter
+    if (categoryFilter !== "all") {
+      filteredList = filteredList.filter(
+        (ing) => String(ing.category || "") === categoryFilter
+      );
+    }
+
+    // stock alert filter
+    if (stockFilter === "low") {
+      filteredList = filteredList.filter((ing) => {
+        const low = Number(ing.lowStock || 0);
+        const cur = Number(ing.currentStock || 0);
+        if (low <= 0) return false;            // 0 = disabled threshold
+        if (cur <= 0) return false;            // out-of-stock goes to "Out of stock"
+        return cur <= low;                     // low but still > 0
+      });
+    } else if (stockFilter === "out") {
+      filteredList = filteredList.filter(
+        (ing) => Number(ing.currentStock || 0) <= 0
+      );
+    }
+
+    // keep your “name match first” behaviour for search
     if (qLower) {
       return filteredList.sort((a, b) => {
         const aName = a.name.toLowerCase().includes(qLower);
         const bName = b.name.toLowerCase().includes(qLower);
-        if (aName !== bName) return aName ? -1 : 1; // name matches first
-        return 0; // otherwise keep backend order
+        if (aName !== bName) return aName ? -1 : 1;
+        return 0;
       });
     }
     return filteredList;
-  }, [ingredients, qLower]);
+  }, [ingredients, qLower, stockFilter, categoryFilter]);
 
   useEffect(() => {
     setPageState((s) => ({ ...s, page: 0 }));
-  }, [query]);
+  }, [query, stockFilter, categoryFilter]);
 
   const paged = useMemo(() => {
     const start = pageState.page * pageState.rowsPerPage;
@@ -483,10 +511,9 @@ export default function InventoryPage() {
   const [stockFormChanged, setStockFormChanged] = useState(false);
   const [showStockConfirm, setShowStockConfirm] = useState(false);
 
-    const canSave = useMemo(() => {
+  const canSave = useMemo(() => {
     if (!stockForm.ingId || !stockForm.cat || !stockForm.type) return false;
 
-    // if renaming, validate it
     const wantsRename = normalize(stockForm.name) !== normalize(initialStockForm?.name || "");
     if (wantsRename && !isValidName(normalize(stockForm.name))) return false;
 
@@ -494,19 +521,19 @@ export default function InventoryPage() {
     const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
     const qn = hasQty ? Number(qtyStr) : 0;
 
-    // Movement rules
     if (hasQty) {
       if (qn <= 0) return false;
       if (stockForm.direction === "OUT" && qn > Number(stockForm.current || 0)) return false;
-      return true; // movement is fine; rename/category/unit can ride along
+      return true; // movement OK
     }
 
-    // Edit-only: require an actual change vs baseline
     if (!initialStockForm) return false;
     const catChanged   = stockForm.cat   !== initialStockForm.cat;
     const typeChanged  = stockForm.type  !== initialStockForm.type;
     const priceChanged = String(stockForm.price ?? "") !== String(initialStockForm.price ?? "");
-    return catChanged || typeChanged || priceChanged || wantsRename;
+    const lowChanged   = String(stockForm.low  ?? "") !== String(initialStockForm.low  ?? ""); // ⬅️ NEW
+
+    return catChanged || typeChanged || priceChanged || lowChanged || wantsRename;
   }, [stockForm, initialStockForm]);
 
   const handleStockFormChange = (newForm) => {
@@ -588,6 +615,7 @@ export default function InventoryPage() {
       type: ing?.type || "",
       current: ing?.currentStock || 0,
       price: ing?.price || "",
+      low: ing?.lowStock ?? "",
     };
     setStockForm(newForm);
     setInitialStockForm(newForm);     // ⬅️ make the picked values the baseline
@@ -623,6 +651,14 @@ export default function InventoryPage() {
     return qn * pn;
   };
 
+  const parseLowStock = (val) => {
+    const trimmed = String(val ?? "").trim();
+    if (!trimmed) return 0; // blank = no notification
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return n;
+  };
+
   const moveIdToFront = (arr, id) => {
     const idx = arr.findIndex((x) => x.id === id);
     if (idx < 0) return arr;
@@ -652,16 +688,24 @@ export default function InventoryPage() {
         return;
       }
 
-      // --- Edit-only mode: update category/unit (and optionally price) with no activity ---
+      const lowStockNum = parseLowStock(stockForm.low);
+
+      // --- Edit-only mode: update name/category/unit/lowStock (and optionally price) with NO activity ---
       if (!hasQty || qty <= 0) {
-        // Optional: if you also want to allow price change on edit-only *when IN*:
         const patchBody = {
           category: stockForm.cat,
           type: stockForm.type,
+          lowStock: lowStockNum,
           ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
         };
-        // uncomment if you want manual price edits to stick even in edit-only:
-        // if (stockForm.price !== "" && io === "In") patchBody.price = Number(stockForm.price || 0);
+
+        // optional: allow manual price edit in edit-only mode
+        if (
+          stockForm.price !== "" &&
+          !Number.isNaN(Number(stockForm.price))
+        ) {
+          patchBody.price = Number(stockForm.price);
+        }
 
         const r = await fetch(`${ING_API}/${picked.id}`, {
           method: "PATCH",
@@ -677,7 +721,7 @@ export default function InventoryPage() {
           throw new Error(j?.error || `HTTP ${r.status}`);
         }
 
-        // reflect in UI
+        // reflect in UI (NO stock change here)
         setIngredients((arr) => {
           const next = arr.map((i) =>
             i.id === picked.id
@@ -686,6 +730,9 @@ export default function InventoryPage() {
                   name: wantsRename ? normalize(stockForm.name) : i.name,
                   category: stockForm.cat,
                   type: stockForm.type,
+                  lowStock: lowStockNum,
+                  // update price only if we sent it
+                  ...(patchBody.price !== undefined ? { price: patchBody.price } : {}),
                   updatedAt: NOW(),
                 }
               : i
@@ -710,9 +757,12 @@ export default function InventoryPage() {
       // - IN: use entered price (or 0)
       // - OUT: keep activity’s price informative by falling back to current price when blank
       const enteredPriceNum = Number(stockForm.price || 0);
-      const price = io === "In"
-        ? enteredPriceNum
-        : Number((stockForm.price !== "" ? stockForm.price : picked.price) || 0);
+      const price =
+        io === "In"
+          ? enteredPriceNum
+          : Number(
+              (stockForm.price !== "" ? stockForm.price : picked.price) || 0
+            );
 
       // 1) Create activity
       const res = await fetch(INV_ACTIVITY_API, {
@@ -765,6 +815,7 @@ export default function InventoryPage() {
                 price: io === "In" ? price : i.price, // don't clobber on OUT
                 category: stockForm.cat,
                 type: stockForm.type,
+                lowStock: lowStockNum, // ⬅️ include lowStock here
                 updatedAt: NOW(),
               }
             : i
@@ -778,14 +829,20 @@ export default function InventoryPage() {
         category: stockForm.cat,
         type: stockForm.type,
         currentStock: newCurrent,
+        lowStock: lowStockNum,
         ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
       };
-      if (io === "In" && stockForm.price !== "" && !Number.isNaN(enteredPriceNum)) {
+      if (
+        io === "In" &&
+        stockForm.price !== "" &&
+        !Number.isNaN(enteredPriceNum)
+      ) {
         patchBody.price = enteredPriceNum;
       }
+
       (async () => {
         try {
-        const pr = await fetch(`${ING_API}/${picked.id}`, {
+          const pr = await fetch(`${ING_API}/${picked.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(patchBody),
@@ -803,7 +860,9 @@ export default function InventoryPage() {
               return;
             }
           }
-        } catch {}
+        } catch {
+          // ignore background error, UI already optimistic
+        }
       })();
 
       setOpenStock(false);
@@ -818,36 +877,104 @@ export default function InventoryPage() {
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
-        <Box p={2}>
-          <Stack direction="row" useFlexGap alignItems="center" flexWrap="wrap" rowGap={1.5} columnGap={2} sx={{ minWidth: 0 }}>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { resetAddForm(); addTouchedRef.current = false; setOpenAdd(true); }} sx={{ flexShrink: 0 }}>
-              Add ING
-            </Button>
+          <Box p={2}>
+            <Stack
+              direction="row"
+              useFlexGap
+              alignItems="center"
+              flexWrap="wrap"
+              rowGap={1.5}
+              columnGap={2}
+              sx={{ minWidth: 0 }}
+            >
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={() => {
+                  resetAddForm();
+                  addTouchedRef.current = false;
+                  setOpenAdd(true);
+                }}
+                sx={{ flexShrink: 0 }}
+              >
+                Add ING
+              </Button>
 
-            <Button variant="contained" color="success" startIcon={<Inventory2OutlinedIcon />} onClick={() => openStockDialog()} sx={{ flexShrink: 0 }}>
-              STOCK IN/OUT
-            </Button>
+              <Box sx={{ flexGrow: 1, minWidth: 0 }} />
 
-            <Box sx={{ flexGrow: 1, minWidth: 0 }} />
+              <Tooltip
+                title={
+                  selected.length
+                    ? `Delete ${selected.length} selected ingredient${selected.length > 1 ? "s" : ""}`
+                    : "Select ingredients to delete"
+                }
+              >
+                <span>
+                  <IconButton
+                    aria-label="Delete selected"
+                    onClick={handleBulkDelete}
+                    disabled={!selected.length}
+                    sx={{ flexShrink: 0, mr: 1 }}
+                  >
+                    <DeleteOutlineIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
 
-            <Tooltip title={selected.length ? `Delete ${selected.length} selected ingredient${selected.length > 1 ? 's' : ''}` : "Select ingredients to delete"}>
-              <span>
-                <IconButton aria-label="Delete selected" onClick={handleBulkDelete} disabled={!selected.length} sx={{ flexShrink: 0 }}>
-                  <DeleteOutlineIcon />
-                </IconButton>
-              </span>
-            </Tooltip>
+              <TextField
+                size="small"
+                placeholder="Search ingredient or category"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                sx={{
+                  flexGrow: 1,
+                  minWidth: 220,
+                  maxWidth: 420, // optional
+                }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                }}
+              />
 
-            <TextField
-              size="small"
-              placeholder="Search ingredient or category"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              sx={{ width: { xs: "100%", sm: 320 }, flex: { xs: "1 1 220px", sm: "0 0 auto" } }}
-              InputProps={{ startAdornment: (<InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment>) }}
-            />
-          </Stack>
-        </Box>
+              <FormControl size="small" sx={{ minWidth: 160, flexShrink: 0 }}>
+                <InputLabel id="inv-cat-filter-label">Category</InputLabel>
+                <Select
+                  labelId="inv-cat-filter-label"
+                  id="inv-cat-filter"
+                  value={categoryFilter}
+                  label="Category"
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  MenuProps={dropdownMenuProps}
+                >
+                  <MenuItem value="all">All</MenuItem>
+                  {categories.map((c) => (
+                    <MenuItem key={c} value={c}>
+                      {c}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl size="small" sx={{ minWidth: 140, flexShrink: 0 }}>
+                <InputLabel id="stock-alert-label">Stock alert</InputLabel>
+                <Select
+                  labelId="stock-alert-label"
+                  id="stock-alert"
+                  value={stockFilter}
+                  label="Stock alert"
+                  onChange={(e) => setStockFilter(e.target.value)}
+                >
+                  <MenuItem value="all">All items</MenuItem>
+                  <MenuItem value="low">Low stock</MenuItem>
+                  <MenuItem value="out">Out of stock</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
+          </Box>
 
         <Divider />
 
@@ -1224,7 +1351,24 @@ export default function InventoryPage() {
                 }}
               />
               <TextField label="Current Stock" value={stockForm.current} InputProps={{ readOnly: true }} fullWidth />
-              <TextField label="Low Stock" value={stockForm.low} helperText="Inventory quantity at which you will be notified about low stock" disabled fullWidth />
+              <TextField
+                label="Low Stock"
+                value={stockForm.low}
+                onChange={(e) => {
+                  let v = String(e.target.value ?? "");
+                  // allow only digits and one dot (same style as Quantity)
+                  v = v.replace(/[^0-9.]/g, "");
+                  const parts = v.split(".");
+                  if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
+
+                  const newForm = { ...stockForm, low: v };
+                  setStockForm(newForm);
+                  handleStockFormChange(newForm);
+                }}
+                inputMode="decimal"
+                fullWidth
+                helperText="Inventory quantity at which you will be notified about low stock"
+              />
             </Stack>
 
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>

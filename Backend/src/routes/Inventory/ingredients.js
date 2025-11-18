@@ -3,12 +3,15 @@ const express = require("express");
 
 // Prefer DI, but fall back to shared pool
 let sharedDb = null;
-try { sharedDb = require("../../shared/db/mysql").db; } catch {}
+try {
+  sharedDb = require("../../shared/db/mysql").db;
+} catch {}
 
 const NAME_MAX = 60;
 const NAME_ALLOWED = /^[A-Za-z0-9][A-Za-z0-9 .,'&()/-]*$/;
 const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-const isValidName = (s) => !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
+const isValidName = (s) =>
+  !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
 module.exports = ({ db } = {}) => {
   db = db || sharedDb;
@@ -17,6 +20,7 @@ module.exports = ({ db } = {}) => {
   const router = express.Router();
 
   const UNIT_ALLOWED = new Set(["kg", "pack", "pcs"]);
+  const SAMPLE_LIMIT = 6;
 
   // GET /api/inventory/ingredients  (newest first)
   router.get("/", async (_req, res) => {
@@ -26,8 +30,8 @@ module.exports = ({ db } = {}) => {
            FROM inventory_ingredients
           ORDER BY updatedAt DESC, createdAt DESC, name ASC`
       );
-      // Mirror your old shape
-      const ingredients = rows.map(r => ({
+
+      const ingredients = rows.map((r) => ({
         id: String(r.id),
         name: r.name,
         category: r.category,
@@ -36,19 +40,20 @@ module.exports = ({ db } = {}) => {
         lowStock: Number(r.lowStock || 0),
         price: Number(r.price || 0),
         createdAt: r.createdAt,
-        updatedAt: r.updatedAt
+        updatedAt: r.updatedAt,
       }));
+
       res.json({ ok: true, ingredients });
     } catch (e) {
       console.error("[ingredients] list failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "List failed" });
+      res
+        .status(500)
+        .json({ ok: false, error: e.message || "List failed" });
     }
   });
 
   // Helper: check if an ingredient is used by any item JSON
   async function ingredientUsage(ingredientId) {
-    // 1) array of strings: JSON_CONTAINS(ingredients, JSON_QUOTE(?))
-    // 2) array of objects: JSON_SEARCH(... '$[*].ingredientId')
     const rows = await db.query(
       `SELECT id, name
          FROM items
@@ -64,16 +69,20 @@ module.exports = ({ db } = {}) => {
   router.get("/:id/usage", async (req, res) => {
     try {
       const ingredientId = String(req.params.id || "");
-      if (!ingredientId) return res.json({ ok: true, isUsed: false, usedInItems: [] });
+      if (!ingredientId) {
+        return res.json({ ok: true, isUsed: false, usedInItems: [] });
+      }
 
       const rows = await ingredientUsage(ingredientId);
       const isUsed = rows.length > 0;
-      const usedInItems = [...new Set(rows.map(r => r.name || "Unnamed Item"))];
+      const usedInItems = [...new Set(rows.map((r) => r.name || "Unnamed Item"))];
 
       res.json({ ok: true, isUsed, usedInItems });
     } catch (e) {
       console.error("[ingredients] usage check failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "Usage check failed" });
+      res
+        .status(500)
+        .json({ ok: false, error: e.message || "Usage check failed" });
     }
   });
 
@@ -92,28 +101,38 @@ module.exports = ({ db } = {}) => {
         });
       }
       if (!category) {
-        return res.status(400).json({ ok: false, error: "Category is required." });
+        return res
+          .status(400)
+          .json({ ok: false, error: "Category is required." });
       }
       if (!type) {
-        return res.status(400).json({ ok: false, error: "Unit is required." });
+        return res
+          .status(400)
+          .json({ ok: false, error: "Unit is required." });
       }
       if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(type)) {
-        return res.status(400).json({ ok: false, error: "Unit is not allowed." });
+        return res
+          .status(400)
+          .json({ ok: false, error: "Unit is not allowed." });
       }
 
       const now = new Date();
       const result = await db.query(
         `INSERT INTO inventory_ingredients
-        (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
-        VALUES (?, ?, ?, 0, 0, 0, ?, ?)`,
+          (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
+         VALUES (?, ?, ?, 0, 0, 0, ?, ?)`,
         [name, category, type, now, now]
       );
 
       res.status(201).json({ ok: true, id: String(result.insertId) });
     } catch (e) {
-      // 👇 Friendly duplicate error
-      if (e?.code === "ER_DUP_ENTRY" &&
-          /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(e?.message || "")) {
+      // Friendly duplicate error
+      if (
+        e?.code === "ER_DUP_ENTRY" &&
+        /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(
+          e?.message || ""
+        )
+      ) {
         return res.status(409).json({
           ok: false,
           code: "name_taken",
@@ -134,6 +153,8 @@ module.exports = ({ db } = {}) => {
       }
 
       const u = {};
+
+      // Name
       if (req.body?.name !== undefined) {
         const name = normalize(req.body.name);
         if (!isValidName(name)) {
@@ -145,34 +166,93 @@ module.exports = ({ db } = {}) => {
         }
         u.name = name;
       }
+
+      // Category
       if (req.body?.category !== undefined) {
-          const cat = normalize(req.body.category);
-          if (!cat) return res.status(400).json({ ok: false, error: "Category cannot be empty." });
-          u.category = cat;
+        const cat = normalize(req.body.category);
+        if (!cat) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Category cannot be empty." });
         }
-        if (req.body?.type !== undefined) {
-          const t = normalize(req.body.type);
-          if (!t) return res.status(400).json({ ok: false, error: "Unit cannot be empty." });
-          if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(t)) {
-            return res.status(400).json({ ok: false, error: "Unit is not allowed." });
-          }
-          u.type = t;
+        u.category = cat;
+      }
+
+      // Unit / type
+      if (req.body?.type !== undefined) {
+        const t = normalize(req.body.type);
+        if (!t) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Unit cannot be empty." });
         }
-      if (req.body?.currentStock !== undefined) u.currentStock = Number(req.body.currentStock);
-      if (req.body?.lowStock !== undefined) u.lowStock = Number(req.body.lowStock);
-      if (req.body?.price !== undefined) u.price = Number(req.body.price);
+        if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(t)) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Unit is not allowed." });
+        }
+        u.type = t;
+      }
+
+      // currentStock
+      if (req.body?.currentStock !== undefined) {
+        const n = Number(req.body.currentStock);
+        if (!Number.isFinite(n) || n < 0) {
+          return res.status(400).json({
+            ok: false,
+            error: "currentStock must be a non-negative number",
+          });
+        }
+        u.currentStock = n;
+      }
+
+      // lowStock (notification threshold)
+      if (req.body?.lowStock !== undefined) {
+        const n = Number(req.body.lowStock);
+        if (!Number.isFinite(n) || n < 0) {
+          return res.status(400).json({
+            ok: false,
+            error: "lowStock must be a non-negative number",
+          });
+        }
+        u.lowStock = n;
+      }
+
+      // price
+      if (req.body?.price !== undefined) {
+        const n = Number(req.body.price);
+        if (!Number.isFinite(n) || n < 0) {
+          return res.status(400).json({
+            ok: false,
+            error: "price must be a non-negative number",
+          });
+        }
+        u.price = n;
+      }
 
       const sets = ["updatedAt = ?"];
       const params = [new Date()];
-      for (const [k, v] of Object.entries(u)) { sets.push(`${k} = ?`); params.push(v); }
+
+      for (const [k, v] of Object.entries(u)) {
+        sets.push(`${k} = ?`);
+        params.push(v);
+      }
       params.push(id);
 
-      await db.query(`UPDATE inventory_ingredients SET ${sets.join(", ")} WHERE id = ?`, params);
+      await db.query(
+        `UPDATE inventory_ingredients SET ${sets.join(", ")} WHERE id = ?`,
+        params
+      );
+
       res.json({ ok: true, message: "Ingredient updated successfully" });
     } catch (e) {
-      // 👇 Friendly duplicate error on rename
-      if (e?.code === "ER_DUP_ENTRY" &&
-          /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(e?.message || "")) {
+      // Friendly duplicate error on rename
+      if (
+        e?.code === "ER_DUP_ENTRY" &&
+        /inventory_ingredients\.uq_inventory_ingredients_name_lower/i.test(
+          e?.message || ""
+        )
+      ) {
         return res.status(409).json({
           ok: false,
           code: "name_taken",
@@ -188,16 +268,19 @@ module.exports = ({ db } = {}) => {
   router.delete("/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id))
+      if (!Number.isFinite(id)) {
         return res.status(400).json({ ok: false, error: "invalid id" });
+      }
 
       // (1) Check if used in menu items
       const usedIn = await ingredientUsage(String(id));
       if (usedIn.length) {
-        const names = [...new Set(usedIn.map(r => r.name || "Unnamed Item"))];
+        const names = [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))];
         return res.status(409).json({
           ok: false,
-          error: `Cannot delete ingredient: It is currently used in menu items (${names.join(", ")}).`,
+          error: `Cannot delete ingredient: It is currently used in menu items (${names.join(
+            ", "
+          )}).`,
           reason: "item-linked",
           sample: names.slice(0, 5),
         });
@@ -209,7 +292,9 @@ module.exports = ({ db } = {}) => {
         [id]
       );
       if (activityRows.length) {
-        const remarks = activityRows.map(a => a.remarks || `Activity #${a.id}`);
+        const remarks = activityRows.map(
+          (a) => a.remarks || `Activity #${a.id}`
+        );
         return res.status(409).json({
           ok: false,
           error: `Cannot delete ingredient: It has ${activityRows.length} linked activity record(s).`,
@@ -218,30 +303,31 @@ module.exports = ({ db } = {}) => {
         });
       }
 
-      // Safe to delete
       await db.query(`DELETE FROM inventory_ingredients WHERE id = ?`, [id]);
       res.json({ ok: true, message: "Ingredient deleted successfully" });
     } catch (e) {
       console.error("[ingredients] delete failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "Delete failed" });
+      res
+        .status(500)
+        .json({ ok: false, error: e.message || "Delete failed" });
     }
   });
 
-  const SAMPLE_LIMIT = 6;
-
   // Helper: count activity per ingredient for a set of ids (one SQL roundtrip)
-  async function activityCountsMap(db, ids) {
+  async function activityCountsMap(dbConn, ids) {
     if (!ids.length) return new Map();
     const placeholders = ids.map(() => "?").join(",");
-    const rows = await db.query(
+    const rows = await dbConn.query(
       `SELECT ingredientId AS id, COUNT(*) AS n
-        FROM inventory_activity
+         FROM inventory_activity
         WHERE ingredientId IN (${placeholders})
         GROUP BY ingredientId`,
       ids
     );
     const map = new Map();
-    for (const r of rows || []) map.set(Number(r.id), Number(r.n || 0));
+    for (const r of rows || []) {
+      map.set(Number(r.id), Number(r.n || 0));
+    }
     return map;
   }
 
@@ -257,7 +343,9 @@ module.exports = ({ db } = {}) => {
         : [];
 
       if (!ids.length) {
-        return res.status(400).json({ ok: false, error: "ids array required" });
+        return res
+          .status(400)
+          .json({ ok: false, error: "ids array required" });
       }
 
       // Preload activity counts in one shot
@@ -266,29 +354,35 @@ module.exports = ({ db } = {}) => {
       const deletable = [];
       const blocked = []; // { id, reason: 'item-linked'|'activity-linked', count, sample[] }
 
-      // First pass: mark activity-linked immediately (stronger reason)
+      // First pass: mark activity-linked immediately
       for (const id of ids) {
         const actN = actMap.get(id) || 0;
         if (actN > 0) {
-          blocked.push({ id: String(id), reason: "activity-linked", count: actN, sample: [] });
+          blocked.push({
+            id: String(id),
+            reason: "activity-linked",
+            count: actN,
+            sample: [],
+          });
         } else {
-          deletable.push(id); // tentatively deletable; we still need to check items JSON usage
+          deletable.push(id);
         }
       }
 
       // Second pass: for the ones not blocked by activity, check item JSON usage
       const finalDeletable = [];
-      const needSamples = [];
       for (const id of deletable) {
-        const usedIn = await ingredientUsage(String(id)); // returns up to 5 items
+        const usedIn = await ingredientUsage(String(id));
         if (usedIn.length) {
           blocked.push({
             id: String(id),
             reason: "item-linked",
-            count: usedIn.length, // sample length, not full count (OK for UI)
-            sample: [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))].slice(0, SAMPLE_LIMIT),
+            count: usedIn.length,
+            sample: [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))].slice(
+              0,
+              SAMPLE_LIMIT
+            ),
           });
-          // no push to finalDeletable
         } else {
           finalDeletable.push(id);
         }
@@ -310,7 +404,9 @@ module.exports = ({ db } = {}) => {
       });
     } catch (e) {
       console.error("[ingredients] bulk delete failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "Bulk delete failed" });
+      res
+        .status(500)
+        .json({ ok: false, error: e.message || "Bulk delete failed" });
     }
   });
 

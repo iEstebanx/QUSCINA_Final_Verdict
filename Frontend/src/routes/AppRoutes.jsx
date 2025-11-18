@@ -13,16 +13,16 @@ import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
 import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
 
 import DashboardPage from "../pages/Dashboard/DashboardPage";
+
 import ReportsPage from "../pages/Reports/ReportsPage";
+import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
+
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 
 import AuditTrailPage from "@/pages/AuditTrail/AuditTrailPage.jsx";
-import InventoryHistoryPage from "@/pages/AuditTrail/InventoryHistoryPage.jsx";
-import ShiftHistoryPage from "@/pages/AuditTrail/ShiftHistoryPage.jsx";
 
 import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
 import TaxesPage from "@/pages/Settings/Taxes/TaxesPage.jsx";
-import NotificationsPage from "@/pages/Settings/Notifications/Notifications.jsx";
 import BackupAndRestorePage from "@/pages/Settings/BackupAndRestore/BackupAndRestorePage.jsx";
 
 import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
@@ -39,9 +39,16 @@ export default function AppRoutes() {
       {/* Protected */}
       <Route element={<RequireAdmin />}>
         <Route element={<MainLayout />}>
+          {/* Core */}
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/users" element={<UserManagementPage />} />
+
+          {/* Reports (group in sidebar: Reports + Inventory History) */}
           <Route path="/reports" element={<ReportsPage />} />
+          <Route
+            path="/reports/inventory-history"
+            element={<InventoryHistoryPage />}
+          />
 
           {/* Menu */}
           <Route path="/menu/items" element={<ItemlistPage />} />
@@ -52,21 +59,34 @@ export default function AppRoutes() {
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/inventory/categories" element={<InvCategoriePage />} />
 
-          {/* Audit Trail */}
+          {/* Audit Trail (single page) */}
           <Route path="/audit-trail" element={<AuditTrailPage />} />
-          <Route path="/audit-trail/inventory-history" element={<InventoryHistoryPage />} />
-          <Route path="/audit-trail/shift-history" element={<ShiftHistoryPage />} />
 
           {/* Backwards-compat redirects from old/typo paths */}
-          <Route path="/inventory/inventorypage" element={<Navigate to="/inventory" replace />} />
-          <Route path="/inventory/history" element={<Navigate to="/audit-trail/inventory-history" replace />} />
-          <Route path="/Inventory/inventoryhistorypage" element={<Navigate to="/audit-trail/inventory-history" replace />} />
+          {/* Old Inventory History locations -> new reports route */}
+          <Route
+            path="/audit-trail/inventory-history"
+            element={<Navigate to="/reports/inventory-history" replace />}
+          />
+          <Route
+            path="/inventory/history"
+            element={<Navigate to="/reports/inventory-history" replace />}
+          />
+          <Route
+            path="/Inventory/inventoryhistorypage"
+            element={<Navigate to="/reports/inventory-history" replace />}
+          />
 
           {/* Settings */}
-          <Route path="/settings/payment-types" element={<PaymentTypePage />} />
+          <Route
+            path="/settings/payment-types"
+            element={<PaymentTypePage />}
+          />
           <Route path="/settings/taxes" element={<TaxesPage />} />
-          <Route path="/settings/notifications" element={<NotificationsPage />} />
-          <Route path="/settings/backup-restore" element={<BackupAndRestorePage />} />
+          <Route
+            path="/settings/backup-restore"
+            element={<BackupAndRestorePage />}
+          />
         </Route>
       </Route>
 

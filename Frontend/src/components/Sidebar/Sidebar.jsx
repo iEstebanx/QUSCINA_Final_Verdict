@@ -30,7 +30,6 @@ import PercentIcon from "@mui/icons-material/Percent";
 import BackupIcon from "@mui/icons-material/Backup";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import NotificationsIcon from "@mui/icons-material/Notifications";
 import TimelineIcon from "@mui/icons-material/Timeline";
 
 import { useAuth } from "@/context/AuthContext";
@@ -226,30 +225,45 @@ function SidebarContent({ collapsed }) {
   const location = useLocation();
 
   const path = location.pathname;
+
   const isMenuActive = useMemo(() => path.startsWith("/menu"), [path]);
   const isInventoryActive = useMemo(() => path.startsWith("/inventory"), [path]);
-  const isAuditActive = useMemo(() => path.startsWith("/audit-trail"), [path]);
+
+  // Reports is active for /reports AND for the existing inventory-history route
+  const isReportsActive = useMemo(
+    () =>
+      path.startsWith("/reports") ||
+      path.startsWith("/audit-trail/inventory-history"),
+    [path]
+  );
+
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
   const [openMenu, setOpenMenu] = useState(isMenuActive);
   const [openInventory, setOpenInventory] = useState(isInventoryActive);
-  const [openAudit, setOpenAudit] = useState(isAuditActive);
+  const [openReports, setOpenReports] = useState(isReportsActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
   useEffect(() => {
     if (!collapsed) {
       setOpenMenu(isMenuActive);
       setOpenInventory(isInventoryActive);
-      setOpenAudit(isAuditActive);
+      setOpenReports(isReportsActive);
       setOpenSettings(isSettingsActive);
     }
-  }, [collapsed, isMenuActive, isInventoryActive, isAuditActive, isSettingsActive]);
+  }, [
+    collapsed,
+    isMenuActive,
+    isInventoryActive,
+    isReportsActive,
+    isSettingsActive,
+  ]);
 
   useEffect(() => {
     if (collapsed) {
       setOpenMenu(false);
       setOpenInventory(false);
-      setOpenAudit(false);
+      setOpenReports(false);
       setOpenSettings(false);
     }
   }, [collapsed]);
@@ -266,7 +280,12 @@ function SidebarContent({ collapsed }) {
           justifyContent: collapsed ? "center" : "flex-start",
         }}
       >
-        <Box component="img" src={logo} alt="Quscina logo" sx={{ width: 28, height: 28, flexShrink: 0, borderRadius: 1 }} />
+        <Box
+          component="img"
+          src={logo}
+          alt="Quscina logo"
+          sx={{ width: 28, height: 28, flexShrink: 0, borderRadius: 1 }}
+        />
         {!collapsed && (
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
             QUSCINA Backoffice
@@ -278,9 +297,14 @@ function SidebarContent({ collapsed }) {
 
       {/* Nav */}
       <Box sx={{ px: 1, display: "grid", gap: 0.5 }}>
-        <NavLeaf to="/dashboard" label="Dashboard" icon={DashboardIcon} collapsed={collapsed} />
+        <NavLeaf
+          to="/dashboard"
+          label="Dashboard"
+          icon={DashboardIcon}
+          collapsed={collapsed}
+        />
 
-        {/* Inventory group with two entries */}
+        {/* Inventory group */}
         <NavGroup
           label="Inventory"
           icon={Inventory2Icon}
@@ -289,10 +313,22 @@ function SidebarContent({ collapsed }) {
           onToggle={() => setOpenInventory((v) => !v)}
           active={isInventoryActive}
         >
-          <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} end />
-          <NavLeaf to="/inventory/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
+          <NavLeaf
+            to="/inventory"
+            label="Inventory"
+            icon={Inventory2Icon}
+            collapsed={collapsed}
+            end
+          />
+          <NavLeaf
+            to="/inventory/categories"
+            label="Categories"
+            icon={CategoryIcon}
+            collapsed={collapsed}
+          />
         </NavGroup>
 
+        {/* Menu group */}
         <NavGroup
           label="Menu"
           icon={RestaurantMenuIcon}
@@ -301,14 +337,58 @@ function SidebarContent({ collapsed }) {
           onToggle={() => setOpenMenu((v) => !v)}
           active={isMenuActive}
         >
-          <NavLeaf to="/menu/items" label="Item List" icon={ListAltIcon} collapsed={collapsed} />
-          <NavLeaf to="/menu/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
-          <NavLeaf to="/menu/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
+          <NavLeaf
+            to="/menu/items"
+            label="Item List"
+            icon={ListAltIcon}
+            collapsed={collapsed}
+          />
+          <NavLeaf
+            to="/menu/categories"
+            label="Categories"
+            icon={CategoryIcon}
+            collapsed={collapsed}
+          />
+          <NavLeaf
+            to="/menu/discounts"
+            label="Discounts"
+            icon={LocalOfferIcon}
+            collapsed={collapsed}
+          />
         </NavGroup>
 
-        <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} />
-        <NavLeaf to="/users" label="User Management" icon={PeopleIcon} collapsed={collapsed} />
+        {/* Reports group: Reports + Inventory History */}
+        <NavGroup
+          label="Reports"
+          icon={BarChartIcon}
+          collapsed={collapsed}
+          open={openReports}
+          onToggle={() => setOpenReports((v) => !v)}
+          active={isReportsActive}
+        >
+          <NavLeaf
+            to="/reports"
+            label="Reports"
+            icon={BarChartIcon}
+            collapsed={collapsed}
+            end
+          />
+          <NavLeaf
+            to="/audit-trail/inventory-history"
+            label="Inventory History"
+            icon={HistoryIcon}
+            collapsed={collapsed}
+          />
+        </NavGroup>
 
+        <NavLeaf
+          to="/users"
+          label="User Management"
+          icon={PeopleIcon}
+          collapsed={collapsed}
+        />
+
+        {/* Settings group */}
         <NavGroup
           label="Settings"
           icon={SettingsIcon}
@@ -317,25 +397,33 @@ function SidebarContent({ collapsed }) {
           onToggle={() => setOpenSettings((v) => !v)}
           active={isSettingsActive}
         >
-          <NavLeaf to="/settings/payment-types" label="Payment Types" icon={PaymentIcon} collapsed={collapsed} />
-          <NavLeaf to="/settings/taxes" label="Taxes" icon={PercentIcon} collapsed={collapsed} />
-          <NavLeaf to="/settings/notifications" label="Notifications" icon={NotificationsIcon} collapsed={collapsed} />
-          <NavLeaf to="/settings/backup-restore" label="Backup & Restore" icon={BackupIcon} collapsed={collapsed} />
+          <NavLeaf
+            to="/settings/payment-types"
+            label="Payment Types"
+            icon={PaymentIcon}
+            collapsed={collapsed}
+          />
+          <NavLeaf
+            to="/settings/taxes"
+            label="Taxes"
+            icon={PercentIcon}
+            collapsed={collapsed}
+          />
+          <NavLeaf
+            to="/settings/backup-restore"
+            label="Backup & Restore"
+            icon={BackupIcon}
+            collapsed={collapsed}
+          />
         </NavGroup>
 
-        {/* Audit Trail: Audit + Inventory History + Shift History */}
-        <NavGroup
+        {/* 🔹 Audit Trail as a simple link */}
+        <NavLeaf
+          to="/audit-trail"
           label="Audit Trail"
           icon={TimelineIcon}
           collapsed={collapsed}
-          open={openAudit}
-          onToggle={() => setOpenAudit((v) => !v)}
-          active={isAuditActive}
-        >
-          <NavLeaf to="/audit-trail" label="Audit" icon={TimelineIcon} collapsed={collapsed} end />
-          <NavLeaf to="/audit-trail/inventory-history" label="Inventory History" icon={HistoryIcon} collapsed={collapsed} />
-          <NavLeaf to="/audit-trail/shift-history" label="Shift History" icon={HistoryIcon} collapsed={collapsed} />
-        </NavGroup>
+        />
       </Box>
 
       <Box sx={{ flexGrow: 1 }} />
@@ -352,7 +440,10 @@ function SidebarContent({ collapsed }) {
               borderRadius: 1.5,
               color: theme.palette.text.primary,
               "&:hover": {
-                bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.1 : 0.06),
+                bgcolor: alpha(
+                  theme.palette.text.primary,
+                  theme.palette.mode === "dark" ? 0.1 : 0.06
+                ),
               },
               typography: "body2",
             })}
@@ -364,6 +455,7 @@ function SidebarContent({ collapsed }) {
     </Box>
   );
 }
+
 
 SidebarContent.propTypes = {
   collapsed: PropTypes.bool.isRequired,
@@ -396,7 +488,10 @@ export default function Sidebar({
         open={mobileOpen}
         onClose={onMobileClose}
         ModalProps={{ keepMounted: true }}
-        PaperProps={{ sx: { width, ...skin } }}
+        PaperProps={{
+          sx: { width, ...skin, overflowY: "auto", overflowX: "hidden" },
+          className: "scroll-x",
+        }}
       >
         <SidebarContent collapsed={false} />
       </Drawer>
@@ -405,6 +500,7 @@ export default function Sidebar({
 
   return (
     <Box
+      className="scroll-x"
       sx={{
         position: "fixed",
         left: 0,
@@ -413,6 +509,7 @@ export default function Sidebar({
         width: collapsed ? collapsedWidth : width,
         display: "flex",
         flexDirection: "column",
+        overflowY: "auto",
         overflowX: "hidden",
         transition: (t) =>
           t.transitions.create(["width"], {

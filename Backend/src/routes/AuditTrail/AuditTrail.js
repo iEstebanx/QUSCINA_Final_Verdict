@@ -40,7 +40,7 @@ module.exports = ({ db }) => {
         params.push(endDate);
       }
 
-      q += " ORDER BY timestamp DESC";
+      q += " ORDER BY id DESC"; 
 
       // 🔹 IMPORTANT: db.query returns rows array directly in your setup
       const rows = await db.query(q, params);

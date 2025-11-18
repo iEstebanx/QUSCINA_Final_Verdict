@@ -63,6 +63,16 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
    */
   async function logAuditTrail({ employee, role, action, detail }) {
     try {
+      // Always tag logs from this route as coming from Backoffice,
+      // but let callers override/extend meta if they want.
+      const finalDetail = {
+        ...(detail || {}),
+        meta: {
+          app: "backoffice",
+          ...(detail && detail.meta),
+        },
+      };
+
       await db.query(
         `
           INSERT INTO audit_trail (employee, role, action, detail)
@@ -72,7 +82,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
           employee || "System",
           role || "System",
           action,
-          JSON.stringify(detail || {}),
+          JSON.stringify(finalDetail),
         ]
       );
     } catch (err) {
@@ -84,8 +94,9 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
     backupType = "full",
     notes = null,
     employeeId = null,
-    trigger = "manual",
-  } = {}) {
+    employeeName = null,
+    employeeRole = null,
+    trigger = "manual",} = {}) {
     ensureBackupEnv();
 
     const filename = buildFilename(backupType);
@@ -586,6 +597,8 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       backupType = "full",
       notes = null,
       employeeId = null,
+      employeeName = null,
+      employeeRole = null,
       trigger = "manual",
     } = req.body || {};
 
@@ -594,6 +607,8 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         backupType,
         notes,
         employeeId,
+        employeeName,
+        employeeRole,
         trigger,
       });
       res.json(result);
