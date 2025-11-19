@@ -1,4 +1,4 @@
-// Frontend/src/pages/AuditTrail/AuditTrailPage.jsx
+// Backoffice/Frontend/src/pages/AuditTrail/AuditTrailPage.jsx
 import { useState, useMemo, useEffect } from "react";
 import {
   Box,
@@ -74,6 +74,14 @@ const AUTH_STATUS_LEGEND = {
     label: "Password Reset Failed",
     color: "error",
   },
+
+  // 🔹 User Management statuses
+  USER_CREATED:         { label: "User Created", color: "success" },
+  USER_UPDATED:         { label: "User Updated", color: "info" },
+  USER_DELETED:         { label: "User Deleted", color: "error" },
+  USER_UNLOCKED:        { label: "User Unlocked", color: "info" },
+  USER_PASSWORD_CHANGED:{ label: "Password Changed", color: "success" },
+  USER_SQ_UPDATED:      { label: "Security Questions Updated", color: "info" },
 };
 
 /* ============================================================
@@ -225,18 +233,34 @@ export default function AuditTrailPage() {
             <Table stickyHeader aria-label="audit trail table" sx={{ minWidth: 760, tableLayout: "fixed" }}>
               {/* NEW colgroup INCLUDING "Source" */}
               <colgroup>
-                <col style={{ width: "25%" }} />
-                <col style={{ width: "35%" }} />
+                <col style={{ width: "18%" }} />
+                <col style={{ width: "42%" }} />
                 <col style={{ width: "20%" }} />
                 <col style={{ width: "20%" }} />
               </colgroup>
 
               <TableHead>
                 <TableRow>
-                  <TableCell><Typography fontWeight={600}>User Role</Typography></TableCell>
-                  <TableCell><Typography fontWeight={600}>Action</Typography></TableCell>
-                  <TableCell><Typography fontWeight={600}>Timestamp</Typography></TableCell>
-                  <TableCell><Typography fontWeight={600}>Source</Typography></TableCell>
+                  <TableCell>
+                    <Typography fontWeight={600}>User Role</Typography>
+                  </TableCell>
+
+                  <TableCell>
+                    <Typography fontWeight={600}>Action</Typography>
+                  </TableCell>
+
+                  {/* center-aligned */}
+                  <TableCell align="center">
+                    <Typography fontWeight={600} sx={{ textAlign: "center" }}>
+                      Timestamp
+                    </Typography>
+                  </TableCell>
+
+                  <TableCell align="center">
+                    <Typography fontWeight={600} sx={{ textAlign: "center" }}>
+                      Source
+                    </Typography>
+                  </TableCell>
                 </TableRow>
               </TableHead>
 
@@ -272,13 +296,23 @@ export default function AuditTrailPage() {
                         <TableCell>{r.role || "—"}</TableCell>
 
                         <TableCell sx={{ overflow: "hidden" }}>
-                          <Typography noWrap title={r.action}>{r.action}</Typography>
+                          <Typography noWrap title={r.action}>
+                            {r.action}
+                          </Typography>
                         </TableCell>
 
-                        <TableCell>{r.timestamp}</TableCell>
+                        {/* center + no wrap for nice column alignment */}
+                        <TableCell align="center">
+                          <Typography variant="body2" sx={{ whiteSpace: "nowrap" }}>
+                            {r.timestamp}
+                          </Typography>
+                        </TableCell>
 
-                        {/* 🔥 NEW SOURCE COLUMN */}
-                        <TableCell>{sourceLabel}</TableCell>
+                        <TableCell align="center">
+                          <Typography variant="body2">
+                            {sourceLabel}
+                          </Typography>
+                        </TableCell>
                       </TableRow>
                     );
                   })
@@ -324,7 +358,12 @@ export default function AuditTrailPage() {
         {selectedRow && (
           <>
             <DialogTitle sx={{ pb: 2, pt: 3 }}>
-              <Typography variant="h5" fontWeight={700} gutterBottom>
+              <Typography
+                variant="h5"
+                component="span"        // 👈 key part – no longer <h5>
+                fontWeight={700}
+                gutterBottom
+              >
                 {dialogTitle}
               </Typography>
               <Typography variant="body1" color="text.secondary">

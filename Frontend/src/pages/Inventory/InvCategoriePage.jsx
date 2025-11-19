@@ -352,8 +352,8 @@ export default function InvCategoriePage() {
             <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 520 }}>
               <colgroup>
                 <col style={{ width: 56 }} />
-                <col style={{ minWidth: 320 }} />
-                <col style={{ width: 72 }} />
+                <col style={{ minWidth: 280 }} />
+                <col style={{ width: 100 }} />
               </colgroup>
 
               <TableHead>
@@ -362,7 +362,7 @@ export default function InvCategoriePage() {
                     <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
                   </TableCell>
                   <TableCell><Typography fontWeight={600}>Name</Typography></TableCell>
-                  <TableCell align="right"><Typography fontWeight={600}>Actions</Typography></TableCell>
+                  <TableCell align="center"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
               </TableHead>
 
@@ -411,7 +411,7 @@ export default function InvCategoriePage() {
                       <TableCell sx={{ overflow: "hidden" }}>
                         <Typography noWrap title={r.name}>{r.name}</Typography>
                       </TableCell>
-                      <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                      <TableCell align="center" onClick={(e) => e.stopPropagation()}>
                         <Tooltip title="Delete">
                           <span>
                             <IconButton

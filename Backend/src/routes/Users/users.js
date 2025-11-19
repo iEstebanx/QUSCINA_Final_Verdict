@@ -1,6 +1,7 @@
 // Backend/src/routes/Users/users.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { requireAuth } = require("../../auth/requireAuth");
 
 // Prefer DI, but fall back to shared pool
 let sharedDb = null;
@@ -130,6 +131,8 @@ module.exports = ({ db } = {}) => {
   if (!db) throw new Error("DB pool not available");
   const router = express.Router();
 
+  router.use(requireAuth);
+
   /* =============================
      GET /api/users
      ============================= */
@@ -244,8 +247,19 @@ module.exports = ({ db } = {}) => {
       if (!/^\d{10,11}$/.test(String(phone || ""))) return res.status(400).json({ error: "phone must be 10–11 digits" });
       if (!role) return res.status(400).json({ error: "role is required" });
       if (!status) return res.status(400).json({ error: "status is required" });
-      if (!password || password.length < 8) return res.status(400).json({ error: "password must be at least 8 chars" });
-      if (!/^\d{6}$/.test(String(pin || ""))) return res.status(400).json({ error: "pin must be 6 digits" });
+      const roleNorm = String(role || "").trim();
+      const passwordProvided =
+        typeof password === "string" && password.length >= 8;
+      const pinProvided =
+        typeof pin === "string" && /^\d{6}$/.test(String(pin || ""));
+
+      if (roleNorm !== "Cashier" && !passwordProvided) {
+        return res.status(400).json({ error: "password must be at least 8 chars" });
+      }
+
+      if (roleNorm !== "Chef" && !pinProvided) {
+        return res.status(400).json({ error: "pin must be 6 digits" });
+      }
 
       const uname = String(username || "").trim().toLowerCase();
       const mail = String(email || "").trim();
@@ -253,8 +267,19 @@ module.exports = ({ db } = {}) => {
       ensureAtLeastOneMethod(desiredLoginVia);
 
       const sqEntries = await buildSQEntries(securityQuestions);
-      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
+      const passwordHash = passwordProvided ? await bcrypt.hash(password, SALT_ROUNDS) : null;
+      const pinHash = pinProvided ? await bcrypt.hash(pin, SALT_ROUNDS) : null;
+
+      const subjectAfterBase = {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        phone: String(phone),
+        role,
+        status,
+        username: uname || null,
+        email: mail || null,
+        loginVia: desiredLoginVia,
+      };
 
       await db.tx(async (conn) => {
         let id = /^\d{9}$/.test(String(employeeId)) ? String(employeeId) : null;
@@ -262,30 +287,62 @@ module.exports = ({ db } = {}) => {
 
         for (let attempt = 0; attempt < 5; attempt++) {
           if (!id) id = await generateNextEmployeeId(conn);
+
           try {
-            await conn.execute(
-              `INSERT INTO employees
-                (employee_id, first_name, last_name, phone, role, status,
-                 username, email,
-                 login_employee_id, login_username, login_email,
-                 password_hash, pin_hash, password_last_changed, photo_url,
-                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?,
-                       ?, ?,
-                       ?, ?, ?,
-                       ?, ?, NOW(), ?,
-                       NOW(), NOW())`,
-              [
-                id, firstName.trim(), lastName.trim(), String(phone),
-                role, status,
-                uname || null, mail || null,
-                lv.login_employee_id, lv.login_username, lv.login_email,
-                passwordHash, pinHash, photoUrl || null,
-              ]
-            );
+            if (passwordHash) {
+              // 🔐 Roles WITH password (Admin / Manager / Chef, or any user that supplied one)
+              await conn.execute(
+                `INSERT INTO employees
+                  (employee_id, first_name, last_name, phone, role, status,
+                   username, email,
+                   login_employee_id, login_username, login_email,
+                   password_hash, pin_hash, password_last_changed, photo_url,
+                   created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?,
+                         ?, ?,
+                         ?, ?, ?,
+                         ?, ?, NOW(), ?,
+                         NOW(), NOW())`,
+                [
+                  id, firstName.trim(), lastName.trim(), String(phone),
+                  role, status,
+                  uname || null, mail || null,
+                  lv.login_employee_id, lv.login_username, lv.login_email,
+                  passwordHash, pinHash, photoUrl || null,
+                ]
+              );
+            } else {
+              // 🧾 No password provided (e.g. Cashier) → do NOT touch password_hash
+              await conn.execute(
+                `INSERT INTO employees
+                  (employee_id, first_name, last_name, phone, role, status,
+                   username, email,
+                   login_employee_id, login_username, login_email,
+                   pin_hash, password_last_changed, photo_url,
+                   created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?,
+                         ?, ?,
+                         ?, ?, ?,
+                         ?, NULL, ?,
+                         NOW(), NOW())`,
+                [
+                  id, firstName.trim(), lastName.trim(), String(phone),
+                  role, status,
+                  uname || null, mail || null,
+                  lv.login_employee_id, lv.login_username, lv.login_email,
+                  pinHash, photoUrl || null,
+                ]
+              );
+            }
+
+            // Insert succeeded, break retry loop
             break;
           } catch (err) {
-            if (err?.code === "ER_DUP_ENTRY") { id = null; continue; }
+            if (err?.code === "ER_DUP_ENTRY") {
+              // ID collision → regenerate and retry
+              id = null;
+              continue;
+            }
             throw err;
           }
         }
@@ -296,7 +353,7 @@ module.exports = ({ db } = {}) => {
           try {
             await conn.execute(
               `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
-              VALUES (?, ?, ?, ?, NOW())`,
+               VALUES (?, ?, ?, ?, NOW())`,
               [key, type, valueLower, id]
             );
           } catch (err) {
@@ -322,6 +379,25 @@ module.exports = ({ db } = {}) => {
             );
           }
         }
+
+        const subjectAfter = subjectAfterBase;
+
+        await logUserAudit(conn, req, {
+          action: "User - Created",
+          actionType: "create",
+          statusChange: "USER_CREATED",
+          targetEmployeeId: String(id),
+          subjectAfter,
+          statusMessage: `User created: ${subjectAfter.firstName} ${subjectAfter.lastName} (${id}).`,
+          extraActionDetails: {
+            createdEmployeeId: String(id),
+            role: subjectAfter.role,
+            status: subjectAfter.status,
+            username: subjectAfter.username,
+            email: subjectAfter.email,
+            loginVia: subjectAfter.loginVia,
+          },
+        });
       });
 
       res.status(201).json({ ok: true });
@@ -368,6 +444,18 @@ module.exports = ({ db } = {}) => {
         username: !!cur.login_username,
         email: !!cur.login_email,
       };
+
+      const subjectBefore = {
+        firstName: cur.first_name,
+        lastName: cur.last_name,
+        phone: cur.phone,
+        role: cur.role,
+        status: cur.status,
+        username: cur.username,
+        email: cur.email,
+        loginVia: curLoginVia,
+      };
+
       const curAliases = makeAliases(curLoginVia, cur.username, cur.email, employeeId);
       const desiredAliases = makeAliases(desiredLoginVia, newUsername, newEmail, employeeId);
       const { toDelete, toCreate } = diffAliases(curAliases, desiredAliases);
@@ -491,6 +579,123 @@ module.exports = ({ db } = {}) => {
             );
           }
         }
+
+        // ===============================
+        // 🔍 Build "after" snapshot
+        // ===============================
+        const subjectAfter = {
+          firstName:
+            next.firstName !== undefined ? next.firstName : cur.first_name,
+          lastName:
+            next.lastName !== undefined ? next.lastName : cur.last_name,
+          phone: next.phone !== undefined ? next.phone : cur.phone,
+          role: next.role !== undefined ? next.role : cur.role,
+          status: next.status !== undefined ? next.status : cur.status,
+          username:
+            next.username !== undefined ? newUsername : cur.username,
+          email: next.email !== undefined ? newEmail : cur.email,
+          loginVia: desiredLoginVia,
+        };
+
+        // What changed?
+        const basicChangedKeys = [];
+        if (subjectBefore.firstName !== subjectAfter.firstName) basicChangedKeys.push("firstName");
+        if (subjectBefore.lastName !== subjectAfter.lastName)  basicChangedKeys.push("lastName");
+        if (subjectBefore.phone !== subjectAfter.phone)        basicChangedKeys.push("phone");
+        if (subjectBefore.role !== subjectAfter.role)          basicChangedKeys.push("role");
+        if (subjectBefore.status !== subjectAfter.status)      basicChangedKeys.push("status");
+        if (subjectBefore.username !== subjectAfter.username)  basicChangedKeys.push("username");
+        if (subjectBefore.email !== subjectAfter.email)        basicChangedKeys.push("email");
+
+        const loginViaChanged =
+          JSON.stringify(subjectBefore.loginVia) !== JSON.stringify(subjectAfter.loginVia);
+
+        const hasSqChange = !!sqProvided;
+        const authChanges = {
+          passwordChanged: !!hasNewPassword,
+          pinChanged: !!hasNewPin,
+          securityQuestionsChanged: hasSqChange,
+        };
+
+        // Build changedFields for audit (extra detail)
+        const changedFields = {};
+
+        basicChangedKeys.forEach((key) => {
+          changedFields[key] = {
+            before: subjectBefore[key],
+            after: subjectAfter[key],
+          };
+        });
+
+        if (loginViaChanged) {
+          changedFields.loginVia = {
+            before: subjectBefore.loginVia,
+            after: subjectAfter.loginVia,
+          };
+        }
+
+        // Determine type of update
+        const onlyPasswordChange =
+          authChanges.passwordChanged &&
+          !authChanges.pinChanged &&
+          !authChanges.securityQuestionsChanged &&
+          !basicChangedKeys.length &&
+          !loginViaChanged;
+
+        const onlySqChange =
+          authChanges.securityQuestionsChanged &&
+          !authChanges.passwordChanged &&
+          !authChanges.pinChanged &&
+          !basicChangedKeys.length &&
+          !loginViaChanged;
+
+        let actionLabel = "User - Updated";
+        let statusKey = "USER_UPDATED";
+        let actionType = "update";
+
+        if (onlyPasswordChange) {
+          actionLabel = "User - Password Changed";
+          statusKey = "USER_PASSWORD_CHANGED";
+          actionType = "password_update";
+        } else if (onlySqChange) {
+          actionLabel = "User - Security Questions Updated";
+          statusKey = "USER_SQ_UPDATED";
+          actionType = "security_questions_update";
+        }
+
+        const changedLabels = [
+          ...basicChangedKeys,
+          loginViaChanged ? "loginVia" : null,
+          authChanges.passwordChanged ? "password" : null,
+          authChanges.pinChanged ? "pin" : null,
+          authChanges.securityQuestionsChanged ? "securityQuestions" : null,
+        ].filter(Boolean);
+
+        const statusMessage =
+          changedLabels.length
+            ? `Updated user ${subjectAfter.firstName} ${subjectAfter.lastName} (${employeeId}): ${changedLabels.join(", ")}.`
+            : `Updated user ${subjectAfter.firstName} ${subjectAfter.lastName} (${employeeId}).`;
+
+        const extraActionDetails = {
+          changedFields: Object.keys(changedFields).length ? changedFields : undefined,
+          authChanges:
+            authChanges.passwordChanged ||
+            authChanges.pinChanged ||
+            authChanges.securityQuestionsChanged
+              ? authChanges
+              : undefined,
+        };
+
+        await logUserAudit(conn, req, {
+          action: actionLabel,
+          actionType,
+          statusChange: statusKey,
+          targetEmployeeId: String(employeeId),
+          subjectBefore,
+          subjectAfter,
+          statusMessage,
+          extraActionDetails,
+        });
       });
 
       res.json({ ok: true });
@@ -542,6 +747,66 @@ module.exports = ({ db } = {}) => {
         await clearApp(app);
       } // else: legacy-only clear (kept for backward compatibility)
 
+      // ===========================
+      // 🔐 Audit: User Unlock
+      // ===========================
+      let subjectRow = null;
+      try {
+        const rows = await db.query(
+          `SELECT employee_id, first_name, last_name, role, status, username, email
+           FROM employees
+           WHERE employee_id = ? LIMIT 1`,
+          [String(employeeId)]
+        );
+        if (rows.length) subjectRow = rows[0];
+      } catch {
+        // ignore – audit will still log with ID only
+      }
+
+      const subjectAfter = subjectRow
+        ? {
+            firstName: subjectRow.first_name,
+            lastName: subjectRow.last_name,
+            role: subjectRow.role,
+            status: subjectRow.status,
+            username: subjectRow.username,
+            email: subjectRow.email,
+          }
+        : { firstName: "", lastName: "" };
+
+      const unlockScope =
+        scope === "all"
+          ? "all"
+          : app === "pos" || app === "backoffice"
+          ? app
+          : "legacy";
+
+      const niceScope =
+        unlockScope === "all"
+          ? "all systems"
+          : unlockScope === "pos"
+          ? "Cashier-POS"
+          : unlockScope === "backoffice"
+          ? "Backoffice"
+          : "legacy/global";
+
+      const displayName =
+        (subjectAfter.firstName || subjectAfter.lastName)
+          ? `${subjectAfter.firstName} ${subjectAfter.lastName}`.trim()
+          : String(employeeId);
+
+      await logUserAudit(db, req, {
+        action: "User - Unlock",
+        actionType: "unlock",
+        statusChange: "USER_UNLOCKED",
+        targetEmployeeId: String(employeeId),
+        subjectAfter,
+        statusMessage: `Unlocked ${niceScope} for ${displayName}.`,
+        extraActionDetails: {
+          unlockScope,
+        },
+      });
+
       return res.json({ ok: true });
     } catch (e) {
       console.error("[POST /api/users/:employeeId/unlock] fail:", e);
@@ -555,17 +820,158 @@ module.exports = ({ db } = {}) => {
   router.delete("/:employeeId", async (req, res) => {
     try {
       const { employeeId } = req.params;
+
       await db.tx(async (conn) => {
-        // Defensive: remove stale aliases first
-        await conn.execute(`DELETE FROM aliases WHERE employee_id = ?`, [String(employeeId)]);
-        await conn.execute(`DELETE FROM employees WHERE employee_id = ?`, [String(employeeId)]);
+        // Fetch current user for audit context
+        let cur = null;
+        try {
+          const rows = await conn.query(
+            `SELECT employee_id, first_name, last_name, phone, role, status, username, email
+             FROM employees
+             WHERE employee_id = ? LIMIT 1`,
+            [String(employeeId)]
+          );
+          if (rows.length) cur = rows[0];
+        } catch {
+          // ignore – delete still proceeds
+        }
+
+        // Defensive: remove aliases first
+        await conn.execute(
+          `DELETE FROM aliases WHERE employee_id = ?`,
+          [String(employeeId)]
+        );
+        await conn.execute(
+          `DELETE FROM employees WHERE employee_id = ?`,
+          [String(employeeId)]
+        );
+
+        if (cur) {
+          const subjectBefore = {
+            firstName: cur.first_name,
+            lastName: cur.last_name,
+            phone: cur.phone,
+            role: cur.role,
+            status: cur.status,
+            username: cur.username,
+            email: cur.email,
+          };
+
+          await logUserAudit(conn, req, {
+            action: "User - Deleted",
+            actionType: "delete",
+            statusChange: "USER_DELETED",
+            targetEmployeeId: String(employeeId),
+            subjectBefore,
+            statusMessage: `Deleted user ${subjectBefore.firstName} ${subjectBefore.lastName} (${employeeId}).`,
+          });
+        }
       });
+
       res.json({ ok: true });
     } catch (e) {
       console.error("[DELETE /api/users/:employeeId] fail:", e);
       res.status(500).json({ error: e?.message ?? "Failed to delete user" });
     }
   });
+
+  // =============================================
+  // 🔎 Audit Trail helpers for User Management
+  // =============================================
+  function getActorFromReq(req) {
+    const u = req.user || {};
+    const name =
+      u.fullName ||
+      [u.firstName || u.first_name, u.lastName || u.last_name]
+        .filter(Boolean)
+        .join(" ") ||
+      u.username ||
+      u.employeeId ||
+      "System";
+
+    const role = u.role || u.employeeRole || "—";
+    return { employee: name, role };
+  }
+
+  async function insertAuditLog(connOrDb, { employee, role, action, detail }) {
+    const payload = [
+      employee || "System",
+      role || "—",
+      action,
+      JSON.stringify(detail || {}),
+    ];
+
+    if (connOrDb && typeof connOrDb.execute === "function") {
+      await connOrDb.execute(
+        `INSERT INTO audit_trail (employee, role, action, detail)
+        VALUES (?, ?, ?, ?)`,
+        payload
+      );
+    } else if (connOrDb && typeof connOrDb.query === "function") {
+      await connOrDb.query(
+        `INSERT INTO audit_trail (employee, role, action, detail)
+        VALUES (?, ?, ?, ?)`,
+        payload
+      );
+    }
+  }
+
+  /**
+   * Standardized User Management audit entry
+   *
+   * - action: "User - Created", "User - Updated", "User - Deleted", "User - Unlock", ...
+   * - actionType: "create" | "update" | "delete" | "unlock" | "password_update" | "security_questions_update"
+   * - statusChange: matches AUTH_STATUS_LEGEND key (e.g. "USER_CREATED")
+   */
+  async function logUserAudit(
+    connOrDb,
+    req,
+    {
+      action,
+      actionType,
+      statusChange,
+      targetEmployeeId,
+      subjectBefore,
+      subjectAfter,
+      statusMessage,
+      extraActionDetails = {},
+      extraAffectedData = {},
+      meta = {},
+    }
+  ) {
+    const { employee, role } = getActorFromReq(req);
+
+    const subject = subjectAfter || subjectBefore || {};
+    const nameParts = [
+      subject.firstName || subject.first_name,
+      subject.lastName || subject.last_name,
+    ].filter(Boolean);
+
+    const subjectLabel = `${nameParts.join(" ") || "Employee"} (${targetEmployeeId})`;
+
+    const items = [{ name: subjectLabel, qty: 1 }];
+
+    const detail = {
+      statusMessage,
+      actionDetails: {
+        actionType,
+        app: "backoffice", // 🔹 used by AuditTrail "Source" column
+        targetEmployeeId,
+        ...extraActionDetails,
+      },
+      affectedData: {
+        statusChange,
+        items,
+        ...extraAffectedData,
+      },
+      meta: {
+        app: "backoffice",
+        ...meta,
+      },
+    };
+
+    await insertAuditLog(connOrDb, { employee, role, action, detail });
+  }
 
   return router;
 };

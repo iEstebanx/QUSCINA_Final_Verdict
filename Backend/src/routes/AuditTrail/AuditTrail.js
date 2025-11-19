@@ -1,4 +1,4 @@
-// Backend/src/routes/AuditTrail/AuditTrail.js
+// Backoffice/Backend/src/routes/AuditTrail/AuditTrail.js
 const { Router } = require("express");
 
 module.exports = ({ db }) => {

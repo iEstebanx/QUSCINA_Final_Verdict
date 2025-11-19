@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS employees (
   login_username        TINYINT      NOT NULL DEFAULT 1,
   login_email           TINYINT      NOT NULL DEFAULT 1,
 
-  password_hash         VARCHAR(100) NOT NULL,                         -- bcrypt (~60 chars)
-  pin_hash              VARCHAR(100) NOT NULL,
+  password_hash         VARCHAR(100) NULL DEFAULT NULL                         -- bcrypt (~60 chars)
+  pin_hash              VARCHAR(100) NULL DEFAULT NULL,
 
   password_last_changed DATETIME     DEFAULT NULL,
   photo_url             TEXT         DEFAULT NULL,

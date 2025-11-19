@@ -197,13 +197,15 @@ export default function PaymentTypePage() {
               borderRadius: 2,
             }}
           >
-            <Table stickyHeader aria-label="payment types table" sx={{ tableLayout: "fixed", minWidth: 560 }}>
+            <Table
+              stickyHeader
+              aria-label="payment types table"
+              sx={{ tableLayout: "fixed", minWidth: 560 }}>
               <colgroup>
                 <col style={{ width: 56 }} />
-                <col />
-                <col style={{ width: 72 }} />
+                <col style={{ minWidth: 280 }} />
+                <col style={{ width: 100 }} />
               </colgroup>
-
               <TableHead>
                 <TableRow>
                   <TableCell padding="checkbox">

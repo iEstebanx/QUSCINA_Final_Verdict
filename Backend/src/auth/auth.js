@@ -651,15 +651,17 @@ module.exports = function authRouterFactory({ db } = {}) {
       });
 
       const token = issueAuthToken(user);
-      if (remember) {
-        res.cookie("qd_token", token, {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: false, // set to true on HTTPS
-          maxAge: 7 * 24 * 60 * 60 * 1000,
-          path: "/",
-        });
-      }
+      // ✅ NEW — always set cookie, remember only changes maxAge
+      res.cookie("qd_token", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: false,          // true when HTTPS
+        path: "/api",           // or "/" if you prefer
+        ...(remember
+          ? { maxAge: 7 * 24 * 60 * 60 * 1000 }   // 7 days
+          : {}                                    // session cookie (until browser close)
+        ),
+      });
 
       return res.json({
         ok: true,

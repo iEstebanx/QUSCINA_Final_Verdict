@@ -171,9 +171,19 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       );
 
       // 🔹 AUDIT TRAIL: BACKUP SUCCESS
+      const actorEmployee =
+        employeeId
+          ? (employeeName || `User #${employeeId}`)
+          : (trigger === "schedule" ? "System (Schedule)" : "System");
+
+      const actorRole =
+        employeeId
+          ? (employeeRole || "Employee") // Admin / Manager / Chef / Cashier will come from frontend
+          : "System";
+
       await logAuditTrail({
-        employee: employeeId || (trigger === "schedule" ? "System (Schedule)" : "System"),
-        role: employeeId ? "Employee" : "System",
+        employee: actorEmployee,
+        role: actorRole,
         action:
           trigger === "schedule"
             ? "Backup - Scheduled"
@@ -239,9 +249,19 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       }
 
       // 🔹 AUDIT TRAIL: BACKUP FAILURE
+      const actorEmployee =
+        employeeId
+          ? (employeeName || `User #${employeeId}`)
+          : (trigger === "schedule" ? "System (Schedule)" : "System");
+
+      const actorRole =
+        employeeId
+          ? (employeeRole || "Employee")
+          : "System";
+
       await logAuditTrail({
-        employee: employeeId || (trigger === "schedule" ? "System (Schedule)" : "System"),
-        role: employeeId ? "Employee" : "System",
+        employee: actorEmployee,
+        role: actorRole,
         action:
           trigger === "schedule"
             ? "Backup Failed - Scheduled"
@@ -470,7 +490,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
   // POST /api/settings/backup-and-restore/schedule
   // body: { frequency?: 'daily', timeOfDay: 'HH:MM', retentionDays?: number }
   router.post("/schedule", async (req, res, next) => {
-    const { frequency = "daily", timeOfDay, retentionDays = null, employeeId = null } =
+    const { frequency = "daily", timeOfDay, retentionDays = null, employeeId = null, employeeRole = null } =
       req.body || {};
 
     if (!timeOfDay) {
@@ -549,10 +569,13 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
           [description, employeeId]
         );
 
+        const actorEmployee = employeeId ? `User #${employeeId}` : "System";
+        const actorRole = employeeId ? (employeeRole || "Employee") : "System";
+
         // 🔹 AUDIT TRAIL: SCHEDULE UPDATED
         await logAuditTrail({
-          employee: employeeId || "System",
-          role: employeeId ? "Employee" : "System",
+          employee: actorEmployee,
+          role: actorRole,
           action: "Backup Schedule Updated",
           detail: {
             statusMessage: "Backup schedule configuration updated.",
@@ -620,7 +643,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
   // POST /api/settings/backup-and-restore/restore
   // body: { filename: "backup-full_2025-03-16_2330.sql", employeeId? }
   router.post("/restore", async (req, res, next) => {
-    const { filename, employeeId = null } = req.body || {};
+    const { filename, employeeId = null, employeeRole = null } = req.body || {};
     if (!filename) {
       return res.status(400).json({ error: "filename is required" });
     }
@@ -689,10 +712,13 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         [jobId]
       );
 
+      const actorEmployee = employeeId ? `User #${employeeId}` : "System";
+      const actorRole = employeeId ? (employeeRole || "Employee") : "System";
+
       // 🔹 AUDIT TRAIL: RESTORE SUCCESS
       await logAuditTrail({
-        employee: employeeId || "System",
-        role: employeeId ? "Employee" : "System",
+        employee: actorEmployee,
+        role: actorRole,
         action: "Restore - Manual",
         detail: {
           statusMessage: "Database restore completed successfully.",
@@ -740,10 +766,13 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         } catch (_) {}
       }
 
+      const actorEmployee = employeeId ? `User #${employeeId}` : "System";
+      const actorRole = employeeId ? (employeeRole || "Employee") : "System";
+
       // 🔹 AUDIT TRAIL: RESTORE FAILURE
       await logAuditTrail({
-        employee: employeeId || "System",
-        role: employeeId ? "Employee" : "System",
+        employee: actorEmployee,
+        role: actorRole,
         action: "Restore Failed - Manual",
         detail: {
           statusMessage: "Database restore failed.",

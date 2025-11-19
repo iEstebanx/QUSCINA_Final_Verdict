@@ -146,6 +146,18 @@ export default function UserManagementPage() {
   const [form, setForm] = useState(makeBlank([]));
   const [errors, setErrors] = useState({});
 
+  // 👉 Role-based requirements
+  const needsPassword = form.role !== "Cashier"; // Admin, Manager, Chef
+  const needsPin = form.role !== "Chef";         // Admin, Manager, Cashier
+
+  useEffect(() => {
+    setErrors((prev) => ({
+      ...prev,
+      password: undefined,
+      pin: undefined,
+    }));
+  }, [form.role]);
+
   function nextEmployeeId(allRows) {
     const year = new Date().getFullYear();
     const prefix = String(year);                   // "2025"
@@ -284,16 +296,23 @@ export default function UserManagementPage() {
     if (!/^\d{10,11}$/.test(form.phone)) e.phone = "Enter 10–11 digits (e.g. 09559391324)";
     if (!form.role) e.role = "Required";
 
-    // password required on create; optional on edit
     const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
-    if (!isEditing || (isEditing && form.password)) {
-      if (!/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d\S]{8,}$/.test(form.password))
-        e.password = "8+ chars with letters & numbers (special recommended)";
+
+    // 🔐 PASSWORD (role-aware)
+    if (needsPassword) {
+      if (!isEditing || (isEditing && form.password)) {
+        if (!/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d\S]{8,}$/.test(form.password)) {
+          e.password = "8+ chars with letters & numbers (special recommended)";
+        }
+      }
     }
 
+    // 🔢 PIN (role-aware)
     const pin = form.pinDigits.join("");
-    if (!isEditing || (isEditing && pin.trim() !== "")) {
-      if (!/^\d{6}$/.test(pin)) e.pin = "6 digits required";
+    if (needsPin) {
+      if (!isEditing || (isEditing && pin.trim() !== "")) {
+        if (!/^\d{6}$/.test(pin)) e.pin = "6 digits required";
+      }
     }
 
     const uname = form.username.trim().toLowerCase();
@@ -334,8 +353,10 @@ export default function UserManagementPage() {
       email: form.email.trim(),
       loginVia: { ...form.loginVia },
       photoUrl: form.photoUrl || "",
-      ...(form.password ? { password: form.password } : {}),
-      ...(/^\d{6}$/.test(pin) ? { pin } : {}),
+      // Only include password if present AND role actually uses it
+      ...(needsPassword && form.password ? { password: form.password } : {}),
+      // Only include PIN if role uses PIN and it's a valid 6-digit value
+      ...(needsPin && /^\d{6}$/.test(pin) ? { pin } : {}),
     };
 
     const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
@@ -1139,43 +1160,51 @@ export default function UserManagementPage() {
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Credentials</Typography>
 
             <Grid container spacing={3} alignItems="center">
-              {/* Password row */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Paper
-                  variant="outlined"
-                  onClick={openPasswordDialog}
-                  sx={{
-                    p: 1,
-                    cursor: "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    minHeight: 46,
-                  }}
-                >
-                  <Stack direction="row" spacing={1.25} alignItems="center">
-                    <LockOutlinedIcon fontSize="small" />
-                    <Box>
-                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                        {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
-                      </Typography>
-                      <Typography variant="body2" sx={{ mt: 0.25 }}>
-                        Password{rows.some((r) => String(r.employeeId) === String(form.employeeId)) ? "" : "*"}
-                        {form.password ? " (staged)" : ""}
-                      </Typography>
-                    </Box>
-                  </Stack>
-                  <ChevronRightOutlinedIcon fontSize="small" />
-                </Paper>
-                {errors.password && (
-                  <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
-                    {errors.password}
-                  </Typography>
-                )}
-              </Grid>
+              {/* Password row (hidden for Cashier) */}
+              {needsPassword && (
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Paper
+                    variant="outlined"
+                    onClick={openPasswordDialog}
+                    sx={{
+                      p: 1,
+                      cursor: "pointer",
+                      "&:hover": { bgcolor: "action.hover" },
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      minHeight: 46,
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <LockOutlinedIcon fontSize="small" />
+                      <Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                          {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.25 }}>
+                          Password
+                          {rows.some((r) => String(r.employeeId) === String(form.employeeId)) ? "" : "*"}
+                          {form.password ? " (staged)" : ""}
+                          {form.role === "Cashier" && " (not required for Cashier)"}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                    <ChevronRightOutlinedIcon fontSize="small" />
+                  </Paper>
+                  {errors.password && (
+                    <Typography
+                      variant="caption"
+                      color="error"
+                      sx={{ mt: 0.5, display: "block" }}
+                    >
+                      {errors.password}
+                    </Typography>
+                  )}
+                </Grid>
+              )}
 
-              {/* Security Questions row */}
+              {/* Security Questions row – unchanged, still available for everyone */}
               <Grid size={{ xs: 12, md: 6 }}>
                 <Paper
                   variant="outlined"
@@ -1206,61 +1235,81 @@ export default function UserManagementPage() {
                   <ChevronRightOutlinedIcon fontSize="small" />
                 </Paper>
                 {!!sqError && (
-                  <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                  <Typography
+                    variant="caption"
+                    color="error"
+                    sx={{ mt: 0.5, display: "block" }}
+                  >
                     {sqError}
                   </Typography>
                 )}
               </Grid>
 
-              {/* PIN */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                  POS PIN<span style={{ color: "#d32f2f" }}> *</span>
-                </Typography>
-                <Stack direction="row" alignItems="center" spacing={1} flexWrap="nowrap" sx={{ overflowX: "auto" }}>
-                  <LockOutlinedIcon fontSize="small" />
-                  <Stack direction="row" spacing={0.5}>
-                    {form.pinDigits.map((d, i) => (
-                      <TextField
-                        key={i}
+              {/* PIN row (hidden for Chef) */}
+              {needsPin && (
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                    POS PIN<span style={{ color: "#d32f2f" }}> *</span>
+                    {form.role === "Chef" && " (not required for Chef)"}
+                  </Typography>
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    spacing={1}
+                    flexWrap="nowrap"
+                    sx={{ overflowX: "auto" }}
+                  >
+                    <LockOutlinedIcon fontSize="small" />
+                    <Stack direction="row" spacing={0.5}>
+                      {form.pinDigits.map((d, i) => (
+                        <TextField
+                          key={i}
+                          size="small"
+                          inputRef={pinRefs[i]}
+                          value={pinHidden && d ? "•" : d}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/\D/g, "").slice(-1);
+                            setForm((f) => {
+                              const arr = [...f.pinDigits];
+                              arr[i] = v;
+                              return { ...f, pinDigits: arr };
+                            });
+                            if (v && i < 5) pinRefs[i + 1].current?.focus();
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Backspace" && !form.pinDigits[i] && i > 0) {
+                              pinRefs[i - 1].current?.focus();
+                            }
+                          }}
+                          slotProps={{
+                            htmlInput: {
+                              inputMode: "numeric",
+                              pattern: "[0-9]*",
+                              maxLength: 1,
+                              style: { textAlign: "center", width: 28 },
+                              "aria-label": `PIN digit ${i + 1}`,
+                            },
+                          }}
+                          sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
+                        />
+                      ))}
+                    </Stack>
+                    <Tooltip title={pinHidden ? "Show" : "Hide"}>
+                      <IconButton
                         size="small"
-                        inputRef={pinRefs[i]}
-                        value={pinHidden && d ? "•" : d}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/\D/g, "").slice(-1);
-                          setForm((f) => {
-                            const arr = [...f.pinDigits];
-                            arr[i] = v;
-                            return { ...f, pinDigits: arr };
-                          });
-                          if (v && i < 5) pinRefs[i + 1].current?.focus();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Backspace" && !form.pinDigits[i] && i > 0) {
-                            pinRefs[i - 1].current?.focus();
-                          }
-                        }}
-                        slotProps={{
-                          htmlInput: {
-                            inputMode: "numeric",
-                            pattern: "[0-9]*",
-                            maxLength: 1,
-                            style: { textAlign: "center", width: 28 },
-                            "aria-label": `PIN digit ${i + 1}`,
-                          },
-                        }}
-                        sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
-                      />
-                    ))}
+                        onClick={() => setPinHidden((v) => !v)}
+                      >
+                        {pinHidden ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
+                      </IconButton>
+                    </Tooltip>
                   </Stack>
-                  <Tooltip title={pinHidden ? "Show" : "Hide"}>
-                    <IconButton size="small" onClick={() => setPinHidden((v) => !v)}>
-                      {pinHidden ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                    </IconButton>
-                  </Tooltip>
-                </Stack>
-                {errors.pin && <Typography variant="caption" color="error">{errors.pin}</Typography>}
-              </Grid>
+                  {errors.pin && (
+                    <Typography variant="caption" color="error">
+                      {errors.pin}
+                    </Typography>
+                  )}
+                </Grid>
+              )}
             </Grid>
 
             {/* ===== Security & Lock ===== */}

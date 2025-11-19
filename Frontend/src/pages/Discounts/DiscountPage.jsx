@@ -311,13 +311,16 @@ export default function DiscountPage() {
             <Table
               stickyHeader
               aria-label="discounts table"
-              sx={{ tableLayout: "fixed", minWidth: 520 }} // shrink min content width
+              sx={{
+                tableLayout: "fixed",
+                minWidth: 540,               // small bump so columns have room
+              }}
             >
               <colgroup>
-                <col style={{width:56}}/>
-                <col style={{minWidth:240}}/>
-                <col style={{minWidth:120,width:"auto"}}/>
-                <col style={{width:56}}/>
+                <col style={{ width: 56 }} />                 {/* checkbox */}
+                <col style={{ minWidth: 260 }} />             {/* Item Name */}
+                <col style={{ minWidth: 110, width: "auto" }} /> {/* Value */}
+                <col style={{ width: 104 }} />                {/* Actions – was 56 */}
               </colgroup>
 
               <TableHead>

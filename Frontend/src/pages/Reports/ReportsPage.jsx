@@ -15,6 +15,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
 import PaymentsIcon from "@mui/icons-material/Payments";
 import ReplayIcon from "@mui/icons-material/Replay";
+import GridOnIcon from "@mui/icons-material/GridOn"; // Excel icon
 
 const comfyCells = {
   "& .MuiTableCell-root": { py: 1.25, px: 2 },
@@ -310,6 +311,97 @@ export default function ReportsPage() {
     setSelectedOrder(order);
   }
 
+  // 🔹 Excel Download Function
+  const downloadExcel = () => {
+    // Create Excel data structure
+    const excelData = {
+      reportInfo: {
+        title: "Sales Report",
+        dateRange: range === "custom" && customFrom && customTo 
+          ? `${customFrom} to ${customTo}`
+          : range.charAt(0).toUpperCase() + range.slice(1),
+        generatedAt: new Date().toLocaleString(),
+      },
+      categoryTop5: categoryTop5,
+      payments: payments,
+      bestSeller: bestSeller,
+      orders: filteredOrders,
+      categorySeries: categorySeries,
+    };
+
+    // Convert to CSV format (simplified Excel format)
+    const convertToCSV = (data, headers) => {
+      const csvHeaders = headers.map(h => `"${h.label}"`).join(',');
+      const csvRows = data.map(row => 
+        headers.map(h => `"${row[h.key]}"`).join(',')
+      );
+      return [csvHeaders, ...csvRows].join('\n');
+    };
+
+    // Create CSV content for each section
+    const categoryCSV = convertToCSV(excelData.categoryTop5, [
+      { label: 'Rank', key: 'name' }, // Using name as rank display
+      { label: 'Category Name', key: 'name' },
+      { label: 'Net Sales', key: 'net' }
+    ]);
+
+    const paymentsCSV = convertToCSV(excelData.payments, [
+      { label: 'Payment Type', key: 'type' },
+      { label: 'Payment Transactions', key: 'tx' },
+      { label: 'Payment Amount', key: 'payAmt' },
+      { label: 'Refund Transactions', key: 'refundTx' },
+      { label: 'Refund Amount', key: 'refundAmt' },
+      { label: 'Net Amount', key: 'net' }
+    ]);
+
+    const bestSellerCSV = convertToCSV(excelData.bestSeller, [
+      { label: 'Rank', key: 'rank' },
+      { label: 'Item Name', key: 'name' },
+      { label: 'Total Orders', key: 'orders' },
+      { label: 'Quantity Sold', key: 'qty' },
+      { label: 'Total Sales', key: 'sales' }
+    ]);
+
+    const ordersCSV = convertToCSV(excelData.orders, [
+      { label: 'Receipt No', key: 'id' },
+      { label: 'Date', key: 'date' },
+      { label: 'Employee', key: 'employee' },
+      { label: 'Type', key: 'type' },
+      { label: 'Total', key: 'total' }
+    ]);
+
+    // Combine all sections with headers
+    const fullCSV = `Sales Report - ${excelData.reportInfo.dateRange}
+Generated: ${excelData.reportInfo.generatedAt}
+
+TOP 5 CATEGORIES
+${categoryCSV}
+
+SALES BY PAYMENT TYPE
+${paymentsCSV}
+
+BEST SELLERS
+${bestSellerCSV}
+
+ORDERS
+${ordersCSV}
+
+SALES CHART DATA
+Date,Amount
+${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
+
+    // Create and download file
+    const blob = new Blob([fullCSV], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `sales-report-${excelData.reportInfo.dateRange.replace(/\s+/g, '-')}-${Date.now()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <Box p={2} display="grid" gap={2} sx={{ overflowX: "hidden" }}>
       {/* Controls */}
@@ -347,8 +439,8 @@ export default function ReportsPage() {
               <MenuItem value="custom">Custom</MenuItem>
             </Select>
           </FormControl>
-
-          {/* 🔸 Custom date range (enabled only when range === "custom") */}
+          
+          {/* 🔸 Custom date range (ALWAYS enabled) */}
           <TextField
             size="small"
             type="date"
@@ -380,6 +472,16 @@ export default function ReportsPage() {
           />
 
           <Box sx={{ flexGrow: 1 }} />
+          
+          {/* 🔸 Export Buttons */}
+          <Button
+            variant="contained"
+            color="success"
+            startIcon={<GridOnIcon />}
+            onClick={downloadExcel}
+          >
+            Excel
+          </Button>
           <Button
             variant="contained"
             color="error"

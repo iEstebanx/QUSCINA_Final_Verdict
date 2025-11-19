@@ -442,12 +442,10 @@ export default function CategoriePage() {
           >
             <Table stickyHeader aria-label="categories table" sx={{ tableLayout: "fixed", minWidth: 520 }}>
               <colgroup>
-                {[
-                  <col key="c1" style={{ width: 56 }} />,
-                  <col key="c2" style={{ width: 120 }} />,
-                  <col key="c3" style={{ minWidth: 240 }} />,
-                  <col key="c4" style={{ width: 72 }} />,
-                ]}
+                <col style={{ width: 56 }} />          {/* Checkbox */}
+                <col style={{ width: 100 }} />         {/* Image */}
+                <col style={{ minWidth: 240 }} />      {/* Name */}
+                <col style={{ width: 100 }} />         {/* Actions (more space to match design) */}
               </colgroup>
 
               <TableHead>
@@ -461,7 +459,7 @@ export default function CategoriePage() {
                   <TableCell>
                     <Typography fontWeight={600}>Name</Typography>
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="center">
                     <Typography fontWeight={600}>Actions</Typography>
                   </TableCell>
                 </TableRow>
@@ -519,7 +517,7 @@ export default function CategoriePage() {
                       <Typography noWrap title={r.name}>{r.name}</Typography>
                     </TableCell>
 
-                    <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                    <TableCell align="center" onClick={(e) => e.stopPropagation()}>
                       <Tooltip title="Delete">
                         <span>
                           <IconButton

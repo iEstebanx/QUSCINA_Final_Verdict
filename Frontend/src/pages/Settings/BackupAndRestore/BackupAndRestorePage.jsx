@@ -453,13 +453,17 @@ export default function BackupAndRestorePage() {
     setRestoreLoading(true);
     setRestoreErr("");
 
+    const employeeId = user?.employeeId ?? user?.id ?? null;
+    const employeeRole = user?.role ?? user?.roleName ?? null;
+
     try {
       const res = await fetch("/api/settings/backup-and-restore/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           filename: restoreTarget.filename,
-          // later: employeeId from auth context
+          employeeId,
+          employeeRole,
         }),
       });
 
@@ -527,6 +531,7 @@ export default function BackupAndRestorePage() {
 
     // 👇 grab current user id (works for both employeeId or id shape)
     const employeeId = user?.employeeId ?? user?.id ?? null;
+    const employeeRole = user?.role ?? user?.roleName ?? null;
 
     try {
       if (!scheduleTime) {
@@ -537,7 +542,8 @@ export default function BackupAndRestorePage() {
         frequency: "daily",
         timeOfDay: scheduleTime, // "HH:MM"
         retentionDays: retentionDays ? parseInt(retentionDays, 10) : null,
-        employeeId, // 👈 send to backend so audit trail can tag the user
+        employeeId,
+        employeeRole,
       };
 
       const res = await fetch("/api/settings/backup-and-restore/schedule", {
