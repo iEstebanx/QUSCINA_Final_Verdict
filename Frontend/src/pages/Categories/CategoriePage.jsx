@@ -410,7 +410,7 @@ export default function CategoriePage() {
               }}
               sx={{ flexShrink: 0 }}
             >
-              Add Category
+              Add Menu Category
             </Button>
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
@@ -442,10 +442,12 @@ export default function CategoriePage() {
           >
             <Table stickyHeader aria-label="categories table" sx={{ tableLayout: "fixed", minWidth: 520 }}>
               <colgroup>
-                <col style={{ width: 56 }} />          {/* Checkbox */}
-                <col style={{ width: 100 }} />         {/* Image */}
-                <col style={{ minWidth: 240 }} />      {/* Name */}
-                <col style={{ width: 100 }} />         {/* Actions (more space to match design) */}
+                {[
+                  <col key="col-select" style={{ width: 56 }} />,          // Checkbox
+                  <col key="col-image" style={{ width: 100 }} />,          // Image
+                  <col key="col-name" style={{ minWidth: 240 }} />,        // Name
+                  <col key="col-actions" style={{ width: 100 }} />,        // Actions
+                ]}
               </colgroup>
 
               <TableHead>

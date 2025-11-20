@@ -1,4 +1,4 @@
-// Backend/src/routes/Users/users.js
+// Backoffice/Backend/src/routes/Users/users.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { requireAuth } = require("../../auth/requireAuth");

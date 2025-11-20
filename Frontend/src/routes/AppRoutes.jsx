@@ -8,25 +8,26 @@ import RequireAdmin from "../components/Guards/RequireAdmin";
 import LoginPage from "../pages/Login/LoginPage";
 import NotFound from "@/pages/NotFound.jsx";
 
-import CategoriePage from "@/pages/Categories/CategoriePage.jsx";
-import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
-import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
-
 import DashboardPage from "../pages/Dashboard/DashboardPage";
+
+import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
+
+import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
+import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
 
 import ReportsPage from "../pages/Reports/ReportsPage";
 import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
 
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
-
-import AuditTrailPage from "@/pages/AuditTrail/AuditTrailPage.jsx";
-
+import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
+import InventorySettingsPage from "@/pages/Settings/InventorySettings/InventorySettingsPage.jsx";
 import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
-import TaxesPage from "@/pages/Settings/Taxes/TaxesPage.jsx";
+import AuthorizationPinsPage from "@/pages/Settings/AuthorizationPins/AuthorizationPinsPage.jsx";
+import Categories from "@/pages/Settings/Categories/Categories.jsx";
 import BackupAndRestorePage from "@/pages/Settings/BackupAndRestore/BackupAndRestorePage.jsx";
 
-import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
-import InvCategoriePage from "@/pages/Inventory/InvCategoriePage.jsx";
+
+import AuditTrailPage from "@/pages/AuditTrail/AuditTrailPage.jsx";
 
 export default function AppRoutes() {
   return (
@@ -41,7 +42,6 @@ export default function AppRoutes() {
         <Route element={<MainLayout />}>
           {/* Core */}
           <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/users" element={<UserManagementPage />} />
 
           {/* Reports (group in sidebar: Reports + Inventory History) */}
           <Route path="/reports" element={<ReportsPage />} />
@@ -52,12 +52,20 @@ export default function AppRoutes() {
 
           {/* Menu */}
           <Route path="/menu/items" element={<ItemlistPage />} />
-          <Route path="/menu/categories" element={<CategoriePage />} />
           <Route path="/menu/discounts" element={<DiscountPage />} />
+          {/* Old Menu Categories -> Settings Categories */}
+          <Route
+            path="/menu/categories"
+            element={<Navigate to="/settings/categories" replace />}
+          />
 
           {/* Inventory */}
           <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/inventory/categories" element={<InvCategoriePage />} />
+          {/* Old Inventory Categories -> Settings Inventory Categories */}
+          <Route
+            path="/inventory/categories"
+            element={<Navigate to="/settings/categories" replace />}
+          />
 
           {/* Audit Trail (single page) */}
           <Route path="/audit-trail" element={<AuditTrailPage />} />
@@ -77,12 +85,56 @@ export default function AppRoutes() {
             element={<Navigate to="/reports/inventory-history" replace />}
           />
 
+          {/* Old User Management path -> Settings User Management */}
+          <Route
+            path="/users"
+            element={<Navigate to="/settings/users" replace />}
+          />
+
           {/* Settings */}
+          {/* 1. User Management */}
+          <Route
+            path="/settings/users"
+            element={<UserManagementPage />}
+          />
+
+          {/* 2. Store Settings */}
+          <Route
+            path="/settings/store"
+            element={<StoreSettingsPage />}
+          />
+
+          {/* 3. Inventory Settings */}
+          <Route
+            path="/settings/inventory"
+            element={<InventorySettingsPage />}
+          />
+
+          {/* 4. Payment Types */}
           <Route
             path="/settings/payment-types"
             element={<PaymentTypePage />}
           />
-          <Route path="/settings/taxes" element={<TaxesPage />} />
+
+          {/* 5. Authorization Pins */}
+          <Route
+            path="/settings/authorization-pins"
+            element={<AuthorizationPinsPage />}
+          />
+
+          {/* 6. Categories (Menu + Inventory) */}
+          <Route
+            path="/settings/categories"
+            element={<Categories />}
+          />
+
+          {/* Backward-compat: old direct inventory-categories settings link */}
+          <Route
+            path="/settings/inventory-categories"
+            element={<Navigate to="/settings/categories" replace />}
+          />
+
+          {/* 8. Backup & Restore */}
           <Route
             path="/settings/backup-restore"
             element={<BackupAndRestorePage />}

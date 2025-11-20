@@ -1,4 +1,4 @@
-// Backend/src/routes/index.js
+// Backoffice/Backend/src/routes/index.js
 const { Router } = require("express");
 const fs = require("fs");
 const path = require("path");

@@ -1,4 +1,4 @@
-// Backend/src/routes/Inventory/ingredients.js
+// Backoffice/Backend/src/routes/Inventory/ingredients.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool
@@ -19,8 +19,72 @@ module.exports = ({ db } = {}) => {
 
   const router = express.Router();
 
-  const UNIT_ALLOWED = new Set(["kg", "pack", "pcs"]);
+  const UNIT_ALLOWED = new Set(["kg", "g", "l", "ml", "pack", "pcs"]);
   const SAMPLE_LIMIT = 6;
+
+  // near the top
+  const LOW_STOCK_MIN_RATIO_CRITICAL = 0.25;
+
+  // GET /api/inventory/ingredients/low-stock
+  router.get("/low-stock", async (req, res) => {
+    try {
+      const { category, limit } = req.query;
+      const L = Math.min(Number(limit) || 50, 200);
+
+      const params = [];
+      let where = `
+        lowStock > 0
+        AND currentStock > 0
+        AND currentStock <= lowStock
+      `;
+
+      if (category) {
+        where += " AND category_lower = ?";
+        params.push(String(category).toLowerCase());
+      }
+
+      const rows = await db.query(
+        `
+        SELECT id, name, category, type, currentStock, lowStock, updatedAt
+        FROM inventory_ingredients
+        WHERE ${where}
+        ORDER BY (currentStock / lowStock) ASC, updatedAt DESC
+        LIMIT ${L}
+        `,
+        params
+      );
+
+      const items = rows.map((r) => {
+        const currentStock = Number(r.currentStock || 0);
+        const lowStock = Number(r.lowStock || 0);
+
+        const ratio = lowStock > 0 ? currentStock / lowStock : 1;
+
+        let alert = null;
+        if (lowStock > 0 && currentStock > 0 && currentStock <= lowStock) {
+          if (ratio <= LOW_STOCK_MIN_RATIO_CRITICAL) alert = "critical";
+          else alert = "warning";
+        }
+
+        return {
+          id: r.id,
+          name: r.name,
+          category: r.category,
+          type: r.type,
+          currentStock,
+          lowStock,
+          alert,
+          ratio,
+          updatedAt: r.updatedAt,
+        };
+      });
+
+      res.json({ ok: true, items });
+    } catch (e) {
+      console.error("[low-stock] failed:", e);
+      res.status(500).json({ ok: false, error: e?.message || "Low stock query failed" });
+    }
+  });
 
   // GET /api/inventory/ingredients  (newest first)
   router.get("/", async (_req, res) => {

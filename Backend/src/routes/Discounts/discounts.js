@@ -1,4 +1,4 @@
-// Backend/src/routes/Discounts/discounts.js
+// Backoffice/Backend/src/routes/Discounts/discounts.js
 const express = require("express");
 
 let sharedDb = null;

@@ -1,5 +1,5 @@
-// Frontend/src/pages/Dashboard/DashboardPage.jsx
-import { useState } from "react";
+// Backoffice/Frontend/src/pages/Dashboard/DashboardPage.jsx
+import { useState, useEffect } from "react";
 import {
   Box,
   Paper,
@@ -15,7 +15,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  useMediaQuery,
   useTheme,
   FormControl,
   InputLabel,
@@ -45,6 +44,9 @@ import TrendingDownIcon from "@mui/icons-material/TrendingDown";
 import InventoryIcon from "@mui/icons-material/Inventory";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import PaymentIcon from "@mui/icons-material/Payment";
+import PeopleIcon from "@mui/icons-material/People";
+import { useNavigate } from "react-router-dom";
+import { subscribeUsers } from "@/services/Users/users";
 
 /* ----------------------------- Enhanced Mock Data ----------------------------- */
 const salesSeriesByRange = {
@@ -87,18 +89,6 @@ const bestSellersByRange = {
   // ... other ranges
 };
 
-const lowStockByRange = {
-  days: [
-    { item: "Soy Sauce", current: 2, min: 10, alert: "critical" },
-    { item: "Vinegar", current: 5, min: 8, alert: "warning" },
-    { item: "Garlic", current: 3, min: 15, alert: "critical" },
-    { item: "Onions", current: 8, min: 12, alert: "warning" },
-    { item: "Ginger", current: 4, min: 10, alert: "critical" },
-    { item: "Cooking Oil", current: 6, min: 8, alert: "warning" },
-  ],
-  // ... other ranges
-};
-
 const paymentDataByRange = {
   days: [
     { name: "Cash", value: 62.5, amount: 1738, transactions: 25 },
@@ -126,11 +116,33 @@ const peso = (n) =>
     maximumFractionDigits: 2,
   })}`;
 
+// small date formatter for Last Login
+const formatDateTime = (iso) => {
+  if (!iso) return "-";
+  try {
+    const d = new Date(iso);
+    return (
+      d.toLocaleDateString("en-PH", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+      }) +
+      " • " +
+      d.toLocaleTimeString("en-PH", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    );
+  } catch {
+    return "-";
+  }
+};
+
 // Quick Stats Component
 const QuickStats = ({ metrics }) => (
   <Grid container spacing={2} sx={{ mb: 2 }}>
     <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: 'center', p: 1 }}>
+      <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="primary">
             {peso(metrics.totalSales)}
@@ -141,8 +153,9 @@ const QuickStats = ({ metrics }) => (
         </CardContent>
       </Card>
     </Grid>
+
     <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: 'center', p: 1 }}>
+      <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="secondary">
             {metrics.totalOrders}
@@ -153,8 +166,9 @@ const QuickStats = ({ metrics }) => (
         </CardContent>
       </Card>
     </Grid>
+
     <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: 'center', p: 1 }}>
+      <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="success.main">
             {peso(metrics.averageOrder)}
@@ -165,14 +179,16 @@ const QuickStats = ({ metrics }) => (
         </CardContent>
       </Card>
     </Grid>
+
+    {/* 🔽 Change is here */}
     <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: 'center', p: 1 }}>
+      <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="info.main">
             {metrics.customerCount}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Customers
+            Total User Accounts
           </Typography>
         </CardContent>
       </Card>
@@ -182,6 +198,65 @@ const QuickStats = ({ metrics }) => (
 
 export default function DashboardPage() {
   const theme = useTheme();
+  const navigate = useNavigate();
+
+  const [employees, setEmployees] = useState([]);
+  const [lowStockItems, setLowStockItems] = useState([]);
+  const [lowStockErr, setLowStockErr] = useState("");
+
+  useEffect(() => {
+    // reuse the same live list as UserManagement
+    const unsub = subscribeUsers(
+      ({ rows }) => {
+        const list = (rows || []).map((e) => ({
+          id: e.employeeId,
+          name: `${e.firstName || ""} ${e.lastName || ""}`.trim(),
+          role: e.role,
+          status: e.status,
+          username: e.username || "",
+          createdAt: e.createdAt,
+          lastLoginAt: e.lastLoginAt,
+        }));
+        setEmployees(list);
+      },
+      {
+        intervalMs: 10000, // or 5000, same as UserManagement
+        onError: (msg) => {
+          console.error("[dashboard] users list error:", msg);
+          setEmployees([]);
+        },
+      }
+    );
+
+    return () => {
+      // stop polling when dashboard unmounts
+      if (typeof unsub === "function") unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/inventory/ingredients/low-stock", {
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok !== true) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        if (!alive) return;
+        setLowStockItems(Array.isArray(data.items) ? data.items : []);
+        setLowStockErr("");
+      } catch (e) {
+        console.error("[dashboard] low-stock:", e);
+        if (!alive) return;
+        setLowStockItems([]);
+        setLowStockErr(e?.message || "Failed to load low stock");
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // ------------------------ Date Range State ------------------------
   const [range, setRange] = useState("days");
@@ -196,7 +271,6 @@ export default function DashboardPage() {
         salesSeries: salesSeriesByRange.days,
         yesterdaySales: yesterdaySalesByRange.days,
         bestSellers: bestSellersByRange.days,
-        lowStock: lowStockByRange.days,
         paymentData: paymentDataByRange.days,
         metrics: metricsData.days,
       };
@@ -207,13 +281,16 @@ export default function DashboardPage() {
       salesSeries: salesSeriesByRange[effectiveRangeKey] || salesSeriesByRange.days,
       yesterdaySales: yesterdaySalesByRange[effectiveRangeKey] || yesterdaySalesByRange.days,
       bestSellers: bestSellersByRange[effectiveRangeKey] || bestSellersByRange.days,
-      lowStock: lowStockByRange[effectiveRangeKey] || lowStockByRange.days,
       paymentData: paymentDataByRange[effectiveRangeKey] || paymentDataByRange.days,
       metrics: metricsData[effectiveRangeKey] || metricsData.days,
     };
   };
 
-  const { salesSeries, yesterdaySales, bestSellers, lowStock, paymentData, metrics } = getFilteredData();
+  const { salesSeries, yesterdaySales, bestSellers, paymentData, metrics } = getFilteredData();
+  const metricsWithAccounts = {
+    ...metrics,
+    customerCount: employees.length,
+  };
 
   /* ------------------------------ Improved Card Styles ------------------------------ */
   const cardSx = {
@@ -318,7 +395,7 @@ export default function DashboardPage() {
       </Paper>
 
       {/* Quick Stats */}
-      <QuickStats metrics={metrics} />
+      <QuickStats metrics={metricsWithAccounts} />
 
       <Box
         sx={{
@@ -336,33 +413,96 @@ export default function DashboardPage() {
           },
         }}
       >
-        {/* ============================ Sales Trend ============================ */}
+
+        {/* ============================ User Accounts ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", lg: "span 8" } }}>
           <Paper sx={cardSx}>
             <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
+              <PeopleIcon color="primary" />
               <Typography variant="h6" fontWeight={800}>
-                Sales Performance
+                User Accounts
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <Box sx={{ width: "100%", height: "100%", minHeight: 0 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={salesSeries}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis />
-                    <Tooltip 
-                      formatter={(value) => [`₱${value}`, 'Amount']}
-                    />
-                    <Bar dataKey="sales" fill={theme.palette.primary.main} />
-                    <Bar dataKey="orders" fill={theme.palette.secondary.main} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </Box>
+              <TableContainer className="scroll-x" sx={{ flex: 1 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Name</TableCell>
+                      <TableCell>Role</TableCell>
+                      <TableCell>Username</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell>Last Login</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {employees.slice(0, 5).map((emp) => (
+                      <TableRow key={emp.id} hover>
+                        <TableCell>
+                          <Typography variant="body2" fontWeight={600} noWrap>
+                            {emp.name || "(No name)"}
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                          >
+                            {emp.id}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2">{emp.role}</Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" noWrap>
+                            {emp.username || "—"}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            size="small"
+                            label={emp.status || "Unknown"}
+                            color={emp.status === "Active" ? "success" : "default"}
+                            variant={emp.status === "Active" ? "filled" : "outlined"}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" noWrap>
+                            {formatDateTime(emp.lastLoginAt || emp.createdAt)}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+
+                    {employees.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5}>
+                          <Box py={4} textAlign="center">
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                            >
+                              No user accounts found.
+                            </Typography>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
+              <Button
+                size="small"
+                sx={{ mt: 1, alignSelf: "flex-end" }}
+                onClick={() => navigate("/users")}
+              >
+                Manage Accounts
+              </Button>
             </Box>
           </Paper>
         </Box>
+
 
         {/* ============================ Payment Methods ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", md: "span 4" } }}>
@@ -431,7 +571,7 @@ export default function DashboardPage() {
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <TableContainer sx={{ flex: 1 }}>
+              <TableContainer className="scroll-x" sx={{ flex: 1 }}>
                 <Table size="small" stickyHeader>
                   <TableHead>
                     <TableRow>
@@ -542,46 +682,88 @@ export default function DashboardPage() {
         {/* ============================ Low Stock ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
           <Paper sx={cardSx}>
-            <Box sx={cardHeaderSx}>
-              <InventoryIcon color="primary" />
-              <Typography variant="h6" fontWeight={800}>
-                Low Stock Alert
+            <Box sx={{ ...cardHeaderSx, justifyContent: "space-between" }}>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <InventoryIcon color="primary" />
+                <Typography variant="h6" fontWeight={800}>
+                  Low Stock Alert
+                </Typography>
+              </Box>
+
+              {/* Small summary */}
+              <Typography variant="body2" color="text.secondary">
+                {lowStockItems.length
+                  ? `${lowStockItems.filter(i => i.alert === "critical").length} Critical · ${
+                      lowStockItems.filter(i => i.alert === "warning").length
+                    } Warning`
+                  : "All good"}
               </Typography>
             </Box>
+
             <Box sx={cardContentSx}>
+              {lowStockErr && (
+                <Typography variant="body2" color="error" sx={{ mb: 1 }}>
+                  {lowStockErr}
+                </Typography>
+              )}
+
               <List dense sx={{ flex: 1 }}>
-                {lowStock.map((item, i) => (
-                  <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                    <Box sx={{ 
-                      width: 8, 
-                      height: 8, 
-                      borderRadius: '50%', 
-                      mr: 2,
-                      backgroundColor: item.alert === 'critical' ? theme.palette.error.main : theme.palette.warning.main
-                    }} />
-                    <ListItemText 
-                      primary={
-                        <Typography variant="body2" fontWeight="medium">
-                          {item.item}
-                        </Typography>
-                      }
-                      secondary={`Current: ${item.current} | Min: ${item.min}`}
-                      secondaryTypographyProps={{
-                        variant: 'caption',
-                        color: 'text.secondary',
-                        component: 'span',   // 👈 avoid <p>
+                {lowStockItems.slice(0, 8).map((item, i) => (
+                  <ListItem key={item.id ?? i} disableGutters sx={{ py: 1 }}>
+                    <Box
+                      sx={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        mr: 2,
+                        backgroundColor:
+                          item.alert === "critical"
+                            ? theme.palette.error.main
+                            : theme.palette.warning.main,
                       }}
                     />
-                    <Chip 
-                      label={item.alert === 'critical' ? 'Critical' : 'Warning'}
-                      color={item.alert === 'critical' ? 'error' : 'warning'}
+                    <ListItemText
+                      primary={
+                        <Typography variant="body2" fontWeight="medium" noWrap>
+                          {item.name}
+                        </Typography>
+                      }
+                      secondary={`Current: ${item.currentStock} | Min: ${item.lowStock}`}
+                      secondaryTypographyProps={{
+                        variant: "caption",
+                        color: "text.secondary",
+                        component: "span",
+                      }}
+                    />
+                    <Chip
+                      label={item.alert === "critical" ? "Critical" : "Warning"}
+                      color={item.alert === "critical" ? "error" : "warning"}
                       size="small"
                     />
                   </ListItem>
                 ))}
+
+                {!lowStockErr && lowStockItems.length === 0 && (
+                  <ListItem>
+                    <ListItemText
+                      primary={
+                        <Typography variant="body2" color="text.secondary">
+                          No items are currently below their low stock thresholds.
+                        </Typography>
+                      }
+                    />
+                  </ListItem>
+                )}
               </List>
-              <Button variant="outlined" size="small" fullWidth sx={{ mt: 1 }}>
-                View All Inventory
+
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                sx={{ mt: 1 }}
+                onClick={() => navigate("/inventory?filter=low-stock")}
+              >
+                View Low Stock Items
               </Button>
             </Box>
           </Paper>

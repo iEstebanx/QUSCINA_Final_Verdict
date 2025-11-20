@@ -26,11 +26,12 @@ import Inventory2Icon from "@mui/icons-material/Inventory2";
 import HistoryIcon from "@mui/icons-material/History";
 import SettingsIcon from "@mui/icons-material/Settings";
 import PaymentIcon from "@mui/icons-material/Payment";
-import PercentIcon from "@mui/icons-material/Percent";
 import BackupIcon from "@mui/icons-material/Backup";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import TimelineIcon from "@mui/icons-material/Timeline";
+import StoreIcon from "@mui/icons-material/Store";
+import VpnKeyIcon from "@mui/icons-material/VpnKey";
 
 import { useAuth } from "@/context/AuthContext";
 import logo from "@/assets/LOGO.png";
@@ -240,14 +241,12 @@ function SidebarContent({ collapsed }) {
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
   const [openMenu, setOpenMenu] = useState(isMenuActive);
-  const [openInventory, setOpenInventory] = useState(isInventoryActive);
   const [openReports, setOpenReports] = useState(isReportsActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
   useEffect(() => {
     if (!collapsed) {
       setOpenMenu(isMenuActive);
-      setOpenInventory(isInventoryActive);
       setOpenReports(isReportsActive);
       setOpenSettings(isSettingsActive);
     }
@@ -262,7 +261,6 @@ function SidebarContent({ collapsed }) {
   useEffect(() => {
     if (collapsed) {
       setOpenMenu(false);
-      setOpenInventory(false);
       setOpenReports(false);
       setOpenSettings(false);
     }
@@ -304,29 +302,13 @@ function SidebarContent({ collapsed }) {
           collapsed={collapsed}
         />
 
-        {/* Inventory group */}
-        <NavGroup
+        {/* Inventory */}
+        <NavLeaf
+          to="/inventory"
           label="Inventory"
           icon={Inventory2Icon}
           collapsed={collapsed}
-          open={openInventory}
-          onToggle={() => setOpenInventory((v) => !v)}
-          active={isInventoryActive}
-        >
-          <NavLeaf
-            to="/inventory"
-            label="Inventory"
-            icon={Inventory2Icon}
-            collapsed={collapsed}
-            end
-          />
-          <NavLeaf
-            to="/inventory/categories"
-            label="Categories"
-            icon={CategoryIcon}
-            collapsed={collapsed}
-          />
-        </NavGroup>
+        />
 
         {/* Menu group */}
         <NavGroup
@@ -343,12 +325,7 @@ function SidebarContent({ collapsed }) {
             icon={ListAltIcon}
             collapsed={collapsed}
           />
-          <NavLeaf
-            to="/menu/categories"
-            label="Categories"
-            icon={CategoryIcon}
-            collapsed={collapsed}
-          />
+          {/* Categories moved under Settings */}
           <NavLeaf
             to="/menu/discounts"
             label="Discounts"
@@ -374,19 +351,12 @@ function SidebarContent({ collapsed }) {
             end
           />
           <NavLeaf
-            to="/audit-trail/inventory-history"
+            to="/reports/inventory-history"
             label="Inventory History"
             icon={HistoryIcon}
             collapsed={collapsed}
           />
         </NavGroup>
-
-        <NavLeaf
-          to="/users"
-          label="User Management"
-          icon={PeopleIcon}
-          collapsed={collapsed}
-        />
 
         {/* Settings group */}
         <NavGroup
@@ -397,18 +367,55 @@ function SidebarContent({ collapsed }) {
           onToggle={() => setOpenSettings((v) => !v)}
           active={isSettingsActive}
         >
+          {/* 1. User Management */}
+          <NavLeaf
+            to="/settings/users"
+            label="User Management"
+            icon={PeopleIcon}
+            collapsed={collapsed}
+          />
+
+          {/* 2. Store Settings */}
+          <NavLeaf
+            to="/settings/store"
+            label="Store Settings"
+            icon={StoreIcon}
+            collapsed={collapsed}
+          />
+
+          {/* 3. Inventory Settings */}
+          <NavLeaf
+            to="/settings/inventory"
+            label="Inventory Settings"
+            icon={Inventory2Icon}
+            collapsed={collapsed}
+          />
+
+          {/* 4. Payment Types */}
           <NavLeaf
             to="/settings/payment-types"
             label="Payment Types"
             icon={PaymentIcon}
             collapsed={collapsed}
           />
+
+          {/* 5. Authorization Pins */}
           <NavLeaf
-            to="/settings/taxes"
-            label="Taxes"
-            icon={PercentIcon}
+            to="/settings/authorization-pins"
+            label="Authorization Pins"
+            icon={VpnKeyIcon}
             collapsed={collapsed}
           />
+
+          {/* 6. Categories (Menu + Inventory) */}
+          <NavLeaf
+            to="/settings/categories"
+            label="Categories"
+            icon={CategoryIcon}
+            collapsed={collapsed}
+          />
+
+          {/* 8. Backup & Restore */}
           <NavLeaf
             to="/settings/backup-restore"
             label="Backup & Restore"
@@ -455,7 +462,6 @@ function SidebarContent({ collapsed }) {
     </Box>
   );
 }
-
 
 SidebarContent.propTypes = {
   collapsed: PropTypes.bool.isRequired,

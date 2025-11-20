@@ -1,4 +1,4 @@
-// Backend/src/routes/Inventory/inv-activity.js
+// Backoffice/Backend/src/routes/Inventory/inv-activity.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool

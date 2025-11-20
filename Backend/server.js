@@ -1,4 +1,4 @@
-// Backend/server.js
+// Backoffice/Backend/server.js
 const path = require("path");
 const dotenv = require("dotenv");
 dotenv.config({ path: path.join(__dirname, ".env") });

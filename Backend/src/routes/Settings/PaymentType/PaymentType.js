@@ -1,4 +1,4 @@
-// Backend/src/routes/Settings/PaymentType/PaymentType.js
+// Backoffice/Backend/src/routes/Settings/PaymentType/PaymentType.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool

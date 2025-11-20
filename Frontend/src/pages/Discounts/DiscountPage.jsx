@@ -317,10 +317,10 @@ export default function DiscountPage() {
               }}
             >
               <colgroup>
-                <col style={{ width: 56 }} />                 {/* checkbox */}
-                <col style={{ minWidth: 260 }} />             {/* Item Name */}
-                <col style={{ minWidth: 110, width: "auto" }} /> {/* Value */}
-                <col style={{ width: 104 }} />                {/* Actions – was 56 */}
+                <col style={{ width: 56 }} />{/* checkbox */}
+                <col style={{ minWidth: 260 }} />{/* Item Name */}
+                <col style={{ minWidth: 110, width: "auto" }} />{/* Value */}
+                <col style={{ width: 104 }} />{/* Actions – was 56 */}
               </colgroup>
 
               <TableHead>

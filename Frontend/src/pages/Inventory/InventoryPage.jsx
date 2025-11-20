@@ -1,4 +1,4 @@
-// Frontend/src/pages/Inventory/InventoryPage.jsx
+// Backoffice/Frontend/src/pages/Inventory/InventoryPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
@@ -433,10 +433,18 @@ export default function InventoryPage() {
   const [showAddConfirm, setShowAddConfirm] = useState(false);
 
   const UNIT_OPTIONS = [
-    { value: "kg",   label: "KG" },
+    { value: "kg",  label: "KG" },
+    { value: "g",   label: "GRAMS" },
+    { value: "l",   label: "LITERS" },
+    { value: "ml",  label: "ML" },
     { value: "pack", label: "PACK" },
     { value: "pcs",  label: "PCS" },
   ];
+
+  const UNIT_LABEL_MAP = UNIT_OPTIONS.reduce((map, u) => {
+    map[u.value] = u.label;
+    return map;
+  }, {});
 
   const handleAddFormChange = () => { if (!addFormChanged) setAddFormChanged(true); };
   const resetAddForm = () => {
@@ -531,9 +539,8 @@ export default function InventoryPage() {
     const catChanged   = stockForm.cat   !== initialStockForm.cat;
     const typeChanged  = stockForm.type  !== initialStockForm.type;
     const priceChanged = String(stockForm.price ?? "") !== String(initialStockForm.price ?? "");
-    const lowChanged   = String(stockForm.low  ?? "") !== String(initialStockForm.low  ?? ""); // ⬅️ NEW
 
-    return catChanged || typeChanged || priceChanged || lowChanged || wantsRename;
+    return catChanged || typeChanged || priceChanged || wantsRename;
   }, [stockForm, initialStockForm]);
 
   const handleStockFormChange = (newForm) => {
@@ -651,14 +658,6 @@ export default function InventoryPage() {
     return qn * pn;
   };
 
-  const parseLowStock = (val) => {
-    const trimmed = String(val ?? "").trim();
-    if (!trimmed) return 0; // blank = no notification
-    const n = Number(trimmed);
-    if (!Number.isFinite(n) || n < 0) return 0;
-    return n;
-  };
-
   const moveIdToFront = (arr, id) => {
     const idx = arr.findIndex((x) => x.id === id);
     if (idx < 0) return arr;
@@ -688,14 +687,11 @@ export default function InventoryPage() {
         return;
       }
 
-      const lowStockNum = parseLowStock(stockForm.low);
-
       // --- Edit-only mode: update name/category/unit/lowStock (and optionally price) with NO activity ---
       if (!hasQty || qty <= 0) {
         const patchBody = {
           category: stockForm.cat,
           type: stockForm.type,
-          lowStock: lowStockNum,
           ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
         };
 
@@ -730,7 +726,6 @@ export default function InventoryPage() {
                   name: wantsRename ? normalize(stockForm.name) : i.name,
                   category: stockForm.cat,
                   type: stockForm.type,
-                  lowStock: lowStockNum,
                   // update price only if we sent it
                   ...(patchBody.price !== undefined ? { price: patchBody.price } : {}),
                   updatedAt: NOW(),
@@ -815,7 +810,6 @@ export default function InventoryPage() {
                 price: io === "In" ? price : i.price, // don't clobber on OUT
                 category: stockForm.cat,
                 type: stockForm.type,
-                lowStock: lowStockNum, // ⬅️ include lowStock here
                 updatedAt: NOW(),
               }
             : i
@@ -829,7 +823,6 @@ export default function InventoryPage() {
         category: stockForm.cat,
         type: stockForm.type,
         currentStock: newCurrent,
-        lowStock: lowStockNum,
         ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
       };
       if (
@@ -1027,7 +1020,7 @@ export default function InventoryPage() {
                         <Typography>{ing.category}</Typography>
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
-                        <Typography>{ing.type}</Typography>
+                        <Typography>{UNIT_LABEL_MAP[ing.type] || ing.type}</Typography>
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
                         <Typography fontWeight={700}>{ing.currentStock}</Typography>
@@ -1344,7 +1337,7 @@ export default function InventoryPage() {
                   endAdornment: (
                     <InputAdornment position="end">
                       <Typography variant="body2" color="text.secondary">
-                        {stockForm.type}
+                        {UNIT_LABEL_MAP[stockForm.type] || stockForm.type}
                       </Typography>
                     </InputAdornment>
                   ),
@@ -1354,20 +1347,9 @@ export default function InventoryPage() {
               <TextField
                 label="Low Stock"
                 value={stockForm.low}
-                onChange={(e) => {
-                  let v = String(e.target.value ?? "");
-                  // allow only digits and one dot (same style as Quantity)
-                  v = v.replace(/[^0-9.]/g, "");
-                  const parts = v.split(".");
-                  if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
-
-                  const newForm = { ...stockForm, low: v };
-                  setStockForm(newForm);
-                  handleStockFormChange(newForm);
-                }}
-                inputMode="decimal"
                 fullWidth
-                helperText="Inventory quantity at which you will be notified about low stock"
+                InputProps={{ readOnly: true }}
+                helperText="Configured in Settings → Inventory"
               />
             </Stack>
 
