@@ -123,8 +123,8 @@ export function AuthProvider({ children }) {
     return u; // (unchanged) callers expecting a user keep working
   }
 
-  function logout() {
-    // clear client state first (instant UX)
+  async function logout() {
+    // Instant UI clear
     setUser(null);
     setToken(null);
     localStorage.removeItem("qd_token");
@@ -132,12 +132,15 @@ export function AuthProvider({ children }) {
     sessionStorage.removeItem("qd_token");
     sessionStorage.removeItem("qd_user");
 
-    // tell the server to clear the cookie (best-effort)
-    fetch(join("/api/auth/logout"), {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-    }).catch(() => {});
+    try {
+      await fetch(join("/api/auth/logout"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch {
+      // ignore – even if server fails, client is already logged out
+    }
   }
 
   const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);

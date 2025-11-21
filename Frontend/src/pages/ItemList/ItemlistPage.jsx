@@ -106,6 +106,15 @@ export default function ItemlistPage() {
     return rows.some(r => r.name && r.name.trim().toLowerCase() === t && String(r.id) !== String(exceptId || ""));
   }
 
+  // Unique categories from inventory for per-row category dropdown
+  const inventoryCategories = useMemo(() => {
+    const set = new Set();
+    for (const ing of inventory) {
+      if (ing.category) set.add(ing.category);
+    }
+    return Array.from(set).sort((a, b) => String(a).localeCompare(String(b)));
+  }, [inventory]);
+
   // Build query string for items
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -275,6 +284,28 @@ export default function ItemlistPage() {
 
       return newRow;
     }));
+  }
+
+  // Select category at ingredient-row level
+  function onSelectIngredientCategory(rowId, categoryName) {
+    setItemIngredients(prev =>
+      prev.map(r => {
+        if (r.id !== rowId) return r;
+
+        // When category changes, clear ingredient selection + stock/price/qty/cost
+        return {
+          ...r,
+          category: categoryName || "",
+          ingredientId: "",
+          name: "",
+          unit: "",
+          currentStock: 0,
+          qty: "",
+          price: "",
+          cost: 0,
+        };
+      })
+    );
   }
 
   const computeCostOverall = () => {
@@ -1052,29 +1083,28 @@ export default function ItemlistPage() {
                 stickyHeader
                 size="small"
                 sx={{
-                  // vertical padding (top/bottom) for ALL cells
                   "& .MuiTableCell-root": { py: 1.25 },
-                  // header can be a bit tighter (or same as body if you want)
                   "& .MuiTableCell-head": { py: 1 },
-                  // avoid MUI’s fixed small-row height
                   "& .MuiTableRow-root": { height: "auto" },
                 }}
               >
                 <TableHead>
                   <TableRow>
-                    <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Category" align="center">Category</TableCell>
+                    <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                     <TableCell data-label="Qty" align="center">Qty</TableCell>
                     <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
-                    <TableCell data-label="Action" align="center"> Action </TableCell>
+                    <TableCell data-label="Action" align="center">Action</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {ingLoading && (
                     <TableRow>
                       <TableCell colSpan={6}>
-                        <Box py={2} textAlign="center"><CircularProgress size={20} /></Box>
+                        <Box py={2} textAlign="center">
+                          <CircularProgress size={20} />
+                        </Box>
                       </TableCell>
                     </TableRow>
                   )}
@@ -1091,66 +1121,152 @@ export default function ItemlistPage() {
                     </TableRow>
                   )}
 
-                  {itemIngredients.map(row => (
-                    <TableRow key={row.id}>
-                      <TableCell data-label="Ingredient" align="center" sx={{ minWidth: { xs: 220, sm: 300 } }}>
-                        <FormControl fullWidth size="small">
-                          <Select
-                            value={row.ingredientId || ""}
-                            displayEmpty
-                            onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                            MenuProps={dropdownMenuProps}
-                          >
-                            <MenuItem value=""><em>Select ingredient</em></MenuItem>
-                            {inventory.map(i => (
-                              <MenuItem key={i.id} value={i.id} sx={{ py: 0.75 }}>{i.name}</MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
-                      </TableCell>
+                  {itemIngredients.map(row => {
+                    const ingredientOptions = row.category
+                      ? inventory.filter(i => i.category === row.category)
+                      : inventory;
 
-                      <TableCell data-label="Category" align="center" sx={{ minWidth: 100 }}>
-                        <Typography variant="body2">{row.category || "—"}</Typography>
-                      </TableCell>
+                    return (
+                      <TableRow key={row.id}>
+                        {/* Category first column (dropdown) */}
+                        <TableCell
+                          data-label="Category"
+                          align="center"
+                          sx={{ minWidth: 140 }}
+                        >
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.category || ""}
+                              displayEmpty
+                              onChange={(e) =>
+                                onSelectIngredientCategory(row.id, e.target.value)
+                              }
+                              MenuProps={dropdownMenuProps}
+                            >
+                              <MenuItem value="">
+                                <em>Select category</em>
+                              </MenuItem>
+                              {inventoryCategories.map(catName => (
+                                <MenuItem key={catName} value={catName}>
+                                  {catName}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
 
-                      <TableCell data-label="Unit / In Stock" align="center" sx={{ minWidth: 110 }}>
-                        <Typography variant="body2">{row.unit || "—"}{row.currentStock != null ? ` • ${row.currentStock}` : ""}</Typography>
-                      </TableCell>
+                        {/* Ingredient second column, filtered by category */}
+                        <TableCell
+                          data-label="Ingredient"
+                          align="center"
+                          sx={{ minWidth: { xs: 220, sm: 260 } }}
+                        >
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.ingredientId || ""}
+                              displayEmpty
+                              onChange={(e) =>
+                                onSelectInventory(row.id, e.target.value)
+                              }
+                              MenuProps={dropdownMenuProps}
+                            >
+                              <MenuItem value="">
+                                <em>
+                                  {row.category
+                                    ? "Select ingredient"
+                                    : "Select category first"}
+                                </em>
+                              </MenuItem>
+                              {ingredientOptions.map(i => (
+                                <MenuItem
+                                  key={i.id}
+                                  value={i.id}
+                                  sx={{ py: 0.75 }}
+                                >
+                                  {i.name}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
 
-                      <TableCell data-label="Qty" align="center" sx={{ minWidth: 96 }}>
-                        <TextField
-                          size="small"
-                          value={row.qty || ""}
-                          onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
-                          inputMode="decimal"
-                          placeholder="0"
-                          fullWidth
-                          InputProps={{
-                            endAdornment: <InputAdornment position="end">{row.unit || "pcs"}</InputAdornment>
-                          }}
-                        />
-                      </TableCell>
+                        <TableCell
+                          data-label="Unit / In Stock"
+                          align="center"
+                          sx={{ minWidth: 110 }}
+                        >
+                          <Typography variant="body2">
+                            {row.unit || "—"}
+                            {row.currentStock != null
+                              ? ` • ${row.currentStock}`
+                              : ""}
+                          </Typography>
+                        </TableCell>
 
-                      <TableCell data-label="Price Per Unit" align="center" sx={{ minWidth: 112 }}>
-                        <TextField
-                          size="small"
-                          value={row.price || ""}
-                          onChange={(e) => onRowChange(row.id, "price", e.target.value)}
-                          inputMode="decimal"
-                          placeholder="0.00"
-                          InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
-                        />
-                      </TableCell>
+                        <TableCell
+                          data-label="Qty"
+                          align="center"
+                          sx={{ minWidth: 96 }}
+                        >
+                          <TextField
+                            size="small"
+                            value={row.qty || ""}
+                            onChange={(e) =>
+                              onRowChange(row.id, "qty", e.target.value)
+                            }
+                            inputMode="decimal"
+                            placeholder="0"
+                            fullWidth
+                            InputProps={{
+                              endAdornment: (
+                                <InputAdornment position="end">
+                                  {row.unit || "pcs"}
+                                </InputAdornment>
+                              ),
+                            }}
+                          />
+                        </TableCell>
 
-                      <TableCell data-label="Action" align="center" sx={{ width: 64 }}>
-                        <Tooltip title="Remove">
-                          <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        <TableCell
+                          data-label="Price Per Unit"
+                          align="center"
+                          sx={{ minWidth: 112 }}
+                        >
+                          <TextField
+                            size="small"
+                            value={row.price || ""}
+                            onChange={(e) =>
+                              onRowChange(row.id, "price", e.target.value)
+                            }
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            InputProps={{
+                              startAdornment: (
+                                <InputAdornment position="start">
+                                  ₱
+                                </InputAdornment>
+                              ),
+                            }}
+                          />
+                        </TableCell>
+
+                        <TableCell
+                          data-label="Action"
+                          align="center"
+                          sx={{ width: 64 }}
+                        >
+                          <Tooltip title="Remove">
+                            <IconButton
+                              size="small"
+                              onClick={() => removeIngredientRow(row.id)}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -1404,22 +1520,19 @@ export default function ItemlistPage() {
                   },
                 }}
               >
-              <Table
-                stickyHeader
-                size="small"
-                sx={{
-                  // vertical padding (top/bottom) for ALL cells
-                  "& .MuiTableCell-root": { py: 1.25 },
-                  // header can be a bit tighter (or same as body if you want)
-                  "& .MuiTableCell-head": { py: 1 },
-                  // avoid MUI’s fixed small-row height
-                  "& .MuiTableRow-root": { height: "auto" },
-                }}
-              >
+                <Table
+                  stickyHeader
+                  size="small"
+                  sx={{
+                    "& .MuiTableCell-root": { py: 1.25 },
+                    "& .MuiTableCell-head": { py: 1 },
+                    "& .MuiTableRow-root": { height: "auto" },
+                  }}
+                >
                   <TableHead>
                     <TableRow>
-                      <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Category" align="center">Category</TableCell>
+                      <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                       <TableCell data-label="Qty" align="center">Qty</TableCell>
                       <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
@@ -1430,7 +1543,9 @@ export default function ItemlistPage() {
                     {ingLoading && (
                       <TableRow>
                         <TableCell colSpan={6}>
-                          <Box py={2} textAlign="center"><CircularProgress size={20} /></Box>
+                          <Box py={2} textAlign="center">
+                            <CircularProgress size={20} />
+                          </Box>
                         </TableCell>
                       </TableRow>
                     )}
@@ -1439,72 +1554,160 @@ export default function ItemlistPage() {
                       <TableRow>
                         <TableCell colSpan={6}>
                           <Box py={3} textAlign="center">
-                            <Typography variant="body2" color="text.secondary">No ingredients added. Click "Add Ingredient".</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              No ingredients added. Click "Add Ingredient".
+                            </Typography>
                           </Box>
                         </TableCell>
                       </TableRow>
                     )}
 
-                    {itemIngredients.map(row => (
-                      <TableRow key={row.id}>
-                        <TableCell data-label="Ingredient" align="center" sx={{ minWidth: { xs: 220, sm: 300 } }}>
-                          <FormControl fullWidth size="small">
-                            <Select
-                              value={row.ingredientId || ""}
-                              displayEmpty
-                              onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                              MenuProps={dropdownMenuProps}
-                            >
-                              <MenuItem value=""><em>Select ingredient</em></MenuItem>
-                              {inventory.map(i => (
-                                <MenuItem key={i.id} value={i.id} sx={{ py: 0.75 }}>{i.name}</MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-                        </TableCell>
+                    {itemIngredients.map(row => {
+                      const ingredientOptions = row.category
+                        ? inventory.filter(i => i.category === row.category)
+                        : inventory;
 
-                        <TableCell data-label="Category" align="center" sx={{ minWidth: 100 }}>
-                          <Typography variant="body2">{row.category || "—"}</Typography>
-                        </TableCell>
+                      return (
+                        <TableRow key={row.id}>
+                          {/* Category first */}
+                          <TableCell
+                            data-label="Category"
+                            align="center"
+                            sx={{ minWidth: 140 }}
+                          >
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.category || ""}
+                                displayEmpty
+                                onChange={(e) =>
+                                  onSelectIngredientCategory(row.id, e.target.value)
+                                }
+                                MenuProps={dropdownMenuProps}
+                              >
+                                <MenuItem value="">
+                                  <em>Select category</em>
+                                </MenuItem>
+                                {inventoryCategories.map(catName => (
+                                  <MenuItem key={catName} value={catName}>
+                                    {catName}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
 
-                        <TableCell data-label="Unit / In stock" align="center" sx={{ minWidth: 110 }}>
-                          <Typography variant="body2">{row.unit || "—"}{row.currentStock != null ? ` • ${row.currentStock}` : ""}</Typography>
-                        </TableCell>
+                          {/* Ingredient second, filtered by category */}
+                          <TableCell
+                            data-label="Ingredient"
+                            align="center"
+                            sx={{ minWidth: { xs: 220, sm: 260 } }}
+                          >
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.ingredientId || ""}
+                                displayEmpty
+                                onChange={(e) =>
+                                  onSelectInventory(row.id, e.target.value)
+                                }
+                                MenuProps={dropdownMenuProps}
+                              >
+                                <MenuItem value="">
+                                  <em>
+                                    {row.category
+                                      ? "Select ingredient"
+                                      : "Select category first"}
+                                  </em>
+                                </MenuItem>
+                                {ingredientOptions.map(i => (
+                                  <MenuItem
+                                    key={i.id}
+                                    value={i.id}
+                                    sx={{ py: 0.75 }}
+                                  >
+                                    {i.name}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
 
-                        <TableCell data-label="Qty" align="center" sx={{ minWidth: 96 }}>
-                          <TextField
+                          <TableCell
+                            data-label="Unit / In stock"
+                            align="center"
+                            sx={{ minWidth: 110 }}
+                          >
+                            <Typography variant="body2">
+                              {row.unit || "—"}
+                              {row.currentStock != null
+                                ? ` • ${row.currentStock}`
+                                : ""}
+                            </Typography>
+                          </TableCell>
+
+                          <TableCell
+                            data-label="Qty"
+                            align="center"
+                            sx={{ minWidth: 96 }}
+                          >
+                            <TextField
                               size="small"
                               value={row.qty || ""}
-                              onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
+                              onChange={(e) =>
+                                onRowChange(row.id, "qty", e.target.value)
+                              }
                               inputMode="decimal"
                               placeholder="0"
                               fullWidth
                               InputProps={{
-                                endAdornment: <InputAdornment position="end">{row.unit || "pcs"}</InputAdornment>
+                                endAdornment: (
+                                  <InputAdornment position="end">
+                                    {row.unit || "pcs"}
+                                  </InputAdornment>
+                                ),
                               }}
                             />
-                        </TableCell>
+                          </TableCell>
 
-                        <TableCell data-label="Price per Unit" align="center" sx={{ minWidth: 112 }}>
-                          <TextField
-                            size="small"
-                            value={row.price || ""}
-                            onChange={(e) => onRowChange(row.id, "price", e.target.value)}
-                            inputMode="decimal"
-                            placeholder="0.00"
-                            InputProps={{ startAdornment: <InputAdornment position="start">₱</InputAdornment> }}
-                          />
-                        </TableCell>
+                          <TableCell
+                            data-label="Price per Unit"
+                            align="center"
+                            sx={{ minWidth: 112 }}
+                          >
+                            <TextField
+                              size="small"
+                              value={row.price || ""}
+                              onChange={(e) =>
+                                onRowChange(row.id, "price", e.target.value)
+                              }
+                              inputMode="decimal"
+                              placeholder="0.00"
+                              InputProps={{
+                                startAdornment: (
+                                  <InputAdornment position="start">
+                                    ₱
+                                  </InputAdornment>
+                                ),
+                              }}
+                            />
+                          </TableCell>
 
-                        <TableCell data-label="Actions" align="center" sx={{ width: 64 }}>
-                          <Tooltip title="Remove">
-                            <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
-                              <DeleteOutlineIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          <TableCell
+                            data-label="Action"
+                            align="center"
+                            sx={{ width: 64 }}
+                          >
+                            <Tooltip title="Remove">
+                              <IconButton
+                                size="small"
+                                onClick={() => removeIngredientRow(row.id)}
+                              >
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </TableContainer>

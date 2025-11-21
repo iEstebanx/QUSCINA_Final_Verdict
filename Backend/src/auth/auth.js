@@ -111,6 +111,9 @@ module.exports = function authRouterFactory({ db } = {}) {
     // final reset
     PASSWORD_RESET_SUCCESS: "PASSWORD_RESET_SUCCESS",
     PASSWORD_RESET_FAILED: "PASSWORD_RESET_FAILED",
+
+    // logout
+    LOGOUT_OK: "LOGOUT_OK",
   };
 
   // ---- Audit helper for auth events ----
@@ -716,8 +719,62 @@ module.exports = function authRouterFactory({ db } = {}) {
   });
 
   // POST /api/auth/logout
-  router.post("/logout", (_req, res) => {
-    res.clearCookie("qd_token", { path: "/" });
+  router.post("/logout", (req, res) => {
+    const ip =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.ip ||
+      "";
+    const ua = String(req.headers["user-agent"] || "").slice(0, 255);
+
+    // Same token logic as /me
+    const auth = req.headers.authorization || "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+    const token = bearer || req.cookies?.qd_token || null;
+
+    let payload = null;
+    try {
+      if (token) {
+        payload = jwt.verify(token, JWT_SECRET);
+      }
+    } catch {
+      // ignore; still proceed with logout
+    }
+
+    const app = getAppRealm(req); // "backoffice" by default
+
+    // If we have a decoded token, log logout event
+    if (payload) {
+      const employeeName =
+        payload.name ||
+        payload.username ||
+        payload.email ||
+        payload.employeeId ||
+        "Unknown";
+
+      logAuditLogin({
+        employeeName,
+        role: payload.role,
+        action: "Auth - Logout",
+        detail: {
+          statusMessage: "User signed out.",
+          actionDetails: {
+            actionType: "logout",
+            app,
+            result: "ok",
+          },
+          affectedData: {
+            statusChange: AUTH_STATUS.LOGOUT_OK,
+            items: [],
+          },
+          meta: { ip, userAgent: ua },
+        },
+      }).catch(() => {
+        // don't block logout if audit insert fails
+      });
+    }
+
+    // Clear cookie and return ok
+    res.clearCookie("qd_token", { path: "/api" });
     res.json({ ok: true });
   });
 

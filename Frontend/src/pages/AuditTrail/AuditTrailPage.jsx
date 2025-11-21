@@ -82,6 +82,9 @@ const AUTH_STATUS_LEGEND = {
   USER_UNLOCKED:        { label: "User Unlocked", color: "info" },
   USER_PASSWORD_CHANGED:{ label: "Password Changed", color: "success" },
   USER_SQ_UPDATED:      { label: "Security Questions Updated", color: "info" },
+
+  // Logout
+  LOGOUT_OK:            { label: "Logout Successful", color: "info" },
 };
 
 /* ============================================================
@@ -90,7 +93,11 @@ const AUTH_STATUS_LEGEND = {
 function getModuleKind(row) {
   const action = String(row?.action || "");
 
+  // 🔐 Treat all account-credential actions as "auth"
   if (action.startsWith("Auth -")) return "auth";
+  if (action.startsWith("Login")) return "auth";   // "Login - POS", "Login Failed - POS"
+  if (action.startsWith("Logout")) return "auth"; 
+
   if (action.startsWith("POS -")) return "pos";
 
   if (
@@ -102,6 +109,28 @@ function getModuleKind(row) {
   }
 
   return "generic";
+}
+
+function getActionLabel(row) {
+  const action = String(row?.action || "");
+
+  // 🔹 POS / generic login failures FIRST
+  if (action.startsWith("Login Failed -")) return "Login Failed";
+
+  // 🔹 POS / generic login success
+  if (action.startsWith("Login -")) return "Login Success";
+
+  // 🔹 Backoffice auth logs: "Auth - Login Success", "Auth - Login Failed"
+  if (action.startsWith("Auth - Login ")) {
+    // "Auth - Login Success" -> "Login Success"
+    return action.replace("Auth - ", "");
+  }
+
+  // 🔹 Some backoffice events may be "Auth - Logout"
+  if (action.startsWith("Auth - Logout")) return "Logout";
+
+  // Fallback: keep original
+  return action;
 }
 
 /* ============================================================
@@ -297,7 +326,7 @@ export default function AuditTrailPage() {
 
                         <TableCell sx={{ overflow: "hidden" }}>
                           <Typography noWrap title={r.action}>
-                            {r.action}
+                            {getActionLabel(r)}
                           </Typography>
                         </TableCell>
 
@@ -403,13 +432,18 @@ export default function AuditTrailPage() {
                         })()}
                       </Stack>
 
-                      {isAuth && (
-                        <Box mt={3}>
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
-                            Status
-                          </Typography>
-                          <StatusChip detail={selectedRow.detail} />
-                        </Box>
+                      {isAuth && selectedRow.detail?.affectedData?.statusChange && 
+                        selectedRow.detail.affectedData.statusChange !== "NONE" && (
+                          <Box mt={3}>
+                            <Typography
+                              variant="subtitle2"
+                              color="text.secondary"
+                              sx={{ mb: 1.5 }}
+                            >
+                              Status
+                            </Typography>
+                            <StatusChip detail={selectedRow.detail} isAuth={true} />
+                          </Box>
                       )}
                     </Paper>
                   </Grid>
@@ -509,7 +543,9 @@ function AuthActionDetails({ detail }) {
       {a.loginType && <DetailRow label="Login Method" value={loginMethodLabel} />}
       {a.identifier && <DetailRow label="Login ID" value={a.identifier} />}
 
-      <DetailRow label="Result" value={legend?.label || a.result || "—"} />
+      {(legend?.label || a.result) && (
+        <DetailRow label="Result" value={legend?.label || a.result} />
+      )}
 
       {meta.ip && <DetailRow label="IP Address" value={meta.ip} />}
       {meta.userAgent && <DetailRow label="Device / Browser" value={meta.userAgent} />}
@@ -520,6 +556,9 @@ function AuthActionDetails({ detail }) {
 function GenericActionDetails({ detail }) {
   const a = detail?.actionDetails || {};
 
+  const showAmount = a.amount != null && a.amount !== "—";
+  const showReason = !!a.reason;
+
   return (
     <Stack spacing={2.5} mt={2}>
       <DetailRow label="Action Type" value={a.actionType} />
@@ -527,25 +566,35 @@ function GenericActionDetails({ detail }) {
       {a.recipient && <DetailRow label="Recipient" value={a.recipient} />}
       {a.receiptNo && <DetailRow label="Receipt No." value={a.receiptNo} />}
 
-      <DetailRow label="Amount Total" value={a.amount || "—"} />
+      {showAmount && (
+        <DetailRow label="Amount Total" value={a.amount} />
+      )}
 
-      <Box>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Reason
-        </Typography>
+      {showReason && (
+        <Box>
+          <Typography
+            variant="subtitle2"
+            color="text.secondary"
+            sx={{ mb: 1.5 }}
+          >
+            Reason
+          </Typography>
 
-        {a.reason ? (
           <Chip
             label={a.reason}
             size="medium"
-            sx={{ borderRadius: 2, fontWeight: 600, px: 1, py: 1.5, fontSize: "0.875rem" }}
+            sx={{
+              borderRadius: 2,
+              fontWeight: 600,
+              px: 1,
+              py: 1.5,
+              fontSize: "0.875rem",
+            }}
             color="primary"
             variant="outlined"
           />
-        ) : (
-          <Typography variant="body1" color="text.secondary">—</Typography>
-        )}
-      </Box>
+        </Box>
+      )}
     </Stack>
   );
 }
@@ -625,12 +674,14 @@ function GenericAffectedData({ detail }) {
         )}
       </Box>
 
-      <Box mt={3}>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Status Change
-        </Typography>
-        <StatusChip detail={detail} />
-      </Box>
+      {detail?.affectedData?.statusChange &&
+        detail.affectedData.statusChange !== "NONE" && (
+          <Box mt={3}>
+            <Typography>Status Change</Typography>
+            <StatusChip detail={detail} isAuth={false} />
+          </Box>
+        )
+      }
     </>
   );
 }
@@ -686,20 +737,22 @@ function SystemAffectedData({ detail }) {
 /* ============================================================
    STATUS CHIP
    ============================================================ */
-function StatusChip({ detail }) {
+function StatusChip({ detail, isAuth }) {
   const statusKey = detail?.affectedData?.statusChange;
-  const legend = statusKey && AUTH_STATUS_LEGEND[statusKey];
 
-  const label = legend?.label || statusKey || "—";
-  const color = legend?.color || "default";
+  // 🔥 Hide completely if auth and empty status
+  if (isAuth && (!statusKey || statusKey === "NONE" || statusKey === "—"))
+    return null;
+
+  const legend = AUTH_STATUS_LEGEND[statusKey] || null;
 
   return (
     <Chip
-      label={label}
+      label={legend?.label || statusKey}
       size="medium"
       sx={{ borderRadius: 2, fontWeight: 700, px: 2, py: 1, fontSize: "0.875rem" }}
-      color={color}
-      variant={color === "default" ? "outlined" : "filled"}
+      color={legend?.color || "default"}
+      variant={legend ? "filled" : "outlined"}
     />
   );
 }

@@ -890,7 +890,7 @@ export default function InventoryPage() {
                 }}
                 sx={{ flexShrink: 0 }}
               >
-                Add ING
+                Add Ingredient
               </Button>
 
               <Box sx={{ flexGrow: 1, minWidth: 0 }} />
