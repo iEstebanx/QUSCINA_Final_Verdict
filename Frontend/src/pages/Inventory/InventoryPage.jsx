@@ -31,7 +31,6 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import SearchIcon from "@mui/icons-material/Search";
 import { useAlert } from "@/context/Snackbar/AlertContext";
 
@@ -46,6 +45,82 @@ const formatPhp = (n) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+
+const formatStockParts = (qty, unit) => {
+  const n = Number(qty || 0);
+  if (!Number.isFinite(n)) return { primary: "0", secondary: "" };
+
+  // base numeric text
+  const base = n.toLocaleString("en-PH", {
+    maximumFractionDigits: unit === "pcs" || unit === "pack" ? 0 : 3,
+  });
+
+  // helper: primary unit label
+  const unitSuffix =
+    unit === "g"   ? "g"   :
+    unit === "kg"  ? "kg"  :
+    unit === "ml"  ? "mL"  :
+    unit === "l"   ? "L"   :
+    unit === "pcs" ? "pcs" :
+    unit === "pack"? "pack" :
+    "";
+
+  // 👇 add a space between number and unit
+  let primary = unitSuffix ? `${base} ${unitSuffix}` : base;
+
+  // Nothing to convert if zero or negative
+  if (n <= 0) return { primary, secondary: "" };
+
+  // Small → big units (threshold 1000 concept)
+  if (unit === "g") {
+    const kg = n / 1000;
+    return {
+      primary,
+      secondary: `${kg.toLocaleString("en-PH", {
+        maximumFractionDigits: 3,
+      })} kg`,              // 👈 space here too
+    };
+  }
+
+  if (unit === "ml") {
+    const L = n / 1000;
+    return {
+      primary,
+      secondary: `${L.toLocaleString("en-PH", {
+        maximumFractionDigits: 3,
+      })} L`,
+    };
+  }
+
+  // Big → small units
+  if (unit === "kg") {
+    const g = n * 1000;
+    return {
+      primary,
+      secondary: `${g.toLocaleString("en-PH", {
+        maximumFractionDigits: 0,
+      })} g`,
+    };
+  }
+
+  if (unit === "l") {
+    const ml = n * 1000;
+    return {
+      primary,
+      secondary: `${ml.toLocaleString("en-PH", {
+        maximumFractionDigits: 0,
+      })} mL`,
+    };
+  }
+
+  // pcs / pack / others = no conversion
+  return { primary, secondary: "" };
+};
+
+const formatStockInline = (qty, unit) => {
+  const { primary, secondary } = formatStockParts(qty, unit);
+  return secondary ? `${primary} (${secondary})` : primary;
+};
 
 const NOW = () => new Date().toISOString();
 const todayDate = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -243,6 +318,24 @@ export default function InventoryPage() {
   }, [ingredients]);
 
   // helpers
+  const convertStockByUnitChange = (value, from, to) => {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return 0;
+    if (from === to) return n;
+
+    // weight
+    if (from === "g" && to === "kg") return n / 1000;
+    if (from === "kg" && to === "g") return n * 1000;
+
+    // volume
+    if (from === "ml" && to === "l") return n / 1000;
+    if (from === "l" && to === "ml") return n * 1000;
+
+    // other combos (pcs, pack, etc) → no automatic conversion
+    return n;
+  };
+
+
   const lastActivity = (ingId, ioType) => {
     const rows = activity
       .filter((a) => a.ingredientId === ingId && a.io === ioType)
@@ -695,12 +788,24 @@ export default function InventoryPage() {
           ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
         };
 
-        // optional: allow manual price edit in edit-only mode
-        if (
-          stockForm.price !== "" &&
-          !Number.isNaN(Number(stockForm.price))
-        ) {
-          patchBody.price = Number(stockForm.price);
+        // Compute new current stock: only unit conversion (no movement)
+        let newCurrent = picked.currentStock || 0;
+
+        const unitChanged = stockForm.type !== picked.type;
+        if (unitChanged) {
+          newCurrent = convertStockByUnitChange(
+            newCurrent,
+            picked.type,
+            stockForm.type
+          );
+        }
+
+        // Optional: allow manual price edit in edit-only mode
+        let nextPrice = picked.price;
+        if (stockForm.price !== "" && !Number.isNaN(Number(stockForm.price))) {
+          const priceNum = Number(stockForm.price);
+          patchBody.price = priceNum;
+          nextPrice = priceNum;
         }
 
         const r = await fetch(`${ING_API}/${picked.id}`, {
@@ -717,17 +822,17 @@ export default function InventoryPage() {
           throw new Error(j?.error || `HTTP ${r.status}`);
         }
 
-        // reflect in UI (NO stock change here)
+        // reflect in UI (NO movement, but maybe unit/price changed)
         setIngredients((arr) => {
           const next = arr.map((i) =>
             i.id === picked.id
               ? {
                   ...i,
                   name: wantsRename ? normalize(stockForm.name) : i.name,
+                  currentStock: newCurrent,
+                  price: nextPrice,
                   category: stockForm.cat,
                   type: stockForm.type,
-                  // update price only if we sent it
-                  ...(patchBody.price !== undefined ? { price: patchBody.price } : {}),
                   updatedAt: NOW(),
                 }
               : i
@@ -741,6 +846,7 @@ export default function InventoryPage() {
         alert.success("Details updated");
         return;
       }
+
 
       // --- Movement path (has qty) ---
       if (io === "Out" && qty > (picked.currentStock || 0)) {
@@ -1023,7 +1129,26 @@ export default function InventoryPage() {
                         <Typography>{UNIT_LABEL_MAP[ing.type] || ing.type}</Typography>
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
-                        <Typography fontWeight={700}>{ing.currentStock}</Typography>
+                        {(() => {
+                          const { primary, secondary } = formatStockParts(ing.currentStock, ing.type);
+                          return (
+                            <>
+                              <Typography component="span" fontWeight={700}>
+                                {primary}
+                              </Typography>
+                              {secondary && (
+                                <Typography
+                                  component="span"
+                                  variant="body2"
+                                  color="text.secondary"
+                                  sx={{ ml: 0.5 }}
+                                >
+                                  ({secondary})
+                                </Typography>
+                              )}
+                            </>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell onClick={() => handleRowClick(ing)}>
                         <Typography>{lastInLabel}</Typography>
@@ -1239,7 +1364,12 @@ export default function InventoryPage() {
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <FormControl fullWidth>
                 <InputLabel id="name-label">Name</InputLabel>
-                <Select labelId="name-label" label="Name" value={stockForm.ingId} onChange={(e) => onPickIngredient(e.target.value)}>
+                <Select
+                  labelId="name-label"
+                  label="Name"
+                  value={stockForm.ingId ?? ""}
+                  onChange={(e) => onPickIngredient(e.target.value)}
+                  MenuProps={dropdownMenuProps}>
                   {ingredients.map((i) => <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>)}
                 </Select>
               </FormControl>
@@ -1249,18 +1379,17 @@ export default function InventoryPage() {
                 <Select
                   labelId="cat2-label"
                   label="Categories"
-                  value={stockForm.cat}
+                  value={stockForm.cat ?? ""}
                   onChange={(e) => {
-                    const newForm = { ...stockForm, cat: e.target.value };
+                    const newForm = { ...stockForm, cat: e.target.value ?? "" };
                     setStockForm(newForm);
                     handleStockFormChange(newForm);
                   }}
-                  MenuProps={dropdownMenuProps}
-                >
-                <MenuItem value="" disabled>
-                  <em>Select a category</em>
-                </MenuItem>
-                  {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                  MenuProps={dropdownMenuProps}>
+                  <MenuItem value="" disabled>
+                    <em>Select a category</em>
+                  </MenuItem>
+                    {categories.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
                 </Select>
                 {stockTouchedRef.current && !stockForm.cat && (
                   <FormHelperText>Category is required</FormHelperText>
@@ -1269,10 +1398,33 @@ export default function InventoryPage() {
 
               <FormControl fullWidth required error={stockTouchedRef.current && !stockForm.type}>
                 <InputLabel id="unit3-label">Unit</InputLabel>
-                <Select labelId="unit3-label" label="Unit" value={stockForm.type} onChange={(e) => { const newForm = { ...stockForm, type: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }}>
-                  <MenuItem value=""><em>Select unit</em></MenuItem>
+                <Select
+                  labelId="unit3-label"
+                  label="Unit"
+                  value={stockForm.type ?? ""}
+                  onChange={(e) => {
+                    const newType = e.target.value ?? "";
+                    const oldType = stockForm.type || newType;
+                    const convertedCurrent = convertStockByUnitChange(
+                      stockForm.current,
+                      oldType,
+                      newType
+                    );
+                    const newForm = {
+                      ...stockForm,
+                      type: newType,
+                      current: convertedCurrent,
+                    };
+                    setStockForm(newForm);
+                    handleStockFormChange(newForm);
+                  }}>
+                  <MenuItem value="">
+                    <em>Select unit</em>
+                  </MenuItem>
                   {UNIT_OPTIONS.map((u) => (
-                    <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
+                    <MenuItem key={u.value} value={u.value}>
+                      {u.label}
+                    </MenuItem>
                   ))}
                 </Select>
                 {stockTouchedRef.current && !stockForm.type && (
@@ -1286,7 +1438,7 @@ export default function InventoryPage() {
               <TextField
                 fullWidth
                 label="Rename (optional)"
-                value={stockForm.name}
+                value={stockForm.name ?? ""}
                 onChange={(e) => {
                   const v = e.target.value;
                   const newForm = { ...stockForm, name: v };
@@ -1314,7 +1466,7 @@ export default function InventoryPage() {
 
               <TextField
                 label="Quantity"
-                value={stockForm.qty}
+                value={stockForm.qty ?? ""}
                 onChange={(e) => {
                   let v = String(e.target.value ?? "");
                   v = v.replace(/[^0-9.]/g, "");
@@ -1343,10 +1495,15 @@ export default function InventoryPage() {
                   ),
                 }}
               />
-              <TextField label="Current Stock" value={stockForm.current} InputProps={{ readOnly: true }} fullWidth />
+              <TextField
+                label="Current Stock"
+                value={formatStockInline(stockForm.current, stockForm.type)}
+                InputProps={{ readOnly: true }}
+                fullWidth
+              />
               <TextField
                 label="Low Stock"
-                value={stockForm.low}
+                value={stockForm.low ?? ""}
                 fullWidth
                 InputProps={{ readOnly: true }}
                 helperText="Configured in Settings → Inventory"
@@ -1354,13 +1511,13 @@ export default function InventoryPage() {
             </Stack>
 
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-              <TextField label="Remarks" value={stockForm.remarks} onChange={(e) => { const newForm = { ...stockForm, remarks: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }} fullWidth />
+              <TextField label="Remarks" value={stockForm.remarks ?? ""} onChange={(e) => { const newForm = { ...stockForm, remarks: e.target.value }; setStockForm(newForm); handleStockFormChange(newForm); }} fullWidth />
             </Stack>
 
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <TextField
-                label="Price per Item"
-                value={stockForm.price}
+                label="Purchase Item"
+                value={stockForm.price ?? ""}
                 onChange={(e) => {
                   const price = e.target.value.replace(/[^0-9.]/g, "");
                   const newForm = { ...stockForm, price, cost: recalcCost(stockForm.qty, price) };

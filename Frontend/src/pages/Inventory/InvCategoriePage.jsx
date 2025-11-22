@@ -44,6 +44,7 @@ export default function InvCategoriePage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [search, setSearch] = useState("");
 
   const [selected, setSelected] = useState([]);
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
@@ -73,19 +74,40 @@ export default function InvCategoriePage() {
 
   const nameIsInvalid = name.trim().length > 0 && !isValidName(normalizeName(name));
 
+  const filteredRows = useMemo(() => {
+    const s = search.toLowerCase().trim();
+    if (!s) return rows;
+    return rows.filter(r => r.name.toLowerCase().includes(s));
+  }, [rows, search]);
+
   const paged = useMemo(() => {
     const start = page * rowsPerPage;
-    return rows.slice(start, start + rowsPerPage);
-  }, [rows, page, rowsPerPage]);
+    return filteredRows.slice(start, start + rowsPerPage);
+  }, [filteredRows, page, rowsPerPage]);
 
-  const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
+  const allChecked =
+    filteredRows.length > 0 &&
+    filteredRows.every((r) => selected.includes(r.id));
+
+  const someChecked =
+    filteredRows.some((r) => selected.includes(r.id)) && !allChecked;
+
+  const toggleAll = () =>
+    setSelected((s) => {
+      const visibleIds = filteredRows.map((r) => r.id);
+      const allVisibleSelected = visibleIds.every((id) => s.includes(id));
+      if (allVisibleSelected) {
+        // unselect all visible
+        return s.filter((id) => !visibleIds.includes(id));
+      }
+      // select all visible + keep others
+      return Array.from(new Set([...s, ...visibleIds]));
+    });
+
   function clearSelection() {
     setSelected([]);
   }
-  const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
 
-  const toggleAll = () =>
-    setSelected((s) => (s.length === rows.length ? [] : rows.map((r) => r.id)));
   const toggleOne = (id) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
@@ -337,6 +359,17 @@ export default function InvCategoriePage() {
                 </IconButton>
               </span>
             </Tooltip>
+
+            <TextField
+              size="small"
+              placeholder="Search…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPageState((s) => ({ ...s, page: 0 })); // reset to first page
+              }}
+              sx={{ width: 200 }}
+            />
           </Stack>
         </Box>
 
@@ -381,7 +414,7 @@ export default function InvCategoriePage() {
                       </Box>
                     </TableCell>
                   </TableRow>
-                ) : rows.length === 0 ? (
+                ) : filteredRows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={3}>
                       <Box py={6} textAlign="center">
@@ -433,7 +466,7 @@ export default function InvCategoriePage() {
 
           <TablePagination
             component="div"
-            count={rows.length}
+            count={filteredRows.length}
             page={page}
             onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
             rowsPerPage={rowsPerPage}

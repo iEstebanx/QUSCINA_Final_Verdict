@@ -1,9 +1,35 @@
-// Backoffice/Backend/src/routes/Inventory/inv-activity.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Inventory/inv-activity.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool
 let sharedDb = null;
 try { sharedDb = require("../../shared/db/mysql").db; } catch {}
+
+function autoConvertUnit(type, currentStock) {
+  const n = Number(currentStock || 0);
+  let newType = type;
+  let newStock = n;
+
+  // g ↔ kg
+  if (type === "g" && n >= 1000) {
+    newType = "kg";
+    newStock = n / 1000;
+  } else if (type === "kg" && n > 0 && n < 1) {
+    newType = "g";
+    newStock = n * 1000;
+  }
+
+  // ml ↔ l
+  else if (type === "ml" && n >= 1000) {
+    newType = "l";
+    newStock = n / 1000;
+  } else if (type === "l" && n > 0 && n < 1) {
+    newType = "ml";
+    newStock = n * 1000;
+  }
+
+  return { type: newType, currentStock: newStock };
+}
 
 module.exports = ({ db } = {}) => {
   db = db || sharedDb;
@@ -76,9 +102,10 @@ module.exports = ({ db } = {}) => {
         // 2) update ingredient stock (ignore if no ingredientId)
         if (ingredientId) {
           const delta = io === "In" ? qty : -qty;
+
           await conn.execute(
             `UPDATE inventory_ingredients
-                SET currentStock = COALESCE(currentStock,0) + ?,
+                SET currentStock = GREATEST(0, COALESCE(currentStock,0) + ?),
                     price = ?,
                     updatedAt = ?
               WHERE id = ?`,

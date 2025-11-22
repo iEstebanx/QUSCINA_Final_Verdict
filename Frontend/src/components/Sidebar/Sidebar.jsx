@@ -376,12 +376,12 @@ function SidebarContent({ collapsed }) {
           />
 
           {/* 2. Store Settings */}
-          <NavLeaf
+          {/* <NavLeaf
             to="/settings/store"
             label="Store Settings"
             icon={StoreIcon}
             collapsed={collapsed}
-          />
+          /> */}
 
           {/* 3. Inventory Settings */}
           <NavLeaf

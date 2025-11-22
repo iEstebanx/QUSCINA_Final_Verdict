@@ -1,4 +1,4 @@
-// Backend/src/routes/Items/items.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Items/items.js
 const express = require("express");
 const multer = require("multer");
 
@@ -37,9 +37,12 @@ function cleanMoney(x) {
 function computeCostOverall(ingredients) {
   if (!Array.isArray(ingredients)) return 0;
   return ingredients.reduce((s, it) => {
-    const qty = Number(it?.qty || 0);
-    const pr = Number(it?.price || 0);
-    return s + (qty * pr);
+    if (!it) return s;
+    const hasCost = it.cost != null && it.cost !== "";
+    const cost = hasCost
+      ? Number(it.cost) || 0
+      : (Number(it.qty || 0) * Number(it.price || 0)) || 0; // fallback
+    return s + cost;
   }, 0);
 }
 

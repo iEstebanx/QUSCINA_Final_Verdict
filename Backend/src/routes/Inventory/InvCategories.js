@@ -1,4 +1,4 @@
-// Backoffice/Backend/src/routes/Inventory/invCategories.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Inventory/invCategories.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool

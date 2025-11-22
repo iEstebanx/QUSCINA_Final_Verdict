@@ -129,8 +129,22 @@ export default function UserManagementPage() {
   // For create flow only, remember that user staged SQs
   const [sqTouched, setSqTouched] = useState(false);
 
-  const [pinHidden, setPinHidden] = useState(true);
-  const pinRefs = Array.from({ length: 6 }).map(() => useRef(null));
+  // === PIN sub-dialog state ===
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  const [pinDialogMode, setPinDialogMode] = useState("set"); // "set" | "change"
+  const [pinVisibility, setPinVisibility] = useState({
+    next: false,
+    confirm: false,
+  });
+  const [pinError, setPinError] = useState("");
+  const [pinFields, setPinFields] = useState({
+    newDigits: Array(6).fill(""),
+    confirmDigits: Array(6).fill(""),
+  });
+
+  // refs for the 6-digit inputs in the PIN dialog
+  const pinNextRefs = Array.from({ length: 6 }).map(() => useRef(null));
+  const pinConfirmRefs = Array.from({ length: 6 }).map(() => useRef(null));
 
   useEffect(() => {
     const unsub = subscribeUsers(
@@ -241,7 +255,7 @@ export default function UserManagementPage() {
         status: row.status || "Active",
         password: "",
         passwordLastChanged: row.passwordLastChanged || "—",
-        pinDigits: ("".padStart(6)).split(""),
+        pinDigits: Array(6).fill(""),
         loginVia: { ...(row.loginVia || { employeeId: true, username: true, email: true }) },
         securityQuestions: existingSQ, // for display count
       });
@@ -256,7 +270,6 @@ export default function UserManagementPage() {
       ]);
     }
     setErrors({});
-    setPinHidden(true);
     setPwDialogOpen(false);
     setPwFields({ current: "", next: "", confirm: "" });
     setPwErrors({ current: "", next: "", confirm: "" });
@@ -264,6 +277,15 @@ export default function UserManagementPage() {
     setSqError("");
     setSqSaving(false);
     setSqTouched(false);
+
+    // reset PIN dialog staging
+    setPinDialogOpen(false);
+    setPinError("");
+    setPinVisibility({ next: false, confirm: false });
+    setPinFields({
+      newDigits: Array(6).fill(""),
+      confirmDigits: Array(6).fill(""),
+    });
 
     // snapshot pristine state for main dialog
     const nextMain = row
@@ -277,7 +299,7 @@ export default function UserManagementPage() {
           phone: row.phone || "",
           role: row.role || "",
           status: row.status || "Active",
-          pinDigits: ("".padStart(6)).split(""),
+          pinDigits: Array(6).fill(""),
           loginVia: { ...(row.loginVia || { employeeId: true, username: true, email: true }) },
           // password is empty at open; we only stage later
           password: "",
@@ -447,6 +469,46 @@ export default function UserManagementPage() {
         setPwSaving(false);
       }
     })();
+  }
+
+  function openPinDialog() {
+    blurActive();
+    setPinDialogMode(isEditingExisting ? "change" : "set");
+    setPinError("");
+    setPinVisibility({ next: false, confirm: false });
+
+    // if there is a staged PIN in the main form, prefill it; otherwise start empty
+    const staged = Array.isArray(form.pinDigits) ? form.pinDigits : [];
+    const digits = Array(6)
+      .fill("")
+      .map((_, i) => staged[i] || "");
+
+    setPinFields({
+      newDigits: digits,
+      confirmDigits: Array(6).fill(""),
+    });
+    setPinDialogOpen(true);
+  }
+
+  function savePinDialog() {
+    const pinPattern = /^\d{6}$/;
+    const newPin = pinFields.newDigits.join("");
+    const confirmPin = pinFields.confirmDigits.join("");
+
+    if (!pinPattern.test(newPin)) {
+      setPinError("PIN must be exactly 6 digits.");
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setPinError("New PIN and confirm PIN do not match.");
+      return;
+    }
+
+    // stage into main form; actual save happens on main Save
+    setForm((f) => ({ ...f, pinDigits: [...pinFields.newDigits] }));
+    setErrors((prev) => ({ ...prev, pin: undefined }));
+    setPinDialogOpen(false);
+    setPinError("");
   }
 
   // ===== Security Questions dialog helpers =====
@@ -1248,63 +1310,43 @@ export default function UserManagementPage() {
               {/* PIN row (hidden for Chef) */}
               {needsPin && (
                 <Grid size={{ xs: 12, md: 6 }}>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                    POS PIN<span style={{ color: "#d32f2f" }}> *</span>
-                    {form.role === "Chef" && " (not required for Chef)"}
-                  </Typography>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={1}
-                    flexWrap="nowrap"
-                    sx={{ overflowX: "auto" }}
+                  <Paper
+                    variant="outlined"
+                    onClick={openPinDialog}
+                    sx={{
+                      p: 1,
+                      cursor: "pointer",
+                      "&:hover": { bgcolor: "action.hover" },
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      minHeight: 46,
+                    }}
                   >
-                    <LockOutlinedIcon fontSize="small" />
-                    <Stack direction="row" spacing={0.5}>
-                      {form.pinDigits.map((d, i) => (
-                        <TextField
-                          key={i}
-                          size="small"
-                          inputRef={pinRefs[i]}
-                          value={pinHidden && d ? "•" : d}
-                          onChange={(e) => {
-                            const v = e.target.value.replace(/\D/g, "").slice(-1);
-                            setForm((f) => {
-                              const arr = [...f.pinDigits];
-                              arr[i] = v;
-                              return { ...f, pinDigits: arr };
-                            });
-                            if (v && i < 5) pinRefs[i + 1].current?.focus();
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Backspace" && !form.pinDigits[i] && i > 0) {
-                              pinRefs[i - 1].current?.focus();
-                            }
-                          }}
-                          slotProps={{
-                            htmlInput: {
-                              inputMode: "numeric",
-                              pattern: "[0-9]*",
-                              maxLength: 1,
-                              style: { textAlign: "center", width: 28 },
-                              "aria-label": `PIN digit ${i + 1}`,
-                            },
-                          }}
-                          sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
-                        />
-                      ))}
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <LockOutlinedIcon fontSize="small" />
+                      <Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                          {form.pinDigits && form.pinDigits.some((d) => d)
+                            ? "PIN configured — tap to change"
+                            : isEditingExisting
+                            ? "No PIN configured yet — tap to set"
+                            : "Required before saving this user"}
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.25 }}>
+                          POS PIN
+                          {!isEditingExisting && <span style={{ color: "#d32f2f" }}> *</span>}
+                        </Typography>
+                      </Box>
                     </Stack>
-                    <Tooltip title={pinHidden ? "Show" : "Hide"}>
-                      <IconButton
-                        size="small"
-                        onClick={() => setPinHidden((v) => !v)}
-                      >
-                        {pinHidden ? <VisibilityOffOutlinedIcon /> : <VisibilityOutlinedIcon />}
-                      </IconButton>
-                    </Tooltip>
-                  </Stack>
+                    <ChevronRightOutlinedIcon fontSize="small" />
+                  </Paper>
                   {errors.pin && (
-                    <Typography variant="caption" color="error">
+                    <Typography
+                      variant="caption"
+                      color="error"
+                      sx={{ mt: 0.5, display: "block" }}
+                    >
                       {errors.pin}
                     </Typography>
                   )}
@@ -1821,6 +1863,183 @@ export default function UserManagementPage() {
           {sqSaving && <CircularProgress size={18} />}
           <Button onClick={requestCloseSq} variant="outlined" size="small" disabled={sqSaving}>Cancel</Button>
           <Button onClick={saveSqDialog} variant="contained" size="small" disabled={sqSaving}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ===== POS PIN sub-dialog ===== */}
+      <Dialog
+        open={pinDialogOpen}
+        onClose={() => setPinDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        disableAutoFocus
+        disableRestoreFocus
+        TransitionProps={{ onEnter: blurActive }}
+        PaperProps={dialogPaperGrid}
+      >
+        <DialogTitle sx={{ pb: 0.5 }}>
+          {pinDialogMode === "change" ? "Change POS PIN" : "Set POS PIN"}
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            overflowY: "auto",
+            overscrollBehaviorY: "contain",
+            scrollbarGutter: "stable both-edges",
+          }}
+        >
+          <Stack spacing={2}>
+            {/* New PIN row */}
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                New PIN
+              </Typography>
+              <Stack direction="row" alignItems="center" spacing={1} flexWrap="nowrap">
+                <LockOutlinedIcon fontSize="small" />
+                <Stack direction="row" spacing={0.5}>
+                  {pinFields.newDigits.map((d, i) => {
+                    const visible = pinVisibility.next;
+                    return (
+                      <TextField
+                        key={i}
+                        size="small"
+                        inputRef={pinNextRefs[i]}
+                        value={visible ? d : d ? "•" : ""}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/\D/g, "").slice(-1);
+                          setPinFields((prev) => {
+                            const arr = [...prev.newDigits];
+                            arr[i] = v;
+                            return { ...prev, newDigits: arr };
+                          });
+                          if (v && i < 5) pinNextRefs[i + 1].current?.focus();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Backspace" && !pinFields.newDigits[i] && i > 0) {
+                            pinNextRefs[i - 1].current?.focus();
+                          }
+                        }}
+                        slotProps={{
+                          htmlInput: {
+                            inputMode: "numeric",
+                            pattern: "[0-9]*",
+                            maxLength: 1,
+                            style: { textAlign: "center", width: 28 },
+                            "aria-label": `New PIN digit ${i + 1}`,
+                          },
+                        }}
+                        sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
+                      />
+                    );
+                  })}
+                </Stack>
+                <Tooltip title={pinVisibility.next ? "Hide PIN" : "Show PIN"}>
+                  <IconButton
+                    size="small"
+                    onClick={() =>
+                      setPinVisibility((prev) => ({ ...prev, next: !prev.next }))
+                    }
+                  >
+                    {pinVisibility.next ? (
+                      <VisibilityOutlinedIcon />
+                    ) : (
+                      <VisibilityOffOutlinedIcon />
+                    )}
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Box>
+
+            {/* Confirm PIN row */}
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                Confirm new PIN
+              </Typography>
+              <Stack direction="row" alignItems="center" spacing={1} flexWrap="nowrap">
+                <LockOutlinedIcon fontSize="small" />
+                <Stack direction="row" spacing={0.5}>
+                  {pinFields.confirmDigits.map((d, i) => {
+                    const visible = pinVisibility.confirm;
+                    return (
+                      <TextField
+                        key={i}
+                        size="small"
+                        inputRef={pinConfirmRefs[i]}
+                        value={visible ? d : d ? "•" : ""}
+                        onChange={(e) => {
+                          const v = e.target.value.replace(/\D/g, "").slice(-1);
+                          setPinFields((prev) => {
+                            const arr = [...prev.confirmDigits];
+                            arr[i] = v;
+                            return { ...prev, confirmDigits: arr };
+                          });
+                          if (v && i < 5) pinConfirmRefs[i + 1].current?.focus();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Backspace" && !pinFields.confirmDigits[i] && i > 0) {
+                            pinConfirmRefs[i - 1].current?.focus();
+                          }
+                        }}
+                        slotProps={{
+                          htmlInput: {
+                            inputMode: "numeric",
+                            pattern: "[0-9]*",
+                            maxLength: 1,
+                            style: { textAlign: "center", width: 28 },
+                            "aria-label": `Confirm PIN digit ${i + 1}`,
+                          },
+                        }}
+                        sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
+                      />
+                    );
+                  })}
+                </Stack>
+                <Tooltip title={pinVisibility.confirm ? "Hide PIN" : "Show PIN"}>
+                  <IconButton
+                    size="small"
+                    onClick={() =>
+                      setPinVisibility((prev) => ({
+                        ...prev,
+                        confirm: !prev.confirm,
+                      }))
+                    }
+                  >
+                    {pinVisibility.confirm ? (
+                      <VisibilityOutlinedIcon />
+                    ) : (
+                      <VisibilityOffOutlinedIcon />
+                    )}
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Box>
+
+            <Typography variant="caption" color="text.secondary">
+              Use a 6-digit numeric PIN. Avoid obvious patterns like 000000 or 123456.
+            </Typography>
+
+            {pinError && (
+              <Typography variant="body2" color="error">
+                {pinError}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 1.25, gap: 1 }}>
+          <Button
+            onClick={() => setPinDialogOpen(false)}
+            variant="outlined"
+            size="small"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={savePinDialog}
+            variant="contained"
+            size="small"
+          >
+            Save PIN
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

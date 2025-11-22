@@ -1,5 +1,5 @@
 // Backoffice/Frontend/src/pages/AuditTrail/AuditTrailPage.jsx
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Box,
   Paper,
@@ -85,6 +85,11 @@ const AUTH_STATUS_LEGEND = {
 
   // Logout
   LOGOUT_OK:            { label: "Logout Successful", color: "info" },
+
+  // 🔹 Authorization PIN settings
+  PIN_SET:    { label: "PIN Set",    color: "success" },
+  PIN_CHANGED:{ label: "PIN Changed",color: "success" },
+  PIN_RESET:  { label: "PIN Reset",  color: "warning" },
 };
 
 /* ============================================================
@@ -129,6 +134,12 @@ function getActionLabel(row) {
   // 🔹 Some backoffice events may be "Auth - Logout"
   if (action.startsWith("Auth - Logout")) return "Logout";
 
+  // 🔹 System-level Authorization PIN actions
+  if (action.startsWith("System - Authorization PIN ")) {
+    // "System - Authorization PIN Reset" -> "Authorization PIN Reset"
+    return action.replace("System - ", "");
+  }
+
   // Fallback: keep original
   return action;
 }
@@ -140,35 +151,38 @@ export default function AuditTrailPage() {
   const [rows, setRows] = useState([]);
   const [employeeFilter, setEmployeeFilter] = useState("All Employees");
   const [dateFilter, setDateFilter] = useState("Select Date");
-
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
-
   const [selectedRow, setSelectedRow] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  /* ------------------------------------------------------------
-     Load Logs
-     ------------------------------------------------------------ */
-  useEffect(() => {
-    loadLogs();
-  }, []);
-
-  async function loadLogs() {
+  // ✅ single, reusable loader
+  const loadLogs = useCallback(async () => {
     try {
+      setLoading(true);
+
       const res = await fetch("/api/audit-trail");
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || "Failed to load logs");
+        throw new Error(data.error || data.message || "Failed to load logs");
       }
 
-      const data = await res.json();
       if (data.ok && Array.isArray(data.data)) {
         setRows(data.data);
+        setPageState((s) => ({ ...s, page: 0 })); // back to first page
       }
     } catch (err) {
       console.error("Failed to load audit logs:", err);
+    } finally {
+      setLoading(false);
     }
-  }
+  }, []);
+
+  // initial load
+  useEffect(() => {
+    loadLogs();
+  }, [loadLogs]);
 
   const paged = useMemo(() => {
     const start = page * rowsPerPage;
@@ -198,47 +212,67 @@ export default function AuditTrailPage() {
         <Box p={2}>
           <Stack
             direction="row"
-            useFlexGap
             alignItems="center"
+            justifyContent="space-between"
+            useFlexGap
             flexWrap="wrap"
             rowGap={1.5}
             columnGap={2}
           >
-            <Select
-              value={employeeFilter}
-              onChange={(e) => setEmployeeFilter(e.target.value)}
-              size="small"
-              displayEmpty
-              sx={{ minWidth: 220 }}
-              startAdornment={
-                <InputAdornment position="start">
-                  <PersonIcon fontSize="small" />
-                </InputAdornment>
-              }
+            {/* Left side: filters */}
+            <Stack
+              direction="row"
+              useFlexGap
+              alignItems="center"
+              flexWrap="wrap"
+              rowGap={1.5}
+              columnGap={2}
             >
-              <MenuItem value="All Employees">All Employees</MenuItem>
-              <MenuItem value="Admin">Admin</MenuItem>
-              <MenuItem value="Manager">Manager</MenuItem>
-              <MenuItem value="Cashier">Cashier</MenuItem>
-            </Select>
+              <Select
+                value={employeeFilter}
+                onChange={(e) => setEmployeeFilter(e.target.value)}
+                size="small"
+                displayEmpty
+                sx={{ minWidth: 220 }}
+                startAdornment={
+                  <InputAdornment position="start">
+                    <PersonIcon fontSize="small" />
+                  </InputAdornment>
+                }
+              >
+                <MenuItem value="All Employees">All Employees</MenuItem>
+                <MenuItem value="Admin">Admin</MenuItem>
+                <MenuItem value="Manager">Manager</MenuItem>
+                <MenuItem value="Cashier">Cashier</MenuItem>
+              </Select>
 
-            <Select
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
+              <Select
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                size="small"
+                displayEmpty
+                sx={{ minWidth: 200 }}
+                startAdornment={
+                  <InputAdornment position="start">
+                    <CalendarMonthIcon fontSize="small" />
+                  </InputAdornment>
+                }
+              >
+                <MenuItem value="Select Date">Select Date</MenuItem>
+                <MenuItem value="Today">Today</MenuItem>
+                <MenuItem value="This Week">This Week</MenuItem>
+                <MenuItem value="This Month">This Month</MenuItem>
+              </Select>
+            </Stack>
+
+            {/* Right side: Refresh button */}
+            <Button
+              variant="outlined"
               size="small"
-              displayEmpty
-              sx={{ minWidth: 200 }}
-              startAdornment={
-                <InputAdornment position="start">
-                  <CalendarMonthIcon fontSize="small" />
-                </InputAdornment>
-              }
+              onClick={loadLogs}
             >
-              <MenuItem value="Select Date">Select Date</MenuItem>
-              <MenuItem value="Today">Today</MenuItem>
-              <MenuItem value="This Week">This Week</MenuItem>
-              <MenuItem value="This Month">This Month</MenuItem>
-            </Select>
+              Refresh
+            </Button>
           </Stack>
         </Box>
 
@@ -294,7 +328,21 @@ export default function AuditTrailPage() {
               </TableHead>
 
               <TableBody>
-                {paged.length === 0 ? (
+
+                {/* 🔄 Loading State */}
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Box py={6} textAlign="center">
+                        <Typography variant="body2" color="text.secondary">
+                          Loading audit logs…
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                ) : paged.length === 0 ? (
+                  
+                  /* ❗Empty State */
                   <TableRow>
                     <TableCell colSpan={4}>
                       <Box py={6} textAlign="center">
@@ -304,12 +352,16 @@ export default function AuditTrailPage() {
                       </Box>
                     </TableCell>
                   </TableRow>
+
                 ) : (
+
+                  /* ✅ Normal Rows */
                   paged.map((r) => {
                     const rawSource =
                       r.detail?.actionDetails?.app ||
                       r.detail?.meta?.app ||
                       "—";
+
                     const sourceLabel =
                       typeof rawSource === "string" && rawSource !== "—"
                         ? rawSource.charAt(0).toUpperCase() + rawSource.slice(1)
@@ -322,21 +374,27 @@ export default function AuditTrailPage() {
                         sx={{ cursor: "pointer" }}
                         onClick={() => setSelectedRow(r)}
                       >
+                        {/* USER ROLE */}
                         <TableCell>{r.role || "—"}</TableCell>
 
+                        {/* ACTION */}
                         <TableCell sx={{ overflow: "hidden" }}>
                           <Typography noWrap title={r.action}>
                             {getActionLabel(r)}
                           </Typography>
                         </TableCell>
 
-                        {/* center + no wrap for nice column alignment */}
+                        {/* TIMESTAMP */}
                         <TableCell align="center">
-                          <Typography variant="body2" sx={{ whiteSpace: "nowrap" }}>
+                          <Typography
+                            variant="body2"
+                            sx={{ whiteSpace: "nowrap" }}
+                          >
                             {r.timestamp}
                           </Typography>
                         </TableCell>
 
+                        {/* SOURCE */}
                         <TableCell align="center">
                           <Typography variant="body2">
                             {sourceLabel}
@@ -345,7 +403,9 @@ export default function AuditTrailPage() {
                       </TableRow>
                     );
                   })
+
                 )}
+
               </TableBody>
             </Table>
           </TableContainer>
@@ -370,54 +430,54 @@ export default function AuditTrailPage() {
       </Paper>
 
       {/* ======================================================
-          DETAIL DIALOG
+          DETAIL DIALOG - IMPROVED DESIGN
          ====================================================== */}
       <Dialog
         open={!!selectedRow}
         onClose={() => setSelectedRow(null)}
-        maxWidth="lg"
+        maxWidth="md"
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: 3,
-            minHeight: "60vh",
+            borderRadius: 2,
+            maxHeight: '85vh',
+            overflow: "hidden",
           },
         }}
       >
         {selectedRow && (
           <>
-            <DialogTitle sx={{ pb: 2, pt: 3 }}>
-              <Typography
-                variant="h5"
-                component="span"        // 👈 key part – no longer <h5>
-                fontWeight={700}
-                gutterBottom
-              >
-                {dialogTitle}
-              </Typography>
-              <Typography variant="body1" color="text.secondary">
-                {selectedRow.detail?.statusMessage}
-              </Typography>
+            <DialogTitle sx={{ pb: 1, pt: 2.5, px: 3 }}>
+              <Stack spacing={0.5}>
+                <Typography variant="h6" fontWeight={700} component="div">
+                  {dialogTitle}
+                </Typography>
+                {selectedRow.detail?.statusMessage && (
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
+                    {selectedRow.detail.statusMessage}
+                  </Typography>
+                )}
+              </Stack>
             </DialogTitle>
 
-            <DialogContent dividers className="scroll-x" sx={{ py: 3 }}>
-              <Box sx={{ minWidth: isAuth ? 760 : 980 }}>
-                <Grid container spacing={3}>
+            <DialogContent dividers className="scroll-x" sx={{ p: 0 }}>
+              <Box sx={{ py: 2, px: 3 }}>
+                <Grid container spacing={2}>
                   {/* ----------------------------------------------------
-                      USER INFORMATION (with NEW "Source")
+                      USER INFORMATION - COMPACT
                      ---------------------------------------------------- */}
                   <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper variant="outlined" sx={{ p: 3, height: "100%", borderRadius: 2 }}>
-                      <Typography variant="h6" fontWeight={700} gutterBottom color="primary">
+                    <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                      <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
                         User Information
                       </Typography>
 
-                      <Stack spacing={2.5} mt={2}>
-                        <DetailRow label="Employee" value={selectedRow.employee} />
-                        <DetailRow label="Role" value={selectedRow.role || "—"} />
-                        <DetailRow label="Timestamp" value={selectedRow.timestamp} />
+                      <Stack spacing={1.5} mt={1.5}>
+                        <CompactDetailRow label="Employee" value={selectedRow.employee} />
+                        <CompactDetailRow label="Role" value={selectedRow.role || "—"} />
+                        <CompactDetailRow label="Timestamp" value={selectedRow.timestamp} />
 
-                        {/* 🔥 NEW SOURCE */}
+                        {/* SOURCE */}
                         {(() => {
                           const raw =
                             selectedRow.detail?.actionDetails?.app ||
@@ -428,17 +488,17 @@ export default function AuditTrailPage() {
                               ? raw.charAt(0).toUpperCase() + raw.slice(1)
                               : "—";
 
-                          return <DetailRow label="Source" value={label} />;
+                          return <CompactDetailRow label="Source" value={label} />;
                         })()}
                       </Stack>
 
                       {isAuth && selectedRow.detail?.affectedData?.statusChange && 
                         selectedRow.detail.affectedData.statusChange !== "NONE" && (
-                          <Box mt={3}>
+                          <Box mt={2}>
                             <Typography
-                              variant="subtitle2"
+                              variant="caption"
                               color="text.secondary"
-                              sx={{ mb: 1.5 }}
+                              sx={{ mb: 1, display: 'block', fontWeight: 600 }}
                             >
                               Status
                             </Typography>
@@ -449,12 +509,12 @@ export default function AuditTrailPage() {
                   </Grid>
 
                   {/* ----------------------------------------------------
-                      AFFECTED DATA
+                      AFFECTED DATA - COMPACT
                      ---------------------------------------------------- */}
                   {!isAuth && (
                     <Grid item xs={12} md={4}>
-                      <Paper variant="outlined" sx={{ p: 3, height: "100%", borderRadius: 2 }}>
-                        <Typography variant="h6" fontWeight={700} gutterBottom color="primary">
+                      <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                        <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
                           Affected Data
                         </Typography>
 
@@ -468,11 +528,11 @@ export default function AuditTrailPage() {
                   )}
 
                   {/* ----------------------------------------------------
-                      ACTION DETAILS
+                      ACTION DETAILS - COMPACT
                      ---------------------------------------------------- */}
                   <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper variant="outlined" sx={{ p: 3, height: "100%", borderRadius: 2 }}>
-                      <Typography variant="h6" fontWeight={700} gutterBottom color="primary">
+                    <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                      <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
                         Action Details
                       </Typography>
 
@@ -489,8 +549,13 @@ export default function AuditTrailPage() {
               </Box>
             </DialogContent>
 
-            <DialogActions sx={{ px: 3, py: 2.5 }}>
-              <Button variant="contained" size="large" sx={{ minWidth: 120, borderRadius: 2 }} onClick={() => setSelectedRow(null)}>
+            <DialogActions sx={{ px: 3, py: 2 }}>
+              <Button 
+                variant="contained" 
+                size="medium" 
+                sx={{ minWidth: 100, borderRadius: 1.5 }} 
+                onClick={() => setSelectedRow(null)}
+              >
                 Close
               </Button>
             </DialogActions>
@@ -502,16 +567,16 @@ export default function AuditTrailPage() {
 }
 
 /* ============================================================
-   DETAIL ROW (shared)
+   COMPACT DETAIL ROW (more compressed)
    ============================================================ */
-function DetailRow({ label, value }) {
+function CompactDetailRow({ label, value }) {
   return (
-    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2, py: 1 }}>
-      <Typography variant="subtitle2" color="text.secondary" sx={{ minWidth: 120 }}>
+    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1, py: 0.5 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 80, fontSize: '0.75rem', fontWeight: 600 }}>
         {label}
       </Typography>
 
-      <Typography variant="body1" fontWeight={600} sx={{ textAlign: "right", wordBreak: "break-word" }}>
+      <Typography variant="body2" fontWeight={500} sx={{ textAlign: "right", wordBreak: "break-word", fontSize: '0.8125rem' }}>
         {value || "—"}
       </Typography>
     </Box>
@@ -519,7 +584,7 @@ function DetailRow({ label, value }) {
 }
 
 /* ============================================================
-   ACTION DETAIL COMPONENTS (Auth / Generic / System)
+   ACTION DETAIL COMPONENTS (Updated for compact layout)
    ============================================================ */
 function AuthActionDetails({ detail }) {
   const a = detail?.actionDetails || {};
@@ -537,18 +602,18 @@ function AuthActionDetails({ detail }) {
       : a.loginType || "login";
 
   return (
-    <Stack spacing={2.5} mt={2}>
-      <DetailRow label="Action Type" value={a.actionType || "login"} />
-      {a.app && <DetailRow label="App" value={a.app} />}
-      {a.loginType && <DetailRow label="Login Method" value={loginMethodLabel} />}
-      {a.identifier && <DetailRow label="Login ID" value={a.identifier} />}
+    <Stack spacing={1.5} mt={1.5}>
+      <CompactDetailRow label="Action Type" value={a.actionType || "login"} />
+      {a.app && <CompactDetailRow label="App" value={a.app} />}
+      {a.loginType && <CompactDetailRow label="Login Method" value={loginMethodLabel} />}
+      {a.identifier && <CompactDetailRow label="Login ID" value={a.identifier} />}
 
       {(legend?.label || a.result) && (
-        <DetailRow label="Result" value={legend?.label || a.result} />
+        <CompactDetailRow label="Result" value={legend?.label || a.result} />
       )}
 
-      {meta.ip && <DetailRow label="IP Address" value={meta.ip} />}
-      {meta.userAgent && <DetailRow label="Device / Browser" value={meta.userAgent} />}
+      {meta.ip && <CompactDetailRow label="IP Address" value={meta.ip} />}
+      {meta.userAgent && <CompactDetailRow label="Device / Browser" value={meta.userAgent} />}
     </Stack>
   );
 }
@@ -560,35 +625,34 @@ function GenericActionDetails({ detail }) {
   const showReason = !!a.reason;
 
   return (
-    <Stack spacing={2.5} mt={2}>
-      <DetailRow label="Action Type" value={a.actionType} />
+    <Stack spacing={1.5} mt={1.5}>
+      <CompactDetailRow label="Action Type" value={a.actionType} />
 
-      {a.recipient && <DetailRow label="Recipient" value={a.recipient} />}
-      {a.receiptNo && <DetailRow label="Receipt No." value={a.receiptNo} />}
+      {a.recipient && <CompactDetailRow label="Recipient" value={a.recipient} />}
+      {a.receiptNo && <CompactDetailRow label="Receipt No." value={a.receiptNo} />}
 
       {showAmount && (
-        <DetailRow label="Amount Total" value={a.amount} />
+        <CompactDetailRow label="Amount Total" value={a.amount} />
       )}
 
       {showReason && (
         <Box>
           <Typography
-            variant="subtitle2"
+            variant="caption"
             color="text.secondary"
-            sx={{ mb: 1.5 }}
+            sx={{ mb: 1, display: 'block', fontWeight: 600 }}
           >
             Reason
           </Typography>
 
           <Chip
             label={a.reason}
-            size="medium"
+            size="small"
             sx={{
-              borderRadius: 2,
+              borderRadius: 1,
               fontWeight: 600,
-              px: 1,
-              py: 1.5,
-              fontSize: "0.875rem",
+              fontSize: "0.75rem",
+              height: '24px'
             }}
             color="primary"
             variant="outlined"
@@ -621,32 +685,32 @@ function SystemActionDetails({ detail }) {
       : "";
 
   return (
-    <Stack spacing={2.5} mt={2}>
-      <DetailRow label="Action Type" value={a.actionType || job.action || "—"} />
-      {backupType && <DetailRow label="Backup Type" value={backupType} />}
-      {trigger && <DetailRow label="Trigger Source" value={trigger} />}
-      {a.reference && <DetailRow label="File / Reference" value={a.reference} />}
-      {sizeLabel && <DetailRow label="Backup Size" value={sizeLabel} />}
-      {a.reason && <DetailRow label="Notes" value={a.reason} />}
+    <Stack spacing={1.5} mt={1.5}>
+      <CompactDetailRow label="Action Type" value={a.actionType || job.action || "—"} />
+      {backupType && <CompactDetailRow label="Backup Type" value={backupType} />}
+      {trigger && <CompactDetailRow label="Trigger Source" value={trigger} />}
+      {a.reference && <CompactDetailRow label="File / Reference" value={a.reference} />}
+      {sizeLabel && <CompactDetailRow label="Backup Size" value={sizeLabel} />}
+      {a.reason && <CompactDetailRow label="Notes" value={a.reason} />}
     </Stack>
   );
 }
 
 /* ============================================================
-   AFFECTED DATA (generic + system)
+   AFFECTED DATA (generic + system) - COMPACT VERSION
    ============================================================ */
 function GenericAffectedData({ detail }) {
   const items = detail?.affectedData?.items || [];
 
   return (
     <>
-      <Box mt={2}>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 2 }}>
+      <Box mt={1.5}>
+        <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block', fontWeight: 600 }}>
           Items
         </Typography>
 
         {items.length ? (
-          <Stack spacing={1.5}>
+          <Stack spacing={1}>
             {items.map((it, idx) => (
               <Box
                 key={idx}
@@ -654,21 +718,19 @@ function GenericAffectedData({ detail }) {
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  py: 1,
-                  px: 1.5,
-                  borderRadius: 1,
+                  py: 0.75,
+                  px: 1,
+                  borderRadius: 0.75,
                   bgcolor: "action.hover",
+                  fontSize: '0.8125rem'
                 }}
               >
-                <Typography variant="body1">{it.name}</Typography>
-                <Typography variant="body1" fontWeight={700}>
-                  {it.qty > 0 ? `(${it.qty}x)` : ""}
-                </Typography>
+                <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>{it.name}</Typography>
               </Box>
             ))}
           </Stack>
         ) : (
-          <Typography variant="body1" color="text.secondary" sx={{ fontStyle: "italic" }}>
+          <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic", fontSize: '0.8125rem' }}>
             No items affected
           </Typography>
         )}
@@ -676,8 +738,8 @@ function GenericAffectedData({ detail }) {
 
       {detail?.affectedData?.statusChange &&
         detail.affectedData.statusChange !== "NONE" && (
-          <Box mt={3}>
-            <Typography>Status Change</Typography>
+          <Box mt={2}>
+            <Typography variant="caption" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>Status Change</Typography>
             <StatusChip detail={detail} isAuth={false} />
           </Box>
         )
@@ -694,39 +756,39 @@ function SystemAffectedData({ detail }) {
 
   return (
     <>
-      <Box mt={2}>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+      <Box mt={1.5}>
+        <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
           Status
         </Typography>
         <StatusChip detail={detail} />
       </Box>
 
       {job && (
-        <Box mt={3}>
-          <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+        <Box mt={2}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
             Job Details
           </Typography>
 
-          <Stack spacing={1.5}>
-            {job.status && <DetailRow label="Job Status" value={job.status} />}
-            {job.filename && <DetailRow label="Filename" value={job.filename} />}
-            {job.env && <DetailRow label="Environment" value={job.env} />}
-            {job.backup_dir && <DetailRow label="Backup Directory" value={job.backup_dir} />}
+          <Stack spacing={1}>
+            {job.status && <CompactDetailRow label="Job Status" value={job.status} />}
+            {job.filename && <CompactDetailRow label="Filename" value={job.filename} />}
+            {job.env && <CompactDetailRow label="Environment" value={job.env} />}
+            {job.backup_dir && <CompactDetailRow label="Backup Directory" value={job.backup_dir} />}
           </Stack>
         </Box>
       )}
 
       {schedule && (
-        <Box mt={3}>
-          <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+        <Box mt={2}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
             Schedule
           </Typography>
 
-          <Stack spacing={1.5}>
-            <DetailRow label="Frequency" value={schedule.frequency} />
-            <DetailRow label="Time of Day" value={schedule.time_of_day} />
-            <DetailRow label="Retention Days" value={String(schedule.retention_days) || "—"} />
-            <DetailRow label="Next Run" value={schedule.next_run_at || "—"} />
+          <Stack spacing={1}>
+            <CompactDetailRow label="Frequency" value={schedule.frequency} />
+            <CompactDetailRow label="Time of Day" value={schedule.time_of_day} />
+            <CompactDetailRow label="Retention Days" value={String(schedule.retention_days) || "—"} />
+            <CompactDetailRow label="Next Run" value={schedule.next_run_at || "—"} />
           </Stack>
         </Box>
       )}
@@ -735,7 +797,7 @@ function SystemAffectedData({ detail }) {
 }
 
 /* ============================================================
-   STATUS CHIP
+   STATUS CHIP - COMPACT
    ============================================================ */
 function StatusChip({ detail, isAuth }) {
   const statusKey = detail?.affectedData?.statusChange;
@@ -749,8 +811,13 @@ function StatusChip({ detail, isAuth }) {
   return (
     <Chip
       label={legend?.label || statusKey}
-      size="medium"
-      sx={{ borderRadius: 2, fontWeight: 700, px: 2, py: 1, fontSize: "0.875rem" }}
+      size="small"
+      sx={{ 
+        borderRadius: 1, 
+        fontWeight: 600, 
+        fontSize: "0.75rem",
+        height: '24px'
+      }}
       color={legend?.color || "default"}
       variant={legend ? "filled" : "outlined"}
     />

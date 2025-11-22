@@ -1,4 +1,4 @@
-// Backoffice/Backend/src/routes/Categories/categories.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Categories/categories.js
 const express = require("express");
 const multer = require("multer");
 

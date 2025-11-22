@@ -1,4 +1,4 @@
-// Backend/src/auth/auth.js
+// QUSCINA_BACKOFFICE/src/auth/auth.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");

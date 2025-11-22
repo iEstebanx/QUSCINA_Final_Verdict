@@ -1,4 +1,4 @@
-// Frontend/src/pages/ItemList/ItemlistPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/ItemList/ItemlistPage.jsx
 import { useEffect, useMemo, useState, useRef } from "react";
 import {
   Box, Paper, Stack, Button, FormControl, InputLabel, Select, MenuItem,
@@ -22,9 +22,22 @@ function isValidName(s) {
   if (!NAME_ALLOWED.test(s)) return false;
   return true;
 }
+
 /* ---------------------------- Description helpers ---------------------------- */
 const DESC_MAX = 300;
 function normalizeDesc(s) { return String(s ?? "").replace(/\s+/g, " ").trim(); }
+
+/* ---------------------------- Unit display helper ---------------------------- */
+function formatUnit(u) {
+  const s = String(u || "").trim().toLowerCase();
+  if (!s) return "";
+
+  if (s === "g" || s === "gram" || s === "grams") return "G";
+  if (s === "ml" || s === "milliliter" || s === "milliliters") return "ML";
+  if (s === "pc" || s === "pcs" || s === "piece" || s === "pieces") return "PCS";
+
+  return s.toUpperCase(); // fallback
+}
 /* --------------------------------------------------------------------------- */
 
 // Safely derive a ms timestamp from Firestore Timestamp / Date-string / number
@@ -248,10 +261,21 @@ export default function ItemlistPage() {
     setItemIngredients(prev => prev.map(r => {
       if (r.id !== rowId) return r;
       if (!selectedIng) {
-        return { ...r, ingredientId: "", name: "", category: "", unit: "", currentStock: 0, price: "", qty: "", cost: 0 };
+        return {
+          ...r,
+          ingredientId: "",
+          name: "",
+          category: "",
+          unit: "",
+          currentStock: 0,
+          price: "",
+          qty: "",
+          cost: 0,
+        };
       }
 
-      const priceNum = Number(selectedIng.price || 0);
+      const unitPrice = Number(selectedIng.price || 0);
+      const qtyN = parseFloat(r.qty) || 0;
 
       return {
         ...r,
@@ -260,9 +284,12 @@ export default function ItemlistPage() {
         category: selectedIng.category,
         unit: selectedIng.unit,
         currentStock: selectedIng.currentStock,
-        price: priceNum,
+        // store unit price
+        price: unitPrice,
+        // keep existing qty
         qty: r.qty || "",
-        cost: (Number(r.qty || 0) * priceNum) || 0,
+        // cost = qty * unit price
+        cost: +(qtyN * unitPrice).toFixed(2),
       };
     }));
   }
@@ -277,10 +304,12 @@ export default function ItemlistPage() {
       if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
 
       const newRow = { ...r, [field]: v };
-      const qtyN = parseFloat(newRow.qty) || 0;
-      const priceN = parseFloat(newRow.price) || 0;
 
-      newRow.cost = +(qtyN * priceN).toFixed(2);
+      const qtyN = parseFloat(newRow.qty) || 0;
+      const unitPrice = parseFloat(newRow.price) || 0;
+
+      // cost for this ingredient row
+      newRow.cost = +(qtyN * unitPrice).toFixed(2);
 
       return newRow;
     }));
@@ -487,8 +516,7 @@ export default function ItemlistPage() {
 
   /* ============== Edit ============== */
   function openEditDialog(row) {
-    setEditingId(row.id);
-    setF({
+    const nextF = {
       name: row.name || "",
       description: row.description || "",
       categoryId: row.categoryId || "",
@@ -496,34 +524,41 @@ export default function ItemlistPage() {
       price: row.price != null ? String(row.price) : "",
       imageFile: null,
       imagePreview: row.imageUrl || "",
-    });
+    };
 
-    const initialIngredients = Array.isArray(row.ingredients) ? row.ingredients.map((x, idx) => {
-      const inventoryItem = inventory.find(inv => inv.id === x.ingredientId);
-      const currentStock = inventoryItem ? inventoryItem.currentStock : 0;
+    const initialIngredients = Array.isArray(row.ingredients)
+      ? row.ingredients.map((x, idx) => {
+          const inventoryItem = inventory.find((inv) => inv.id === x.ingredientId);
+          const currentStock = inventoryItem ? inventoryItem.currentStock : 0;
+          const unit = inventoryItem ? inventoryItem.unit : x.unit || "";
 
-      return {
-        id: x.ingredientId ? x.ingredientId : `e-${idx}-${Date.now()}`,
-        ingredientId: x.ingredientId || "",
-        name: x.name || "",
-        category: x.category || "",
-        unit: x.unit || "",
-        currentStock,
-        qty: x.qty != null ? String(x.qty) : "",
-        price: x.price != null ? String(x.price) : "",
-        cost: x.cost != null ? Number(x.cost) : (Number(x.qty || 0) * Number(x.price || 0)),
-      };
-    }) : [];
+          return {
+            id: x.ingredientId ? x.ingredientId : `e-${idx}-${Date.now()}`,
+            ingredientId: x.ingredientId || "",
+            name: x.name || "",
+            category: x.category || "",
+            unit,
+            currentStock,
+            qty: x.qty != null ? String(x.qty) : "",
+            price: x.price != null ? String(x.price) : "",
+            cost:
+              x.cost != null
+                ? Number(x.cost)
+                : Number(x.qty || 0) * Number(x.price || 0),
+          };
+        })
+      : [];
 
+    setEditingId(row.id);
+    setF(nextF);
     setItemIngredients(initialIngredients);
     setSaveErr("");
     setOpenEdit(true);
     setEditShowErrors(false);
-    setEditTouched({ category: false });
-    setTimeout(() => {
-      initialEditRef.current = snapshotForm();
-      editTouchedRef.current = false;
-    }, 0);
+
+    // ✅ Take the "initial" snapshot from the values we just computed
+    initialEditRef.current = snapshotFormFrom(nextF, initialIngredients);
+    editTouchedRef.current = false;
   }
 
   function cancelEdit() {
@@ -531,6 +566,8 @@ export default function ItemlistPage() {
     setEditingId("");
     resetForm();
     setSaveErr("");
+    initialEditRef.current = null;
+    editTouchedRef.current = false;
   }
 
   // DELETE (bulk)
@@ -608,6 +645,32 @@ export default function ItemlistPage() {
   const editTouchedRef   = useRef(false);
   const initialCreateRef = useRef(null); // { f, itemIngredients }
   const initialEditRef   = useRef(null);
+
+  function snapshotFormFrom(formState, ingredientsState) {
+    const cleanF = {
+      ...formState,
+      name: String(formState.name || "").trim(),
+      description: String(formState.description || "").trim(),
+      categoryId: String(formState.categoryId || ""),
+      categoryName: String(formState.categoryName || "").trim(),
+      price: String(formState.price || "").trim(),
+      imageFile: !!formState.imageFile,
+      imagePreview: !!formState.imagePreview,
+    };
+
+    const ings = (ingredientsState || []).map((r) => ({
+      ingredientId: String(r.ingredientId || ""),
+      qty: String(r.qty || "").trim(),
+      price: String(r.price || "").trim(),
+    }));
+
+    return { f: cleanF, ings };
+  }
+
+  // ✦ Normalize the form for stable comparison (current state)
+  function snapshotForm() {
+    return snapshotFormFrom(f, itemIngredients);
+  }
 
   // ✦ Normalize the form for stable comparison
   function snapshotForm() {
@@ -718,14 +781,19 @@ export default function ItemlistPage() {
               variant="contained"
               startIcon={<AddIcon />}
               onClick={() => {
-                resetForm();
+                const nextF = { ...emptyForm };
+
+                // Set initial state explicitly
+                setF(nextF);
+                setItemIngredients([]);
+                setSaveErr("");
                 setOpenCreate(true);
                 setCreateShowErrors(false);
                 setCreateTouched({ category: false });
-                setTimeout(() => {
-                  initialCreateRef.current = snapshotForm();
-                  createTouchedRef.current = false;
-                }, 0);
+
+                // Snapshot from what we *just* set
+                initialCreateRef.current = snapshotFormFrom(nextF, []);
+                createTouchedRef.current = false;
               }}
               sx={{ flexShrink: 0 }}
             >
@@ -1094,7 +1162,7 @@ export default function ItemlistPage() {
                     <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                     <TableCell data-label="Qty" align="center">Qty</TableCell>
-                    <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
+                    <TableCell data-label="Unit Cost" align="center">Unit Cost</TableCell>
                     <TableCell data-label="Action" align="center">Action</TableCell>
                   </TableRow>
                 </TableHead>
@@ -1196,10 +1264,8 @@ export default function ItemlistPage() {
                           sx={{ minWidth: 110 }}
                         >
                           <Typography variant="body2">
-                            {row.unit || "—"}
-                            {row.currentStock != null
-                              ? ` • ${row.currentStock}`
-                              : ""}
+                            {row.unit ? formatUnit(row.unit) : "—"}
+                            {row.currentStock != null ? ` • ${row.currentStock}` : ""}
                           </Typography>
                         </TableCell>
 
@@ -1219,27 +1285,27 @@ export default function ItemlistPage() {
                             fullWidth
                             InputProps={{
                               endAdornment: (
-                                <InputAdornment position="end">
-                                  {row.unit || "pcs"}
-                                </InputAdornment>
+                              <InputAdornment position="end">
+                                {row.unit ? formatUnit(row.unit) : "PCS"}
+                              </InputAdornment>
                               ),
                             }}
                           />
                         </TableCell>
 
                         <TableCell
-                          data-label="Price Per Unit"
+                          data-label="Unit Cost"
                           align="center"
                           sx={{ minWidth: 112 }}
                         >
                           <TextField
                             size="small"
-                            value={row.price || ""}
-                            onChange={(e) =>
-                              onRowChange(row.id, "price", e.target.value)
-                            }
+                            // display the computed cost (qty * unitPrice)
+                            value={row.cost != null ? row.cost : ""}
                             inputMode="decimal"
                             placeholder="0.00"
+                            fullWidth
+                            disabled
                             InputProps={{
                               startAdornment: (
                                 <InputAdornment position="start">
@@ -1535,7 +1601,7 @@ export default function ItemlistPage() {
                       <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                       <TableCell data-label="Qty" align="center">Qty</TableCell>
-                      <TableCell data-label="Price per Unit" align="center">Price per Unit</TableCell>
+                      <TableCell data-label="Unit Cost" align="center">Unit Cost</TableCell>
                       <TableCell data-label="Action" align="center">Action</TableCell>
                     </TableRow>
                   </TableHead>
@@ -1632,15 +1698,13 @@ export default function ItemlistPage() {
                           </TableCell>
 
                           <TableCell
-                            data-label="Unit / In stock"
+                            data-label="Unit / In Stock"
                             align="center"
                             sx={{ minWidth: 110 }}
                           >
                             <Typography variant="body2">
-                              {row.unit || "—"}
-                              {row.currentStock != null
-                                ? ` • ${row.currentStock}`
-                                : ""}
+                              {row.unit ? formatUnit(row.unit) : "—"}
+                              {row.currentStock != null ? ` • ${row.currentStock}` : ""}
                             </Typography>
                           </TableCell>
 
@@ -1661,7 +1725,7 @@ export default function ItemlistPage() {
                               InputProps={{
                                 endAdornment: (
                                   <InputAdornment position="end">
-                                    {row.unit || "pcs"}
+                                    {row.unit ? formatUnit(row.unit) : "PCS"}
                                   </InputAdornment>
                                 ),
                               }}
@@ -1669,18 +1733,18 @@ export default function ItemlistPage() {
                           </TableCell>
 
                           <TableCell
-                            data-label="Price per Unit"
+                            data-label="Unit Cost"
                             align="center"
                             sx={{ minWidth: 112 }}
                           >
                             <TextField
                               size="small"
-                              value={row.price || ""}
-                              onChange={(e) =>
-                                onRowChange(row.id, "price", e.target.value)
-                              }
+                              // display the computed cost (qty * unitPrice)
+                              value={row.cost != null ? row.cost : ""}
                               inputMode="decimal"
                               placeholder="0.00"
+                              fullWidth
+                              disabled
                               InputProps={{
                                 startAdornment: (
                                   <InputAdornment position="start">

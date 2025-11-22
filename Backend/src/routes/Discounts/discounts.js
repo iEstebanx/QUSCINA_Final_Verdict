@@ -1,4 +1,4 @@
-// Backoffice/Backend/src/routes/Discounts/discounts.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Discounts/discounts.js
 const express = require("express");
 
 let sharedDb = null;

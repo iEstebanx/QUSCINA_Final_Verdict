@@ -1,4 +1,4 @@
-// Backoffice/Backend/src/routes/Inventory/ingredients.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Inventory/ingredients.js
 const express = require("express");
 
 // Prefer DI, but fall back to shared pool
@@ -24,6 +24,23 @@ module.exports = ({ db } = {}) => {
 
   // near the top
   const LOW_STOCK_MIN_RATIO_CRITICAL = 0.25;
+
+  const convertStockOnUnitChange = (value, from, to) => {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return 0;
+    if (from === to) return n;
+
+    // g ↔ kg
+    if (from === "g" && to === "kg") return n / 1000;
+    if (from === "kg" && to === "g") return n * 1000;
+
+    // ml ↔ L
+    if (from === "ml" && to === "l") return n / 1000;
+    if (from === "l" && to === "ml") return n * 1000;
+
+    // No conversion for pcs / pack / others
+    return n;
+  };
 
   // GET /api/inventory/ingredients/low-stock
   router.get("/low-stock", async (req, res) => {
@@ -217,6 +234,7 @@ module.exports = ({ db } = {}) => {
       }
 
       const u = {};
+      let incomingType = undefined;
 
       // Name
       if (req.body?.name !== undefined) {
@@ -246,20 +264,18 @@ module.exports = ({ db } = {}) => {
       if (req.body?.type !== undefined) {
         const t = normalize(req.body.type);
         if (!t) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Unit cannot be empty." });
+          return res.status(400).json({ ok: false, error: "Unit cannot be empty." });
         }
         if (UNIT_ALLOWED.size && !UNIT_ALLOWED.has(t)) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Unit is not allowed." });
+          return res.status(400).json({ ok: false, error: "Unit is not allowed." });
         }
         u.type = t;
+        incomingType = t;
       }
 
       // currentStock
-      if (req.body?.currentStock !== undefined) {
+      const userSentCurrentStock = req.body?.currentStock !== undefined;
+      if (userSentCurrentStock) {
         const n = Number(req.body.currentStock);
         if (!Number.isFinite(n) || n < 0) {
           return res.status(400).json({
@@ -270,7 +286,7 @@ module.exports = ({ db } = {}) => {
         u.currentStock = n;
       }
 
-      // lowStock (notification threshold)
+      // lowStock
       if (req.body?.lowStock !== undefined) {
         const n = Number(req.body.lowStock);
         if (!Number.isFinite(n) || n < 0) {
@@ -294,6 +310,29 @@ module.exports = ({ db } = {}) => {
         u.price = n;
       }
 
+      // ---------------------------------------------------------
+      // SCALE LOGIC: convert currentStock if unit changed
+      // ---------------------------------------------------------
+      if (incomingType !== undefined && !userSentCurrentStock) {
+        // fetch current row
+        const [rows] = await db.query(
+          `SELECT type, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+          [id]
+        );
+        const row = Array.isArray(rows) ? rows[0] : rows;
+
+        if (row && row.type) {
+          u.currentStock = convertStockOnUnitChange(
+            row.currentStock,
+            row.type,
+            incomingType
+          );
+        }
+      }
+
+      // ---------------------------------------------------------
+      // Build update query
+      // ---------------------------------------------------------
       const sets = ["updatedAt = ?"];
       const params = [new Date()];
 
@@ -323,6 +362,7 @@ module.exports = ({ db } = {}) => {
           error: `That ingredient name already exists. Names are not case-sensitive. Try a different name.`,
         });
       }
+
       console.error("[ingredients] update failed:", e);
       res.status(500).json({ ok: false, error: "Update failed" });
     }

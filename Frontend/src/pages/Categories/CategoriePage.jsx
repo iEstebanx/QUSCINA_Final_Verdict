@@ -55,16 +55,19 @@ export default function CategoriePage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [search, setSearch] = useState("");
 
   // selection / paging
   const [selected, setSelected] = useState([]);
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
 
-  const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
-  const someChecked = rows.some((r) => selected.includes(r.id)) && !allChecked;
-
-  const [renameInfo, setRenameInfo] = useState({ open: false, count: 0, name: "", sample: [] })
+  const [renameInfo, setRenameInfo] = useState({
+    open: false,
+    count: 0,
+    name: "",
+    sample: [],
+  });
 
   // create/edit dialog
   const [open, setOpen] = useState(false);
@@ -82,8 +85,8 @@ export default function CategoriePage() {
     open: false,
     categoryName: "",
     countItems: 0,
-    activityCount: 0,   // reserved for parity with inventory dialog; keep 0 for now
-    sampleItems: [],    // array of strings
+    activityCount: 0, // reserved for parity with inventory dialog; keep 0 for now
+    sampleItems: [], // array of strings
     message: "",
   });
 
@@ -91,24 +94,51 @@ export default function CategoriePage() {
   const [objectUrls, setObjectUrls] = useState([]);
   useEffect(() => () => objectUrls.forEach((u) => URL.revokeObjectURL(u)), [objectUrls]);
 
-  const nameIsInvalid = name.trim().length > 0 && !isValidName(normalizeName(name));
+  const nameIsInvalid =
+    name.trim().length > 0 && !isValidName(normalizeName(name));
 
+  // 🔍 Filtered rows based on search
+  const filteredRows = useMemo(() => {
+    const s = search.toLowerCase().trim();
+    if (!s) return rows;
+    return rows.filter((r) => r.name?.toLowerCase().includes(s));
+  }, [rows, search]);
+
+  // Paging based on filtered rows
   const paged = useMemo(() => {
     const start = page * rowsPerPage;
-    return rows.slice(start, start + rowsPerPage);
-  }, [rows, page, rowsPerPage]);
-  const isEmpty = !loading && !err && rows.length === 0;
+    return filteredRows.slice(start, start + rowsPerPage);
+  }, [filteredRows, page, rowsPerPage]);
 
   // Handy helper so we always clear selection the same way
   function clearSelection() {
     setSelected([]);
   }
 
-  function toggleAll() {
-    setSelected((s) => (s.length === rows.length ? [] : rows.map((r) => r.id)));
-  }
+  // Selection logic should only consider visible (filtered) rows
+  const allChecked =
+    filteredRows.length > 0 &&
+    filteredRows.every((r) => selected.includes(r.id));
+
+  const someChecked =
+    filteredRows.some((r) => selected.includes(r.id)) && !allChecked;
+
+  const toggleAll = () =>
+    setSelected((s) => {
+      const visibleIds = filteredRows.map((r) => r.id);
+      const allVisibleSelected = visibleIds.every((id) => s.includes(id));
+      if (allVisibleSelected) {
+        // unselect all visible
+        return s.filter((id) => !visibleIds.includes(id));
+      }
+      // select all visible + keep others
+      return Array.from(new Set([...s, ...visibleIds]));
+    });
+
   function toggleOne(id) {
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+    setSelected((s) =>
+      s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
+    );
   }
 
   function resetForm() {
@@ -157,7 +187,10 @@ export default function CategoriePage() {
     setLoading(true);
     setErr("");
     try {
-      const res = await fetch(`/api/categories`, { cache: "no-store", credentials: "include" });
+      const res = await fetch(`/api/categories`, {
+        cache: "no-store",
+        credentials: "include",
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.ok) {
         const list = Array.isArray(data.categories) ? data.categories : [];
@@ -215,7 +248,9 @@ export default function CategoriePage() {
       data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true) {
         if (res.status === 409) {
-          setSaveErr("That category name already exists. Names are case-insensitive. Please choose a different name.");
+          setSaveErr(
+            "That category name already exists. Names are case-insensitive. Please choose a different name."
+          );
           return; // keep dialog open so user can fix it
         }
         throw new Error(data?.error || `Save failed (HTTP ${res.status})`);
@@ -229,7 +264,9 @@ export default function CategoriePage() {
           open: true,
           count: Number(data.affectedItems),
           name: normalizeName(name),
-          sample: Array.isArray(data?.sample) ? data.sample.slice(0, 5) : [],
+          sample: Array.isArray(data?.sample)
+            ? data.sample.slice(0, 5)
+            : [],
         });
       }
     } catch (e) {
@@ -253,7 +290,9 @@ export default function CategoriePage() {
       categoryName,
       countItems: Number.isFinite(countItems) ? countItems : 0,
       activityCount: Number.isFinite(activityCount) ? activityCount : 0,
-      sampleItems: Array.isArray(sampleItems) ? sampleItems.slice(0, 6) : [],
+      sampleItems: Array.isArray(sampleItems)
+        ? sampleItems.slice(0, 6)
+        : [],
       message: String(message || ""),
     });
   }
@@ -287,7 +326,9 @@ export default function CategoriePage() {
           showBlockedModal({
             categoryName: row.name || "This category",
             countItems: Number.isFinite(count) ? count : 0,
-            activityCount: Number.isFinite(data?.activityCount) ? data.activityCount : 0,
+            activityCount: Number.isFinite(data?.activityCount)
+              ? data.activityCount
+              : 0,
             sampleItems: sample,
             message:
               typeof data?.error === "string"
@@ -356,7 +397,9 @@ export default function CategoriePage() {
             showBlockedModal({
               categoryName: name,
               countItems: Number.isFinite(b.count) ? b.count : 0,
-              activityCount: Number.isFinite(b.activityCount) ? b.activityCount : 0,
+              activityCount: Number.isFinite(b.activityCount)
+                ? b.activityCount
+                : 0,
               sampleItems: sample,
               message: "Cannot delete category; item(s) are assigned to it.",
             });
@@ -366,7 +409,10 @@ export default function CategoriePage() {
               .slice(0, 5)
               .map((b) => namesById.get(b.id) || b.id)
               .join(", ");
-            const more = data.blocked.length > 5 ? ` and ${data.blocked.length - 5} more` : "";
+            const more =
+              data.blocked.length > 5
+                ? ` and ${data.blocked.length - 5} more`
+                : "";
             showBlockedModal({
               categoryName: "",
               countItems: 0,
@@ -390,7 +436,7 @@ export default function CategoriePage() {
   return (
     <Box p={2} display="grid" gap={2}>
       <Paper sx={{ overflow: "hidden" }}>
-        {/* Header (Add + Delete like Discounts) */}
+        {/* Header (Add + Delete + Search) */}
         <Box p={2}>
           <Stack
             direction="row"
@@ -415,7 +461,9 @@ export default function CategoriePage() {
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
 
-            <Tooltip title={selected.length ? "Delete selected" : "Nothing selected"}>
+            <Tooltip
+              title={selected.length ? "Delete selected" : "Nothing selected"}
+            >
               <span>
                 <IconButton
                   aria-label="Delete selected"
@@ -427,6 +475,18 @@ export default function CategoriePage() {
                 </IconButton>
               </span>
             </Tooltip>
+
+            {/* 🔍 Search on the right */}
+            <TextField
+              size="small"
+              placeholder="Search…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPageState((s) => ({ ...s, page: 0 })); // reset to first page
+              }}
+              sx={{ width: 200 }}
+            />
           </Stack>
         </Box>
 
@@ -440,20 +500,28 @@ export default function CategoriePage() {
             className="scroll-x"
             sx={{ mx: "auto", width: { xs: "100%", sm: "auto" }, maxWidth: 720 }}
           >
-            <Table stickyHeader aria-label="categories table" sx={{ tableLayout: "fixed", minWidth: 520 }}>
+            <Table
+              stickyHeader
+              aria-label="categories table"
+              sx={{ tableLayout: "fixed", minWidth: 520 }}
+            >
               <colgroup>
                 {[
-                  <col key="col-select" style={{ width: 56 }} />,          // Checkbox
-                  <col key="col-image" style={{ width: 100 }} />,          // Image
-                  <col key="col-name" style={{ minWidth: 240 }} />,        // Name
-                  <col key="col-actions" style={{ width: 100 }} />,        // Actions
+                  <col key="col-select" style={{ width: 56 }} />, // Checkbox
+                  <col key="col-image" style={{ width: 100 }} />, // Image
+                  <col key="col-name" style={{ minWidth: 240 }} />, // Name
+                  <col key="col-actions" style={{ width: 100 }} />, // Actions
                 ]}
               </colgroup>
 
               <TableHead>
                 <TableRow>
                   <TableCell padding="checkbox">
-                    <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
+                    <Checkbox
+                      checked={allChecked}
+                      indeterminate={someChecked}
+                      onChange={toggleAll}
+                    />
                   </TableCell>
                   <TableCell>
                     <Typography fontWeight={600}>Image</Typography>
@@ -468,84 +536,128 @@ export default function CategoriePage() {
               </TableHead>
 
               <TableBody>
-                {loading && (
+                {loading ? (
                   <TableRow>
                     <TableCell colSpan={4}>
-                      <Typography variant="body2">Loading categories…</Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!!err && !loading && (
-                  <TableRow>
-                    <TableCell colSpan={4}>
-                      <Typography variant="body2" color="error">{err}</Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-                {isEmpty && (
-                  <TableRow>
-                    <TableCell colSpan={4}>
-                      <Typography variant="body2" color="text.secondary">
-                        No categories yet. Click <strong>Add Category</strong> to create your first one.
+                      <Typography variant="body2">
+                        Loading categories…
                       </Typography>
                     </TableCell>
                   </TableRow>
-                )}
-                {!loading && !err && !isEmpty && paged.map((r) => (
-                  <TableRow
-                    key={r.id}
-                    hover
-                    onClick={() => openEdit(r)}
-                    sx={(theme) => ({
-                      cursor: "pointer",
-                      "&:hover": { backgroundColor: alpha(theme.palette.primary.main, 0.04) },
-                    })}
-                  >
-                    <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
-                      <Checkbox checked={selected.includes(r.id)} onChange={() => toggleOne(r.id)} />
-                    </TableCell>
-
-                    <TableCell>
-                      {r.imageUrl ? (
-                        <Avatar src={r.imageUrl} alt={r.name} sx={{ width: 56, height: 56, borderRadius: 1 }} variant="rounded" />
-                      ) : (
-                        <Avatar variant="rounded" sx={{ width: 56, height: 56, borderRadius: 1 }}>
-                          {r.name?.[0]?.toUpperCase() || "?"}
-                        </Avatar>
-                      )}
-                    </TableCell>
-
-                    <TableCell sx={{ overflow: "hidden" }}>
-                      <Typography noWrap title={r.name}>{r.name}</Typography>
-                    </TableCell>
-
-                    <TableCell align="center" onClick={(e) => e.stopPropagation()}>
-                      <Tooltip title="Delete">
-                        <span>
-                          <IconButton
-                            aria-label={`Delete ${r.name}`}
-                            onClick={(e) => { e.stopPropagation(); onDeleteOne(r); }}
-                            size="small"
-                          >
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
+                ) : err ? (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Typography variant="body2" color="error">
+                        {err}
+                      </Typography>
                     </TableCell>
                   </TableRow>
-                ))}
+                ) : filteredRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4}>
+                      <Typography variant="body2" color="text.secondary">
+                        No categories yet. Click{" "}
+                        <strong>Add Category</strong> to create your first one.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  paged.map((r) => (
+                    <TableRow
+                      key={r.id}
+                      hover
+                      onClick={() => openEdit(r)}
+                      sx={(theme) => ({
+                        cursor: "pointer",
+                        "&:hover": {
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.04
+                          ),
+                        },
+                      })}
+                    >
+                      <TableCell
+                        padding="checkbox"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Checkbox
+                          checked={selected.includes(r.id)}
+                          onChange={() => toggleOne(r.id)}
+                        />
+                      </TableCell>
+
+                      <TableCell>
+                        {r.imageUrl ? (
+                          <Avatar
+                            src={r.imageUrl}
+                            alt={r.name}
+                            sx={{
+                              width: 56,
+                              height: 56,
+                              borderRadius: 1,
+                            }}
+                            variant="rounded"
+                          />
+                        ) : (
+                          <Avatar
+                            variant="rounded"
+                            sx={{
+                              width: 56,
+                              height: 56,
+                              borderRadius: 1,
+                            }}
+                          >
+                            {r.name?.[0]?.toUpperCase() || "?"}
+                          </Avatar>
+                        )}
+                      </TableCell>
+
+                      <TableCell sx={{ overflow: "hidden" }}>
+                        <Typography noWrap title={r.name}>
+                          {r.name}
+                        </Typography>
+                      </TableCell>
+
+                      <TableCell
+                        align="center"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Tooltip title="Delete">
+                          <span>
+                            <IconButton
+                              aria-label={`Delete ${r.name}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteOne(r);
+                              }}
+                              size="small"
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </TableContainer>
 
           <TablePagination
             component="div"
-            count={rows.length}
+            count={filteredRows.length}
             page={page}
-            onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
+            onPageChange={(_, p) =>
+              setPageState((s) => ({ ...s, page: p }))
+            }
             rowsPerPage={rowsPerPage}
             onRowsPerPageChange={(e) =>
-              setPageState({ page: 0, rowsPerPage: parseInt(e.target.value, 10) })
+              setPageState({
+                page: 0,
+                rowsPerPage: parseInt(e.target.value, 10),
+              })
             }
             rowsPerPageOptions={[5, 10, 25]}
           />
@@ -600,7 +712,11 @@ export default function CategoriePage() {
             />
             <Stack spacing={1.5}>
               <Stack direction="row" spacing={1}>
-                <Button variant="outlined" component="label" sx={{ alignSelf: "start" }}>
+                <Button
+                  variant="outlined"
+                  component="label"
+                  sx={{ alignSelf: "start" }}
+                >
                   Upload Image
                   <input
                     type="file"
@@ -614,7 +730,8 @@ export default function CategoriePage() {
                     variant="text"
                     color="error"
                     onClick={() => {
-                      if (imageUrl.startsWith("blob:")) URL.revokeObjectURL(imageUrl);
+                      if (imageUrl.startsWith("blob:"))
+                        URL.revokeObjectURL(imageUrl);
                       setImageUrl("");
                       setImageFile(null);
                     }}
@@ -625,11 +742,17 @@ export default function CategoriePage() {
               </Stack>
 
               {imageUrl && (
-                <Avatar src={imageUrl} alt="Preview" sx={{ width: 96, height: 96 }} variant="rounded" />
+                <Avatar
+                  src={imageUrl}
+                  alt="Preview"
+                  sx={{ width: 96, height: 96 }}
+                  variant="rounded"
+                />
               )}
 
               <Typography variant="caption" color="text.secondary">
-                Image is optional. If none is uploaded, an initial will be shown.
+                Image is optional. If none is uploaded, an initial will be
+                shown.
               </Typography>
             </Stack>
 
@@ -656,7 +779,14 @@ export default function CategoriePage() {
       </Dialog>
 
       {/* Blocked Delete Dialog (Cleaned, Inventory-style) */}
-      <Dialog open={blockedDialog.open} onClose={() => setBlockedDialog((d) => ({ ...d, open: false }))} maxWidth="sm" fullWidth>
+      <Dialog
+        open={blockedDialog.open}
+        onClose={() =>
+          setBlockedDialog((d) => ({ ...d, open: false }))
+        }
+        maxWidth="sm"
+        fullWidth
+      >
         <DialogTitle>Cannot Delete Category</DialogTitle>
         <DialogContent>
           <Typography sx={{ mb: 1.5 }}>
@@ -704,7 +834,9 @@ export default function CategoriePage() {
         </DialogContent>
         <DialogActions>
           <Button
-            onClick={() => setBlockedDialog((d) => ({ ...d, open: false }))}
+            onClick={() =>
+              setBlockedDialog((d) => ({ ...d, open: false }))
+            }
             variant="contained"
             autoFocus
           >
@@ -716,7 +848,9 @@ export default function CategoriePage() {
       {/* Rename Feedback Dialog */}
       <Dialog
         open={renameInfo.open}
-        onClose={() => setRenameInfo((d) => ({ ...d, open: false }))}
+        onClose={() =>
+          setRenameInfo((d) => ({ ...d, open: false }))
+        }
         maxWidth="xs"
         fullWidth
       >
@@ -727,27 +861,30 @@ export default function CategoriePage() {
           </Typography>
           <Typography sx={{ mt: 1 }} variant="body2" color="text.secondary">
             {renameInfo.count} linked item
-            {renameInfo.count > 1 ? "s were" : " was"} automatically updated by the system.
+            {renameInfo.count > 1 ? "s were" : " was"} automatically
+            updated by the system.
           </Typography>
-            {renameInfo.sample?.length > 0 && (
-              <>
-                <Typography sx={{ mt: 1 }} variant="body2">
-                  Recent items in this category:
-                </Typography>
-                <Box component="ul" sx={{ pl: 3, mt: 0.5, mb: 0 }}>
-                  {renameInfo.sample.slice(0, 5).map((n, i) => (
-                    <li key={`${n}-${i}`}>
-                      <Typography variant="body2">{n}</Typography>
-                    </li>
-                  ))}
-                </Box>
-              </>
-            )}    
+          {renameInfo.sample?.length > 0 && (
+            <>
+              <Typography sx={{ mt: 1 }} variant="body2">
+                Recent items in this category:
+              </Typography>
+              <Box component="ul" sx={{ pl: 3, mt: 0.5, mb: 0 }}>
+                {renameInfo.sample.slice(0, 5).map((n, i) => (
+                  <li key={`${n}-${i}`}>
+                    <Typography variant="body2">{n}</Typography>
+                  </li>
+                ))}
+              </Box>
+            </>
+          )}
         </DialogContent>
-        
+
         <DialogActions>
           <Button
-            onClick={() => setRenameInfo((d) => ({ ...d, open: false }))}
+            onClick={() =>
+              setRenameInfo((d) => ({ ...d, open: false }))
+            }
             variant="contained"
             autoFocus
           >

@@ -574,6 +574,33 @@ LEFT JOIN payment_types p
   ON p.name_lower = s.nl
 WHERE p.id IS NULL;
 
+
+-- ------------------------------------------------------------
+-- Authorization Pins
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS authorization_pins (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  app ENUM('backoffice','pos') NOT NULL DEFAULT 'backoffice',
+  pin_hash VARCHAR(255) NOT NULL,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  last_changed_by CHAR(9) NULL,
+
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY idx_app_active (app, is_active),
+  KEY idx_last_changed_by (last_changed_by),
+
+  CONSTRAINT fk_authorization_pins_last_changed_by
+    FOREIGN KEY (last_changed_by)
+    REFERENCES employees(employee_id)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci;
+
 -- ------------------------------------------------------------
 -- BACKUP JOBS (logs for both backup & restore actions)
 -- ------------------------------------------------------------
