@@ -1,13 +1,37 @@
 // Frontend/src/pages/Reports/ReportsPage.jsx
 import { useMemo, useState } from "react";
 import {
-  Box, Paper, Stack, Typography, Divider, Button,
-  InputAdornment, TextField, FormControl, InputLabel, Select, MenuItem,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  TablePagination, Avatar, Chip, useMediaQuery,
+  Box,
+  Paper,
+  Stack,
+  Typography,
+  Divider,
+  Button,
+  InputAdornment,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TablePagination,
+  Avatar,
+  Chip,
+  useMediaQuery,
 } from "@mui/material";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
 } from "recharts";
 import { useTheme } from "@mui/material/styles";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
@@ -16,6 +40,11 @@ import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
 import PaymentsIcon from "@mui/icons-material/Payments";
 import ReplayIcon from "@mui/icons-material/Replay";
 import GridOnIcon from "@mui/icons-material/GridOn"; // Excel icon
+
+// 🔹 PDF libs + logo
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import logo from "@/assets/LOGO.png";
 
 const comfyCells = {
   "& .MuiTableCell-root": { py: 1.25, px: 2 },
@@ -27,6 +56,15 @@ const comfyCells = {
     zIndex: 1,
   },
 };
+
+/* ------------------------- Helpers for money formatting ------------------------- */
+const formatNumberMoney = (n) =>
+  Number(n || 0).toLocaleString("en-PH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+const peso = (n) => `₱${formatNumberMoney(n)}`;
 
 /* ----------------------------- Mock data by range ----------------------------- */
 // You can later replace these with real API responses per range.
@@ -71,16 +109,9 @@ const categoryTop5ByRange = {
 
 const categorySeriesByRange = {
   days: [
-    { x: "Oct 21", y: 0 },
-    { x: "Oct 22", y: 2200 },
-    { x: "Oct 23", y: 1600 },
-    { x: "Oct 24", y: 1700 },
-    { x: "Oct 25", y: 0 },
-    { x: "Oct 26", y: 0 },
-    { x: "Oct 27", y: 0 },
-    { x: "Oct 28", y: 0 },
-    { x: "Oct 29", y: 0 },
-    { x: "Oct 30", y: 0 },
+    { x: "Oct 22", y: 4240 },
+    { x: "Oct 23", y: 3216 },
+    { x: "Oct 24", y: 3567.2 },
   ],
   weeks: [
     { x: "Week 1", y: 5400 },
@@ -110,9 +141,10 @@ const categorySeriesByRange = {
 
 const paymentsByRange = {
   days: [
-    { type: "Card", tx: 0, payAmt: 0, refundTx: 0, refundAmt: 0, net: 0 },
     { type: "Cash", tx: 20, payAmt: 2784, refundTx: 0, refundAmt: 0, net: 2784 },
-    { type: "Gcash/Maya", tx: 10, payAmt: 2783, refundTx: 0, refundAmt: 0, net: 2783 },
+    { type: "Gcash", tx: 9, payAmt: 1948, refundTx: 0, refundAmt: 0, net: 1948 },
+    { type: "Maya", tx: 1, payAmt: 835, refundTx: 0, refundAmt: 0, net: 835 },
+    { type: "Card", tx: 0, payAmt: 0, refundTx: 0, refundAmt: 0, net: 0 },
   ],
   weeks: [
     { type: "Card", tx: 8, payAmt: 12000, refundTx: 0, refundAmt: 0, net: 12000 },
@@ -138,7 +170,7 @@ const paymentsByRange = {
 
 const bestSellerByRange = {
   days: [
-    { rank: 1, name: "Crispy Kare Kare", orders: 30, qty: 30, sales: 2283.2 },
+    { rank: 1, name: "Crispy Kare Kare", orders: 30, qty: 30, sales: 5567.2 },
     { rank: 2, name: "ETC", orders: 0, qty: 0, sales: 0 },
     { rank: 3, name: "ETC", orders: 0, qty: 0, sales: 0 },
   ],
@@ -165,21 +197,62 @@ const bestSellerByRange = {
 };
 
 const mockOrders = [
-  { id: "#7-324", date: "Apr 21, 2025 05:22 PM", employee: "Cashier", type: "Sale", total: 660 },
-  { id: "#7-323", date: "Apr 21, 2025 05:01 PM", employee: "Cashier", type: "Sale", total: 420 },
-  { id: "#7-322", date: "Apr 21, 2025 04:36 PM", employee: "Cashier", type: "Sale", total: 95 },
-  { id: "#7-321", date: "Apr 21, 2025 04:32 PM", employee: "Cashier", type: "Sale", total: 125 },
-  { id: "#7-320", date: "Apr 21, 2025 04:22 PM", employee: "Cashier", type: "Sale", total: 280 },
-  { id: "#7-319", date: "Apr 21, 2025 04:15 PM", employee: "Cashier", type: "Sale", total: 165 },
-  { id: "#7-318", date: "Apr 21, 2025 04:11 PM", employee: "Cashier", type: "Sale", total: 231 },
-  { id: "#7-317", date: "Apr 21, 2025 03:57 PM", employee: "Cashier", type: "Sale", total: 156 },
+  {
+    id: "#7-324",
+    date: "Oct 22, 2025 05:22 PM",
+    employee: "Ced",
+    type: "Sale",
+    total: 6140,
+  },
+  {
+    id: "#7-323",
+    date: "Oct 23, 2025 05:01 PM",
+    employee: "Maki",
+    type: "Sale",
+    total: 4700,
+  },
+  {
+    id: "#7-322",
+    date: "Oct 24, 2025 04:36 PM",
+    employee: "Maki",
+    type: "Sale",
+    total: 5000,
+  },
 ];
 
-const peso = (n) =>
-  `₱${Number(n || 0).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+// Only for PDF “Staff Performance” sample (you can later drive this from real data)
+const staffPerformanceMock = [
+  {
+    shiftNo: 1,
+    staffName: "Ced",
+    date: "Oct 22, 2025",
+    startingCash: 1500,
+    cashInOut: "+₱15 / -₱0",
+    countCash: 6155,
+    actualCash: 6140,
+    remarks: "Tipped ₱15",
+  },
+  {
+    shiftNo: 2,
+    staffName: "Maki",
+    date: "Oct 23, 2025",
+    startingCash: 1500,
+    cashInOut: "+₱0 / -₱0",
+    countCash: 4700,
+    actualCash: 4700,
+    remarks: "Balance",
+  },
+  {
+    shiftNo: 3,
+    staffName: "Maki",
+    date: "Oct 24, 2025",
+    startingCash: 1500,
+    cashInOut: "+₱0 / -₱500",
+    countCash: 4600,
+    actualCash: 5000,
+    remarks: "Inventory -₱500",
+  },
+];
 
 /* --------------------------------- Page --------------------------------- */
 export default function ReportsPage() {
@@ -203,65 +276,92 @@ export default function ReportsPage() {
     if (range === "custom" && customFrom && customTo) {
       // Filter chart data
       const daysData = categorySeriesByRange.days;
-      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      
+      const monthNames = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+      ];
+
       const fromDate = new Date(customFrom);
       const toDate = new Date(customTo);
-      
-      const filteredSeries = daysData.filter(item => {
+
+      const filteredSeries = daysData.filter((item) => {
         const [monthStr, dayStr] = item.x.split(" ");
         const monthIndex = monthNames.indexOf(monthStr);
-        const day = parseInt(dayStr);
+        const day = parseInt(dayStr, 10);
         const currentYear = new Date().getFullYear();
         const itemDate = new Date(currentYear, monthIndex, day);
-        
+
         return itemDate >= fromDate && itemDate <= toDate;
       });
 
       // For custom date range, we need to calculate filtered data for ALL sections
       // Since we don't have real API data, we'll simulate filtering by adjusting the data
-      const dateRangeLength = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
-      
+      const dateRangeLength =
+        Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
+
       // Scale down the data based on the date range length for demonstration
       const scaleFactor = Math.min(dateRangeLength / 30, 1); // Scale based on 30-day month
-      
+
       return {
-        categoryTop5: categoryTop5ByRange.days.map(item => ({
+        categoryTop5: categoryTop5ByRange.days.map((item) => ({
           ...item,
-          net: item.net * scaleFactor
+          net: item.net * scaleFactor,
         })),
-        categorySeries: filteredSeries.length > 0 ? filteredSeries : [
-          { x: customFrom.split('-').slice(1).join('/'), y: 0 },
-          { x: customTo.split('-').slice(1).join('/'), y: 0 }
-        ],
-        payments: paymentsByRange.days.map(payment => ({
+        categorySeries:
+          filteredSeries.length > 0
+            ? filteredSeries
+            : [
+                {
+                  x: customFrom.split("-").slice(1).join("/"),
+                  y: 0,
+                },
+                {
+                  x: customTo.split("-").slice(1).join("/"),
+                  y: 0,
+                },
+              ],
+        payments: paymentsByRange.days.map((payment) => ({
           ...payment,
           tx: Math.round(payment.tx * scaleFactor),
           payAmt: payment.payAmt * scaleFactor,
           refundTx: Math.round(payment.refundTx * scaleFactor),
           refundAmt: payment.refundAmt * scaleFactor,
-          net: payment.net * scaleFactor
+          net: payment.net * scaleFactor,
         })),
-        bestSeller: bestSellerByRange.days.map(seller => ({
+        bestSeller: bestSellerByRange.days.map((seller) => ({
           ...seller,
           orders: Math.round(seller.orders * scaleFactor),
           qty: Math.round(seller.qty * scaleFactor),
-          sales: seller.sales * scaleFactor
-        }))
+          sales: seller.sales * scaleFactor,
+        })),
       };
     }
-    
+
     // For non-custom ranges, use the existing logic
     const effectiveRangeKey = range === "custom" ? "days" : range;
     return {
-      categoryTop5: categoryTop5ByRange[effectiveRangeKey] || categoryTop5ByRange.days,
-      categorySeries: categorySeriesByRange[effectiveRangeKey] || categorySeriesByRange.days,
+      categoryTop5:
+        categoryTop5ByRange[effectiveRangeKey] || categoryTop5ByRange.days,
+      categorySeries:
+        categorySeriesByRange[effectiveRangeKey] || categorySeriesByRange.days,
       payments: paymentsByRange[effectiveRangeKey] || paymentsByRange.days,
-      bestSeller: bestSellerByRange[effectiveRangeKey] || bestSellerByRange.days
+      bestSeller:
+        bestSellerByRange[effectiveRangeKey] || bestSellerByRange.days,
     };
   };
 
-  const { categoryTop5, categorySeries, payments, bestSeller } = getFilteredData();
+  const { categoryTop5, categorySeries, payments, bestSeller } =
+    getFilteredData();
 
   const filteredPayments = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -282,7 +382,7 @@ export default function ReportsPage() {
     }
 
     return mockOrders.filter((o) => {
-      const d = new Date(o.date); // "Apr 21, 2025 05:22 PM"
+      const d = new Date(o.date); // "Oct 22, 2025 05:22 PM"
 
       if (customFrom) {
         const from = new Date(customFrom + "T00:00:00");
@@ -311,15 +411,16 @@ export default function ReportsPage() {
     setSelectedOrder(order);
   }
 
-  // 🔹 Excel Download Function
+  /* -------------------------- Excel Download Function -------------------------- */
   const downloadExcel = () => {
     // Create Excel data structure
     const excelData = {
       reportInfo: {
         title: "Sales Report",
-        dateRange: range === "custom" && customFrom && customTo 
-          ? `${customFrom} to ${customTo}`
-          : range.charAt(0).toUpperCase() + range.slice(1),
+        dateRange:
+          range === "custom" && customFrom && customTo
+            ? `${customFrom} to ${customTo}`
+            : range.charAt(0).toUpperCase() + range.slice(1),
         generatedAt: new Date().toLocaleString(),
       },
       categoryTop5: categoryTop5,
@@ -331,43 +432,44 @@ export default function ReportsPage() {
 
     // Convert to CSV format (simplified Excel format)
     const convertToCSV = (data, headers) => {
-      const csvHeaders = headers.map(h => `"${h.label}"`).join(',');
-      const csvRows = data.map(row => 
-        headers.map(h => `"${row[h.key]}"`).join(',')
+      const csvHeaders = headers.map((h) => `"${h.label}"`).join(",");
+      const csvRows = data.map((row) =>
+        headers.map((h) => `"${row[h.key]}"`).join(",")
       );
-      return [csvHeaders, ...csvRows].join('\n');
+      return [csvHeaders, ...csvRows].join("\n");
     };
 
     // Create CSV content for each section
-    const categoryCSV = convertToCSV(excelData.categoryTop5, [
-      { label: 'Rank', key: 'name' }, // Using name as rank display
-      { label: 'Category Name', key: 'name' },
-      { label: 'Net Sales', key: 'net' }
-    ]);
+    const categoryCSV = [
+      '"Rank","Category","Net Sales"',
+      ...excelData.categoryTop5.map(
+        (row, idx) => `"${idx + 1}","${row.name}","${row.net}"`
+      ),
+    ].join("\n");
 
     const paymentsCSV = convertToCSV(excelData.payments, [
-      { label: 'Payment Type', key: 'type' },
-      { label: 'Payment Transactions', key: 'tx' },
-      { label: 'Payment Amount', key: 'payAmt' },
-      { label: 'Refund Transactions', key: 'refundTx' },
-      { label: 'Refund Amount', key: 'refundAmt' },
-      { label: 'Net Amount', key: 'net' }
+      { label: "Payment Type", key: "type" },
+      { label: "Payment Transactions", key: "tx" },
+      { label: "Payment Amount", key: "payAmt" },
+      { label: "Refund Transactions", key: "refundTx" },
+      { label: "Refund Amount", key: "refundAmt" },
+      { label: "Net Amount", key: "net" },
     ]);
 
     const bestSellerCSV = convertToCSV(excelData.bestSeller, [
-      { label: 'Rank', key: 'rank' },
-      { label: 'Item Name', key: 'name' },
-      { label: 'Total Orders', key: 'orders' },
-      { label: 'Quantity Sold', key: 'qty' },
-      { label: 'Total Sales', key: 'sales' }
+      { label: "Rank", key: "rank" },
+      { label: "Item Name", key: "name" },
+      { label: "Total Orders", key: "orders" },
+      { label: "Quantity Sold", key: "qty" },
+      { label: "Total Sales", key: "sales" },
     ]);
 
     const ordersCSV = convertToCSV(excelData.orders, [
-      { label: 'Receipt No', key: 'id' },
-      { label: 'Date', key: 'date' },
-      { label: 'Employee', key: 'employee' },
-      { label: 'Type', key: 'type' },
-      { label: 'Total', key: 'total' }
+      { label: "Receipt No", key: "id" },
+      { label: "Date", key: "date" },
+      { label: "Employee", key: "employee" },
+      { label: "Type", key: "type" },
+      { label: "Total", key: "total" },
     ]);
 
     // Combine all sections with headers
@@ -388,18 +490,294 @@ ${ordersCSV}
 
 SALES CHART DATA
 Date,Amount
-${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
+${excelData.categorySeries
+  .map((item) => `"${item.x}","${item.y}"`)
+  .join("\n")}`;
 
     // Create and download file
-    const blob = new Blob([fullCSV], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
+    const blob = new Blob([fullCSV], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `sales-report-${excelData.reportInfo.dateRange.replace(/\s+/g, '-')}-${Date.now()}.csv`);
-    link.style.visibility = 'hidden';
+    link.setAttribute("href", url);
+    link.setAttribute(
+      "download",
+      `sales-report-${excelData.reportInfo.dateRange.replace(
+        /\s+/g,
+        "-"
+      )}-${Date.now()}.csv`
+    );
+    link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  /* ---------------------------- PDF Download Function ---------------------------- */
+  const handlePdfExport = async () => {
+    // Build totals from current range data
+    const totalSales = payments.reduce((sum, p) => sum + (p.net || 0), 0);
+    const totalOrders = payments.reduce((sum, p) => sum + (p.tx || 0), 0);
+    const bestItem = bestSeller[0];
+    // Simple placeholder for now – you can replace this with real customer count
+    const customerCount = totalOrders * 2 + 18;
+
+    // Build daily “summary” rows from the series (only for the current range)
+    const dailyRows = categorySeries.map((d, idx) => {
+      const avgOrdersPerDay =
+        categorySeries.length > 0
+          ? Math.round(totalOrders / categorySeries.length)
+          : 0;
+      const retail = d.y;
+      const discountedOrders = idx === 0 ? 2 : idx === 2 ? 5 : 0; // just mock numbers
+      const totalRevenue = d.y;
+      const totalProfit = d.y * 0.4; // assume 40% margin for now
+
+      return {
+        date: d.x,
+        totalOrders: avgOrdersPerDay,
+        retail,
+        discountedOrders,
+        totalRevenue,
+        totalProfit,
+      };
+    });
+
+    // Range text for header
+    let rangeText;
+    if (range === "custom" && customFrom && customTo) {
+      rangeText = `${customFrom} – ${customTo}`;
+    } else if (range === "days" && categorySeries.length >= 2) {
+      rangeText = `${categorySeries[0].x}, 2025 – ${
+        categorySeries[categorySeries.length - 1].x
+      }, 2025`;
+    } else {
+      rangeText = range.charAt(0).toUpperCase() + range.slice(1);
+    }
+
+    const doc = new jsPDF({
+      orientation: "portrait",
+      unit: "pt",
+      format: "a4",
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    let cursorY = 48;
+
+    // ---- Logo ----
+    const img = new Image();
+    img.src = logo;
+
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.onerror = resolve;
+    });
+
+    const logoW = 80;
+    const logoH = 80;
+    const logoX = (pageWidth - logoW) / 2;
+    doc.addImage(img, "PNG", logoX, cursorY, logoW, logoH);
+    cursorY += logoH + 10;
+
+    // ---- Brand name ----
+    doc.setFont("times", "bold");
+    doc.setFontSize(22);
+    doc.text("Quscina", pageWidth / 2, cursorY, { align: "center" });
+    cursorY += 26;
+
+    // ---- Main title ----
+    doc.setFont("times", "normal");
+    doc.setFontSize(20);
+    doc.text("Sales report", pageWidth / 2, cursorY, { align: "center" });
+    cursorY += 32;
+
+    // ---- Summary block ----
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+
+    doc.setFont(undefined, "bold");
+    doc.text("Report Date range:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text(rangeText, 180, cursorY);
+    cursorY += 16;
+
+    doc.setFont(undefined, "bold");
+    doc.text("Branch:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text("Kawit, Cavite", 120, cursorY);
+    cursorY += 22;
+
+    doc.setFont(undefined, "bold");
+    doc.text("Sales Summary", 72, cursorY);
+    cursorY += 14;
+
+    doc.setFont(undefined, "normal");
+    doc.text(`Total Sales: ${peso(totalSales)}`, 72, cursorY);
+    cursorY += 14;
+    doc.text(`Total Orders: ${totalOrders} Orders`, 72, cursorY);
+    cursorY += 14;
+    if (bestItem) {
+      doc.text(
+        `Best Selling Item: ${bestItem.name} (${bestItem.qty} Sold)`,
+        72,
+        cursorY
+      );
+      cursorY += 14;
+    }
+    doc.text(
+      `Customer Count: ${customerCount} Customers`,
+      72,
+      cursorY
+    );
+    cursorY += 26;
+
+    /* ----------------------------- Daily sales table ---------------------------- */
+    doc.setFont(undefined, "bold");
+    doc.text("Daily sales", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [
+        [
+          "Date",
+          "Total Orders",
+          "Retail(VAT 12%)",
+          "Discounted Orders",
+          "Total Revenue(Discount Included)",
+          "Total Profit",
+        ],
+      ],
+      body: dailyRows.map((r) => [
+        r.date,
+        r.totalOrders,
+        formatNumberMoney(r.retail),
+        r.discountedOrders,
+        formatNumberMoney(r.totalRevenue),
+        formatNumberMoney(r.totalProfit),
+      ]),
+      theme: "grid",
+      styles: {
+        fontSize: 9,
+        cellPadding: 4,
+      },
+      headStyles: {
+        fillColor: [245, 245, 245],
+        fontStyle: "bold",
+      },
+      margin: { left: 72, right: 40 },
+    });
+    cursorY = doc.lastAutoTable.finalY + 24;
+
+    /* ---------------------------- Sales Categories ---------------------------- */
+    doc.setFont("helvetica", "bold");
+    doc.text("Sales Categories", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [["Categories", "Quantity Sold", "Sales"]],
+      body: categoryTop5.map((c) => [
+        c.name,
+        "-", // you can replace with real quantity per category later
+        formatNumberMoney(c.net),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [245, 245, 245], fontStyle: "bold" },
+      margin: { left: 72, right: 200 },
+    });
+    cursorY = doc.lastAutoTable.finalY + 24;
+
+    /* ----------------------------- Payment Type table ----------------------------- */
+    doc.setFont("helvetica", "bold");
+    doc.text("Payment Type", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [
+        [
+          "Payment Method",
+          "Orders",
+          "Payment Amount",
+          "Refund Orders",
+          "Refund Amount",
+          "Net Sales",
+        ],
+      ],
+      body: payments.map((p) => [
+        p.type,
+        p.tx,
+        formatNumberMoney(p.payAmt),
+        p.refundTx,
+        formatNumberMoney(p.refundAmt),
+        formatNumberMoney(p.net),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [245, 245, 245], fontStyle: "bold" },
+      margin: { left: 72, right: 40 },
+    });
+    cursorY = doc.lastAutoTable.finalY + 24;
+
+    /* ------------------------------ Best Seller table ------------------------------ */
+    doc.setFont("helvetica", "bold");
+    doc.text("Best Seller", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [["Rank", "Item Name", "Total Orders", "Quantity Sold", "Total Sales"]],
+      body: bestSeller.map((b) => [
+        b.rank,
+        b.name,
+        b.orders,
+        b.qty,
+        formatNumberMoney(b.sales),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [245, 245, 245], fontStyle: "bold" },
+      margin: { left: 72, right: 180 },
+    });
+    cursorY = doc.lastAutoTable.finalY + 24;
+
+    /* --------------------------- Staff Performance table -------------------------- */
+    doc.setFont("helvetica", "bold");
+    doc.text("Staff Performance", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [
+        [
+          "Shift No.",
+          "Staff Name",
+          "Date",
+          "Starting Cash",
+          "Cash In/Out",
+          "Count Cash",
+          "Actual Cash",
+          "Remarks",
+        ],
+      ],
+      body: staffPerformanceMock.map((s) => [
+        s.shiftNo,
+        s.staffName,
+        s.date,
+        formatNumberMoney(s.startingCash),
+        s.cashInOut,
+        formatNumberMoney(s.countCash),
+        formatNumberMoney(s.actualCash),
+        s.remarks,
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: { fillColor: [245, 245, 245], fontStyle: "bold" },
+      margin: { left: 72, right: 40 },
+    });
+
+    doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
   };
 
   return (
@@ -439,7 +817,7 @@ ${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
               <MenuItem value="custom">Custom</MenuItem>
             </Select>
           </FormControl>
-          
+
           {/* 🔸 Custom date range (ALWAYS enabled) */}
           <TextField
             size="small"
@@ -472,7 +850,7 @@ ${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
           />
 
           <Box sx={{ flexGrow: 1 }} />
-          
+
           {/* 🔸 Export Buttons */}
           <Button
             variant="contained"
@@ -486,6 +864,7 @@ ${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
             variant="contained"
             color="error"
             startIcon={<PictureAsPdfIcon />}
+            onClick={handlePdfExport}
           >
             PDF
           </Button>
@@ -773,17 +1152,21 @@ ${excelData.categorySeries.map(item => `"${item.x}","${item.y}"`).join('\n')}`;
       {/* ================= Latest Order ================= */}
       <Paper sx={{ p: 2, overflow: "hidden" }}>
         <Stack direction="row" spacing={2} flexWrap="wrap" mb={2}>
-          <MetricCard icon={<ReceiptLongIcon />} label="All Receipts" value={filteredOrders.length} />
+          <MetricCard
+            icon={<ReceiptLongIcon />}
+            label="All Receipts"
+            value={filteredOrders.length}
+          />
           <MetricCard
             icon={<PaymentsIcon />}
             label="Sales"
-            value={filteredOrders.filter(o => o.type === "Sale").length}
+            value={filteredOrders.filter((o) => o.type === "Sale").length}
             color="success"
           />
           <MetricCard
             icon={<ReplayIcon />}
             label="Refunds"
-            value={filteredOrders.filter(o => o.type === "Refund").length}
+            value={filteredOrders.filter((o) => o.type === "Refund").length}
             color="error"
           />
         </Stack>
@@ -934,7 +1317,6 @@ function MetricCard({ icon, label, value, color = "default" }) {
 /* ------------------------- Receipt detail preview ------------------------- */
 function ReceiptPreview({ order }) {
   const items = [{ name: "Pritong Manok", qty: 3, price: 220 }];
-  const vat = order.total * 0.12;
 
   return (
     <Stack spacing={1.25}>
@@ -991,10 +1373,6 @@ function ReceiptPreview({ order }) {
         <Typography variant="body2" fontWeight={700}>
           {peso(order.total)}
         </Typography>
-      </Stack>
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">VAT, 12%</Typography>
-        <Typography variant="body2">{peso(vat)}</Typography>
       </Stack>
       <Stack direction="row" justifyContent="space-between">
         <Typography variant="body2">Payment:</Typography>

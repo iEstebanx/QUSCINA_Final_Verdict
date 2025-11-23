@@ -1,4 +1,4 @@
-// Frontend/src/pages/Login/LoginPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/Login/LoginPage.jsx
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Typography, TextField, Button, Divider,
@@ -7,7 +7,7 @@ import {
   Select, FormControl, InputLabel,
 } from "@mui/material";
 import { useTheme, alpha } from "@mui/material/styles";
-import Visibility from "@mui/icons-material/Visibility";
+  import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import CloseIcon from "@mui/icons-material/Close";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -94,6 +94,7 @@ export default function LoginPage() {
   // OTP cooldown state (authoritative comes from server via expiresAt)
   const [otpCooldownUntil, setOtpCooldownUntil] = useState(null); // ISO string
   const [cooldownLeft, setCooldownLeft] = useState(0); // used only for disabling logic (silent)
+  const [cooldownEmail, setCooldownEmail] = useState(""); // NEW – which email the cooldown belongs to
 
   // Step: OTP
   const [otpValues, setOtpValues] = useState(["", "", "", "", "", ""]);
@@ -124,12 +125,16 @@ export default function LoginPage() {
   const [sqSelectedId, setSqSelectedId] = useState(SQ_CATALOG[0].id);
   const [sqAnswer, setSqAnswer] = useState("");
 
+  // 🔒 Security Question lock state (15-minute lockout)
+  const [sqLockSecondsLeft, setSqLockSecondsLeft] = useState(0);
+  const [sqLockUntilIso, setSqLockUntilIso] = useState(null);
+  const [sqLockedIdKey, setSqLockedIdKey] = useState(null);
+
   // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
 
   useEffect(() => {
     if (ready && user) {
-      // if the router sent us here with a `from`, respect it; else go dashboard
       const dest = (loc.state?.from?.pathname && loc.state.from.pathname !== "/")
         ? loc.state.from.pathname
         : "/dashboard";
@@ -171,6 +176,21 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [lockUntilIso]);
 
+  // 🔒 Security Question lock countdown (15-minute lock)
+  useEffect(() => {
+    if (!sqLockUntilIso) return;
+    const tick = () => {
+      const left = Math.max(
+        0,
+        Math.ceil((new Date(sqLockUntilIso).getTime() - Date.now()) / 1000)
+      );
+      setSqLockSecondsLeft(left);
+      if (left <= 0) setSqLockUntilIso(null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [sqLockUntilIso]);
 
   // Normalize like the backend: 9 digits = employee_id (keep), else lowercase
   const idKey = (s) => {
@@ -197,58 +217,64 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
-      // your AuthContext should throw on !ok with {status, data, message}
       await login(idVal, pwVal, { remember });
 
-      // success
       alert.success("Welcome back!");
       const dest = loc.state?.from?.pathname || "/dashboard";
       nav(dest, { replace: true });
-      } catch (err) {
-        const status = err?.status ?? err?.response?.status ?? 0;
-        const data   = err?.data   ?? err?.response?.data   ?? {};
-        const code   = data?.code || "";
-        const msg    = err?.message || data?.error || "Sign in failed";
+    } catch (err) {
+      const status = err?.status ?? err?.response?.status ?? 0;
+      const data   = err?.data   ?? err?.response?.data   ?? {};
+      const code   = data?.code || "";
+      const msg    = err?.message || data?.error || "Sign in failed";
 
-        // reset field errors each attempt
-        setIdError("");
-        setPwError("");
+      setIdError("");
+      setPwError("");
 
-        if (status === 423) {
-          const seconds = Number(data?.remaining_seconds || 0);
-          if (seconds > 0) {
-            setLockedIdKey(idKey(idVal));
-            setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
-            const m = Math.floor(seconds / 60), s = seconds % 60;
-            alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
-          } else {
-            alert.error("Account locked. Please contact an Admin or Manager.");
-          }
-        } else if (status === 403) {
-          alert.error(msg);
-        } else if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
-          // Unknown ID → field-level error
-          setIdError("Invalid Login ID");
-          // optional toast:
-          // alert.error("Invalid Login ID");
-        } else if (status === 401 && (code === "INVALID_PASSWORD" || !code)) {
-          // Known ID, wrong password → field-level error
-          setPwError("Invalid Password");
-          // optional toast:
-          // alert.error("Invalid Password");
-        } else if (status === 0) {
-          alert.error("Unable to reach server. Check your connection.");
+      if (status === 423) {
+        const seconds = Number(data?.remaining_seconds || 0);
+        if (seconds > 0) {
+          setLockedIdKey(idKey(idVal));
+          setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+          const m = Math.floor(seconds / 60), s = seconds % 60;
+          alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
         } else {
-          alert.error(msg);
+          alert.error("Account locked. Please contact an Admin or Manager.");
         }
-      } finally {
+      } else if (status === 403) {
+        alert.error(msg);
+      } else if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
+        setIdError("Invalid Login ID");
+      } else if (status === 401 && (code === "INVALID_PASSWORD" || !code)) {
+        setPwError("Invalid Password");
+      } else if (status === 0) {
+        alert.error("Unable to reach server. Check your connection.");
+      } else {
+        alert.error(msg);
+      }
+    } finally {
       setSubmitting(false);
     }
   };
 
+  // ---------- Cooldown derived flags (PER EMAIL) ----------
+  const normalizedFpEmail = fpEmail.trim().toLowerCase();                 // NEW
+  const cooldownActive = !!otpCooldownUntil
+    && cooldownLeft > 0
+    && !!normalizedFpEmail
+    && normalizedFpEmail === cooldownEmail;                                // NEW
+
   // ---------- Forgot Password: step navigation ----------
   const goChoose = () => setFpStep("choose");
-  const goEmail = () => setFpStep("email");
+  const goEmail = () => {
+    setFpStep("email");
+    // Show message only if cooldown applies to the current email
+    if (cooldownActive) {
+      setFpEmailError(COOLDOWN_MESSAGE);
+    } else {
+      setFpEmailError("");
+    }
+  };
   const goOtp = () => setFpStep("otp");
   const goReset = () => setFpStep("reset");
   const goSqIdentify = () => setFpStep("sq-identify");
@@ -257,9 +283,11 @@ export default function LoginPage() {
   // ---------- Forgot Password: choose handlers ----------
   const onChooseEmailOtp = () => {
     setFpEmail("");
-    setFpEmailError(""); setResetToken(""); setNewPw(""); setConfirmPw("");
+    setFpEmailError("");
+    setResetToken("");
+    setNewPw("");
+    setConfirmPw("");
     setOtpValues(["", "", "", "", "", ""]);
-    // keep existing cooldown if present (email can be changed after)
     goEmail();
   };
 
@@ -283,11 +311,15 @@ export default function LoginPage() {
     e.preventDefault();
     setFpEmailError("");
 
-    const email = fpEmail.trim().toLowerCase();
+    const email = normalizedFpEmail;                           // NEW – already normalized
     if (!email) { setFpEmailError("Email is required."); return; }
 
-    // Local guard: if we already have an active cooldown, block immediately with fixed message
-    if (otpCooldownUntil && new Date(otpCooldownUntil).getTime() > nowMs()) {
+    // Local guard: block only if cooldown applies to THIS email
+    if (
+      otpCooldownUntil &&
+      new Date(otpCooldownUntil).getTime() > nowMs() &&
+      email === cooldownEmail                                        // NEW
+    ) {
       setFpEmailError(COOLDOWN_MESSAGE);
       return;
     }
@@ -303,20 +335,24 @@ export default function LoginPage() {
 
       const j = await safeJson(resp);
 
-      // Server-enforced cooldown (429). Keep expiresAt silently; show fixed message.
       if (resp.status === 429) {
-        if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+        if (j?.expiresAt) {
+          setOtpCooldownUntil(j.expiresAt);
+          setCooldownEmail(email);                               // NEW
+        }
         throw new Error(j?.error || COOLDOWN_MESSAGE);
       }
 
       if (!resp.ok) {
-        // Sanitize any leaked duplicate-key text
         const msg = String(j?.error || resp.statusText || "Failed to send code");
         if (DUP_RE.test(msg)) throw new Error(COOLDOWN_MESSAGE);
         throw new Error(msg);
       }
 
-      if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+      if (j?.expiresAt) {
+        setOtpCooldownUntil(j.expiresAt);
+        setCooldownEmail(email);                                 // NEW
+      }
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
@@ -328,8 +364,12 @@ export default function LoginPage() {
   };
 
   const onResend = async () => {
-    // Local guard
-    if (otpCooldownUntil && new Date(otpCooldownUntil).getTime() > nowMs()) {
+    // Local guard – only if cooldown belongs to this email
+    if (
+      otpCooldownUntil &&
+      new Date(otpCooldownUntil).getTime() > nowMs() &&
+      normalizedFpEmail === cooldownEmail                       // NEW
+    ) {
       return alert.info(COOLDOWN_MESSAGE);
     }
     try {
@@ -337,12 +377,15 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: fpEmail.trim().toLowerCase() }),
+        body: JSON.stringify({ email: normalizedFpEmail }),
       });
       const j = await safeJson(resp);
 
       if (resp.status === 429) {
-        if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+        if (j?.expiresAt) {
+          setOtpCooldownUntil(j.expiresAt);
+          setCooldownEmail(normalizedFpEmail);                  // NEW
+        }
         return alert.info(COOLDOWN_MESSAGE);
       }
 
@@ -352,7 +395,10 @@ export default function LoginPage() {
         throw new Error(msg);
       }
 
-      if (j?.expiresAt) setOtpCooldownUntil(j.expiresAt);
+      if (j?.expiresAt) {
+        setOtpCooldownUntil(j.expiresAt);
+        setCooldownEmail(normalizedFpEmail);                    // NEW
+      }
       alert.info("A new code has been sent.");
     } catch (err) {
       alert.error(err?.message || "Resend failed.");
@@ -385,10 +431,22 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: fpEmail.trim().toLowerCase(), code: otpCode }),
+        body: JSON.stringify({ email: normalizedFpEmail, code: otpCode }),
       });
       const j = await safeJson(resp);
-      if (!resp.ok) throw new Error(j?.error || "Invalid code");
+      if (!resp.ok) {
+        const code = j?.code;
+        if (code === "OTP_INVALID") {
+          throw new Error("Invalid code. Please check and try again.");
+        }
+        if (code === "OTP_EXPIRED") {
+          throw new Error("This code has expired. Please request a new one.");
+        }
+        if (code === "OTP_NOT_FOUND") {
+          throw new Error("No active verification code. Please request a new one.");
+        }
+        throw new Error(j?.error || "Invalid code. Please try again.");
+      }
 
       setResetToken(j.resetToken || "");
       alert.success("OTP verified. You can now reset your password.");
@@ -437,7 +495,7 @@ export default function LoginPage() {
       return alert.error("Please choose a question and enter your answer.");
     }
 
-    const answers = [{ id: sqSelectedId, answer: sqAnswer.trim() }];
+    const answerPayload = [{ id: sqSelectedId, answer: sqAnswer.trim() }];
 
     setSqLoading(true);
     try {
@@ -445,10 +503,25 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ sqToken, answers }),
+        body: JSON.stringify({ sqToken, answers: answerPayload }),
       });
       const j = await safeJson(resp);
-      if (!resp.ok) throw new Error(j?.error || "Verification failed");
+
+      if (!resp.ok) {
+        // 🔒 SQ lock: show fixed 10-minute message, ignore remaining_seconds
+        if (resp.status === 423) {
+          const secs = Number(j?.remaining_seconds || 900);
+          const idKeyVal = sqIdentifier.trim().toLowerCase();
+
+          setSqLockedIdKey(idKeyVal);
+          setSqLockUntilIso(new Date(Date.now() + secs * 1000).toISOString());
+
+          throw new Error("Too many incorrect answers. Please wait 15 minutes before trying again.");
+        }
+
+        // Other errors: use backend message or fallback
+        throw new Error(j?.error || "Verification failed.");
+      }
 
       setResetToken(j.resetToken || "");
       alert.success("Verified! You can now reset your password.");
@@ -494,7 +567,15 @@ export default function LoginPage() {
     }
   };
 
-  const cooldownActive = !!otpCooldownUntil && cooldownLeft > 0;
+  // Keep the effect that explains the disabled state while on email step
+  useEffect(() => {
+    if (fpStep !== "email") return;
+    if (cooldownActive) {
+      setFpEmailError(COOLDOWN_MESSAGE);
+    } else {
+      setFpEmailError((prev) => (prev === COOLDOWN_MESSAGE ? "" : prev));
+    }
+  }, [fpStep, cooldownActive]);
 
   return (
     <>
@@ -544,13 +625,13 @@ export default function LoginPage() {
               name="identifier"
               label="Employee ID / Username / Email"
               value={identifier}
-              onChange={(e) => { setIdentifier(e.target.value); setIdError(""); }}   // ← clear ID error
+              onChange={(e) => { setIdentifier(e.target.value); setIdError(""); }}
               autoComplete="username"
               required
               fullWidth
               placeholder="e.g. 202500001 · ced · ced@domain.com"
-              error={!!idError}                   // ← show red state
-              helperText={idError || " "}         // ← space keeps layout height
+              error={!!idError}
+              helperText={idError || " "}
             />
 
             <TextField
@@ -558,7 +639,7 @@ export default function LoginPage() {
               label="Password"
               type={showPw ? "text" : "password"}
               value={password}
-              onChange={(e) => { setPassword(e.target.value); setPwError(""); }}     // ← clear PW error
+              onChange={(e) => { setPassword(e.target.value); setPwError(""); }}
               autoComplete="current-password"
               required
               fullWidth
@@ -599,7 +680,7 @@ export default function LoginPage() {
               <Typography
                 variant="caption"
                 color="text.secondary"
-                sx={{ mt: -0.5 }} // optional: tighten spacing
+                sx={{ mt: -0.5 }}
                 aria-live="polite"
               >
                 This account is locked. Please wait {fmtMMSS(lockSecondsLeft)} or sign in with a different account.
@@ -659,7 +740,13 @@ export default function LoginPage() {
                   label="Registered Email Address *"
                   type="email"
                   value={fpEmail}
-                  onChange={(e) => setFpEmail(e.target.value)}
+                  onChange={(e) => {
+                    setFpEmail(e.target.value);
+                    // Clear non-cooldown errors while typing
+                    if (fpEmailError && fpEmailError !== COOLDOWN_MESSAGE) {
+                      setFpEmailError("");
+                    }
+                  }}
                   placeholder="e.g. admin@quscina.com"
                   fullWidth
                   required
@@ -668,12 +755,6 @@ export default function LoginPage() {
                 {!!fpEmailError && (
                   <Typography color="error" variant="body2">
                     {fpEmailError}
-                  </Typography>
-                )}
-
-                {cooldownActive && (
-                  <Typography variant="body2" color="text.secondary">
-                    {COOLDOWN_MESSAGE}
                   </Typography>
                 )}
 
@@ -773,8 +854,14 @@ export default function LoginPage() {
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
                   <Button onClick={goChoose} variant="text" disabled={sqLoading}>Back</Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button type="submit" variant="contained" disabled={sqLoading}>
-                    {sqLoading ? <CircularProgress size={22} /> : "Continue"}
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    disabled={sqLoading || sqLockSecondsLeft > 0}
+                  >
+                    {sqLockSecondsLeft > 0
+                      ? `Locked: ${fmtMMSS(sqLockSecondsLeft)}`
+                      : (sqLoading ? <CircularProgress size={22} /> : "Verify Answer")}
                   </Button>
                 </Stack>
               </Stack>
@@ -790,10 +877,10 @@ export default function LoginPage() {
                 </Typography>
 
                 <FormControl fullWidth>
-                  <InputLabel id="sq-select-label">Choose a question</InputLabel>
+                  <InputLabel id="sq-select-label">Security question</InputLabel>
                   <Select
                     labelId="sq-select-label"
-                    label="Choose a question"
+                    label="Security question"
                     value={sqSelectedId}
                     onChange={(e) => setSqSelectedId(e.target.value)}
                     required

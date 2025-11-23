@@ -92,7 +92,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
 
   async function runBackupJob({
     backupType = "full",
-    notes = null,
     employeeId = null,
     employeeName = null,
     employeeRole = null,
@@ -113,11 +112,11 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       const result = await db.query(
         `
         INSERT INTO backup_jobs
-          (action, trigger_source, backup_type, filename, status, notes, created_by_employee_id)
+          (action, trigger_source, backup_type, filename, status, created_by_employee_id)
         VALUES
-          ('backup', ?, ?, ?, 'running', ?, ?)
+          ('backup', ?, ?, ?, 'running', ?)
         `,
-        [trigger, backupType, filename, notes, employeeId]
+        [trigger, backupType, filename, employeeId]
       );
       jobId = result.insertId;
 
@@ -187,8 +186,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         action:
           trigger === "schedule"
             ? "Backup - Scheduled"
-            : trigger === "test-run"
-            ? "Backup - Test Run"
             : "Backup - Manual",
         detail: {
           statusMessage: "Database backup completed successfully.",
@@ -197,12 +194,9 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
             reference: filename,
             amount: formatBytes(sizeBytes),
             reason:
-              notes ||
-              (trigger === "schedule"
+              trigger === "schedule"
                 ? "Daily scheduled backup"
-                : trigger === "test-run"
-                ? "Schedule test-run backup"
-                : "On-demand backup"),
+                : "On-demand backup",
             triggerSource: trigger,
             backupType,
           },
@@ -218,7 +212,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
             filename,
             size_bytes: sizeBytes,
             status: "success",
-            notes,
             env: BACKUP_ENV,
             backup_dir: BACKUP_DIR,
           },
@@ -265,8 +258,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         action:
           trigger === "schedule"
             ? "Backup Failed - Scheduled"
-            : trigger === "test-run"
-            ? "Backup Failed - Test Run"
             : "Backup Failed - Manual",
         detail: {
           statusMessage: "Database backup failed.",
@@ -275,12 +266,9 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
             reference: filename,
             amount: sizeBytes != null ? formatBytes(sizeBytes) : "—",
             reason:
-              notes ||
-              (trigger === "schedule"
+              trigger === "schedule"
                 ? "Daily scheduled backup"
-                : trigger === "test-run"
-                ? "Schedule test-run backup"
-                : "On-demand backup"),
+                : "On-demand backup",
             triggerSource: trigger,
             backupType,
           },
@@ -296,7 +284,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
             filename,
             size_bytes: sizeBytes,
             status: "failed",
-            notes,
             env: BACKUP_ENV,
             backup_dir: BACKUP_DIR,
           },
@@ -337,7 +324,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       // 1) run backup
       await runBackupJob({
         backupType: "full",
-        notes: `[SCHEDULE] Daily backup at ${sched.time_of_day}`,
         employeeId: null,
         trigger: "schedule",
       });
@@ -473,7 +459,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
           filename,
           status,
           message,
-          notes,
           started_at,
           finished_at
         FROM backup_jobs
@@ -562,11 +547,11 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         await db.query(
           `
           INSERT INTO backup_jobs
-            (action, trigger_source, backup_type, filename, status, notes, started_at, finished_at, created_by_employee_id)
+            (action, trigger_source, backup_type, filename, status, started_at, finished_at, created_by_employee_id)
           VALUES
-            ('schedule-update', 'manual', 'full', 'SCHEDULE-UPDATE', 'success', ?, NOW(), NOW(), ?)
+            ('schedule-update', 'manual', 'full', 'SCHEDULE-UPDATE', 'success', NOW(), NOW(), ?)
           `,
-          [description, employeeId]
+          [employeeId]
         );
 
         const actorEmployee = employeeId ? `User #${employeeId}` : "System";
@@ -618,7 +603,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
   router.post("/backup-now", async (req, res, next) => {
     const {
       backupType = "full",
-      notes = null,
       employeeId = null,
       employeeName = null,
       employeeRole = null,
@@ -628,7 +612,6 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
     try {
       const result = await runBackupJob({
         backupType,
-        notes,
         employeeId,
         employeeName,
         employeeRole,
@@ -663,9 +646,9 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
       const result = await db.query(
         `
         INSERT INTO backup_jobs
-          (action, trigger_source, backup_type, filename, status, notes, created_by_employee_id, started_at)
+          (action, trigger_source, backup_type, filename, status, created_by_employee_id, started_at)
         VALUES
-          ('restore', 'manual', 'full', ?, 'running', 'Restore from UI', ?, NOW())
+          ('restore', 'manual', 'full', ?, 'running', ?, NOW())
         `,
         [safeName, employeeId]
       );

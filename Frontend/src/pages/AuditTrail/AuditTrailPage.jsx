@@ -1,4 +1,4 @@
-// Backoffice/Frontend/src/pages/AuditTrail/AuditTrailPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/AuditTrail/AuditTrailPage.jsx
 import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Box,
@@ -101,7 +101,7 @@ function getModuleKind(row) {
   // 🔐 Treat all account-credential actions as "auth"
   if (action.startsWith("Auth -")) return "auth";
   if (action.startsWith("Login")) return "auth";   // "Login - POS", "Login Failed - POS"
-  if (action.startsWith("Logout")) return "auth"; 
+  if (action.startsWith("Logout")) return "auth";
 
   if (action.startsWith("POS -")) return "pos";
 
@@ -151,10 +151,30 @@ export default function AuditTrailPage() {
   const [rows, setRows] = useState([]);
   const [employeeFilter, setEmployeeFilter] = useState("All Employees");
   const [dateFilter, setDateFilter] = useState("Select Date");
+  const [sourceFilter, setSourceFilter] = useState("All Sources");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
   const [selectedRow, setSelectedRow] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // 🔹 Apply Source filter (POS / Backoffice / All)
+  const filteredRows = useMemo(() => {
+    return rows.filter((r) => {
+      if (sourceFilter === "All Sources") return true;
+
+      const raw =
+        r.detail?.actionDetails?.app ||
+        r.detail?.meta?.app ||
+        "";
+
+      const v = String(raw).toLowerCase();
+
+      if (sourceFilter === "Backoffice") return v === "backoffice";
+      if (sourceFilter === "POS")        return v === "pos";
+
+      return true;
+    });
+  }, [rows, sourceFilter]);
 
   // ✅ single, reusable loader
   const loadLogs = useCallback(async () => {
@@ -186,8 +206,8 @@ export default function AuditTrailPage() {
 
   const paged = useMemo(() => {
     const start = page * rowsPerPage;
-    return rows.slice(start, start + rowsPerPage);
-  }, [rows, page, rowsPerPage]);
+    return filteredRows.slice(start, start + rowsPerPage);
+  }, [filteredRows, page, rowsPerPage]);
 
   const moduleKind = getModuleKind(selectedRow);
   const isAuth = moduleKind === "auth";
@@ -262,6 +282,22 @@ export default function AuditTrailPage() {
                 <MenuItem value="Today">Today</MenuItem>
                 <MenuItem value="This Week">This Week</MenuItem>
                 <MenuItem value="This Month">This Month</MenuItem>
+              </Select>
+
+              {/* 🔹 NEW: Source Filter (POS / Backoffice / All) */}
+              <Select
+                value={sourceFilter}
+                onChange={(e) => {
+                  setSourceFilter(e.target.value);
+                  setPageState((s) => ({ ...s, page: 0 })); // reset page whenever filter changes
+                }}
+                size="small"
+                displayEmpty
+                sx={{ minWidth: 180 }}
+              >
+                <MenuItem value="All Sources">All Sources</MenuItem>
+                <MenuItem value="Backoffice">Backoffice</MenuItem>
+                <MenuItem value="POS">POS</MenuItem>
               </Select>
             </Stack>
 
@@ -412,7 +448,7 @@ export default function AuditTrailPage() {
 
           <TablePagination
             component="div"
-            count={rows.length}
+            count={filteredRows.length}
             page={page}
             onPageChange={(_, newPage) =>
               setPageState((s) => ({ ...s, page: newPage }))
@@ -601,10 +637,17 @@ function AuthActionDetails({ detail }) {
       ? "Email"
       : a.loginType || "login";
 
+  const rememberRaw = a.remember ?? meta.remember;
+  const rememberLabel =
+    rememberRaw === true ? "Yes" :
+    rememberRaw === false ? "No"  :
+    "—";
+
   return (
     <Stack spacing={1.5} mt={1.5}>
       <CompactDetailRow label="Action Type" value={a.actionType || "login"} />
       {a.app && <CompactDetailRow label="App" value={a.app} />}
+      <CompactDetailRow label="Remember Me" value={rememberLabel} />
       {a.loginType && <CompactDetailRow label="Login Method" value={loginMethodLabel} />}
       {a.identifier && <CompactDetailRow label="Login ID" value={a.identifier} />}
 

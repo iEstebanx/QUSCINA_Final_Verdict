@@ -42,7 +42,6 @@ import {
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
 import TrendingDownIcon from "@mui/icons-material/TrendingDown";
 import InventoryIcon from "@mui/icons-material/Inventory";
-import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import PaymentIcon from "@mui/icons-material/Payment";
 import PeopleIcon from "@mui/icons-material/People";
 import { useNavigate } from "react-router-dom";
@@ -64,18 +63,6 @@ const salesSeriesByRange = {
     { name: "Week 4", sales: 9500, orders: 320, customers: 275 },
   ],
   // ... other ranges remain similar but with enhanced data
-};
-
-const yesterdaySalesByRange = {
-  days: [
-    { item: "Crispy Kare Kare", count: 15, revenue: 1125, growth: 12 },
-    { item: "Inihaw na Liempo", count: 12, revenue: 840, growth: 8 },
-    { item: "Sinigang na Baboy", count: 8, revenue: 680, growth: 15 },
-    { item: "Adobong Manok", count: 6, revenue: 420, growth: -5 },
-    { item: "Bulalo", count: 5, revenue: 600, growth: 20 },
-    { item: "Kare-Kare", count: 4, revenue: 560, growth: 10 },
-  ],
-  // ... other ranges
 };
 
 const bestSellersByRange = {
@@ -103,6 +90,7 @@ const metricsData = {
   days: {
     totalSales: 2780,
     totalOrders: 52,
+    profit: 0,
     averageOrder: 53.46,
     customerCount: 45,
     growth: 12.5,
@@ -141,6 +129,8 @@ const formatDateTime = (iso) => {
 // Quick Stats Component
 const QuickStats = ({ metrics }) => (
   <Grid container spacing={2} sx={{ mb: 2 }}>
+
+    {/* Total Sales */}
     <Grid item xs={6} sm={3}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
@@ -154,6 +144,7 @@ const QuickStats = ({ metrics }) => (
       </Card>
     </Grid>
 
+    {/* Total Orders */}
     <Grid item xs={6} sm={3}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
@@ -167,6 +158,21 @@ const QuickStats = ({ metrics }) => (
       </Card>
     </Grid>
 
+    {/* ⭐ NEW — PROFIT (inserted here) */}
+    <Grid item xs={6} sm={3}>
+      <Card sx={{ textAlign: "center", p: 1 }}>
+        <CardContent>
+          <Typography variant="h6" fontWeight="bold" color="warning.main">
+            {peso(metrics.profit)}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Profit
+          </Typography>
+        </CardContent>
+      </Card>
+    </Grid>
+
+    {/* Avg Order */}
     <Grid item xs={6} sm={3}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
@@ -180,7 +186,7 @@ const QuickStats = ({ metrics }) => (
       </Card>
     </Grid>
 
-    {/* 🔽 Change is here */}
+    {/* Total Accounts */}
     <Grid item xs={6} sm={3}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
@@ -193,6 +199,7 @@ const QuickStats = ({ metrics }) => (
         </CardContent>
       </Card>
     </Grid>
+
   </Grid>
 );
 
@@ -269,7 +276,6 @@ export default function DashboardPage() {
       // Custom range filtering logic...
       return {
         salesSeries: salesSeriesByRange.days,
-        yesterdaySales: yesterdaySalesByRange.days,
         bestSellers: bestSellersByRange.days,
         paymentData: paymentDataByRange.days,
         metrics: metricsData.days,
@@ -279,7 +285,6 @@ export default function DashboardPage() {
     const effectiveRangeKey = range === "custom" ? "days" : range;
     return {
       salesSeries: salesSeriesByRange[effectiveRangeKey] || salesSeriesByRange.days,
-      yesterdaySales: yesterdaySalesByRange[effectiveRangeKey] || yesterdaySalesByRange.days,
       bestSellers: bestSellersByRange[effectiveRangeKey] || bestSellersByRange.days,
       paymentData: paymentDataByRange[effectiveRangeKey] || paymentDataByRange.days,
       metrics: metricsData[effectiveRangeKey] || metricsData.days,
@@ -561,126 +566,8 @@ export default function DashboardPage() {
           </Paper>
         </Box>
 
-        {/* ============================ Top Selling Items ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
-          <Paper sx={cardSx}>
-            <Box sx={cardHeaderSx}>
-              <LocalOfferIcon color="primary" />
-              <Typography variant="h6" fontWeight={800}>
-                Top Selling Items
-              </Typography>
-            </Box>
-            <Box sx={cardContentSx}>
-              <TableContainer className="scroll-x" sx={{ flex: 1 }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Item</TableCell>
-                      <TableCell align="right">Sold</TableCell>
-                      <TableCell align="right">Revenue</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {yesterdaySales.slice(0, 6).map((r, i) => (
-                      <TableRow key={i} hover>
-                        <TableCell>
-                          <Typography variant="body2" noWrap sx={{ maxWidth: 120 }}>
-                            {r.item}
-                          </Typography>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
-                            {r.count}
-                            {r.growth > 0 ? (
-                              <TrendingUpIcon color="success" sx={{ fontSize: 16 }} />
-                            ) : (
-                              <TrendingDownIcon color="error" sx={{ fontSize: 16 }} />
-                            )}
-                          </Box>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Typography variant="body2" fontWeight="bold">
-                            {peso(r.revenue)}
-                          </Typography>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                Showing top 6 items
-              </Typography>
-            </Box>
-          </Paper>
-        </Box>
-
-        {/* ============================ Best Sellers ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
-          <Paper sx={cardSx}>
-            <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
-              <Typography variant="h6" fontWeight={800}>
-                Best Sellers
-              </Typography>
-            </Box>
-            <Box sx={cardContentSx}>
-              <List dense sx={{ flex: 1 }}>
-                {bestSellers.map((item, i) => (
-                  <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                    <Avatar sx={{ width: 32, height: 32, mr: 2, bgcolor: theme.palette.primary.main, fontSize: 14 }}>
-                      {i + 1}
-                    </Avatar>
-                    <ListItemText 
-                      primary={
-                        <Typography variant="body2" fontWeight="medium">
-                          {item.name}
-                        </Typography>
-                      }
-                      secondary={
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Typography variant="caption" component="span">
-                            {item.orders} orders
-                          </Typography>
-                          <Typography variant="caption" component="span" fontWeight="bold">
-                            {peso(item.sales)}
-                          </Typography>
-                        </Box>
-                      }
-                      secondaryTypographyProps={{ component: 'div' }} // 👈 important
-                    />
-                    <Chip
-                      label={
-                        item.trend === "up"
-                          ? <TrendingUpIcon sx={{ fontSize: 18 }} />
-                          : <TrendingDownIcon sx={{ fontSize: 18 }} />
-                      }
-                      color={item.trend === "up" ? "success" : "error"}
-                      size="small"
-                      sx={{
-                        minWidth: 32,
-                        height: 24,
-                        borderRadius: 999,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        "& .MuiChip-label": {
-                          p: 0,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        },
-                      }}
-                    />
-                  </ListItem>
-                ))}
-              </List>
-            </Box>
-          </Paper>
-        </Box>
-
         {/* ============================ Low Stock ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
+        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 8" } }}>
           <Paper sx={cardSx}>
             <Box sx={{ ...cardHeaderSx, justifyContent: "space-between" }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -765,6 +652,60 @@ export default function DashboardPage() {
               >
                 View Low Stock Items
               </Button>
+            </Box>
+          </Paper>
+        </Box>
+
+        {/* ============================ Best Sellers ============================ */}
+        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
+          <Paper sx={cardSx}>
+            <Box sx={cardHeaderSx}>
+              <TrendingUpIcon color="primary" />
+              <Typography variant="h6" fontWeight={800}>
+                Best Sellers
+              </Typography>
+            </Box>
+            <Box sx={cardContentSx}>
+              <List dense sx={{ flex: 1 }}>
+                {bestSellers.map((item, i) => (
+                <ListItem key={i} disableGutters sx={{ py: 1 }}>
+                  {/* Rank number */}
+                  <Avatar
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      mr: 2,
+                      bgcolor: theme.palette.primary.main,
+                      fontSize: 14,
+                    }}
+                  >
+                    {i + 1}
+                  </Avatar>
+
+                  {/* Item name */}
+                  <ListItemText
+                    primary={
+                      <Typography variant="body2" fontWeight="medium">
+                        {item.name}
+                      </Typography>
+                    }
+                  />
+
+                  {/* Orders + Trend Icon on the RIGHT */}
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 90 }}>
+                    <Typography variant="body2" fontWeight="bold">
+                      {item.orders} orders
+                    </Typography>
+
+                    {item.trend === "up" ? (
+                      <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
+                    ) : (
+                      <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
+                    )}
+                  </Box>
+                </ListItem>
+                ))}
+              </List>
             </Box>
           </Paper>
         </Box>

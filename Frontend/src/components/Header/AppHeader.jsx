@@ -51,6 +51,7 @@ export default function AppHeader({
   // NEW: For any "group" segment, where should clicking the crumb go?
   const groupFirstChild = {
     menu: "items",
+    settings: "users",
     // inventory: "stock-adjustment",
     // settings: "payment-types",
   };

@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS employees (
   KEY ix_emp_lock (permanent_lock, lock_until)
 ) ENGINE=InnoDB
   DEFAULT CHARSET = utf8mb4
-  COLLATE= utf8mb4_0900_ai_ci
+  COLLATE= utf8mb4_0900_ai_ci 
 
 -- ------------------------------------------------------------
 -- ALIASES  (lookup table for login identifiers)
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS employee_lock_state (
   employee_id  CHAR(9) NOT NULL,
-  app          ENUM('backoffice','pos') NOT NULL,
+  app          ENUM('backoffice','pos', 'backoffice_sq', 'pos_sq') NOT NULL,
   failed_login_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
   lock_until   DATETIME DEFAULT NULL,   -- UTC
   permanent_lock TINYINT NOT NULL DEFAULT 0,

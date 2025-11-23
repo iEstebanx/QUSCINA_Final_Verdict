@@ -370,7 +370,7 @@ export default function AuthorizationPinsPage() {
           })}
 
           {renderPinRow({
-            label: "Confirm new PIN",
+            label: "Confirm New PIN",
             digits: confirmPinDigits,
             setDigits: setConfirmPinDigits,
             refs: confirmRefs,

@@ -122,7 +122,6 @@ export default function UserManagementPage() {
   const [sqDialogOpen, setSqDialogOpen] = useState(false);
   const [sqFields, setSqFields] = useState([
     { id: "", answer: "" },
-    { id: "", answer: "" },
   ]);
   const [sqError, setSqError] = useState("");
   const [sqSaving, setSqSaving] = useState(false); // ⬅️ new: saving state for sub-dialog
@@ -240,8 +239,8 @@ export default function UserManagementPage() {
     if (row) {
       // prefill SQ ids (without exposing hashes)
       const existingSQ = Array.isArray(row.securityQuestions) ? row.securityQuestions : [];
-      const sqStage = existingSQ.slice(0, 2).map(q => ({ id: q.id || "", answer: "" }));
-      while (sqStage.length < 2) sqStage.push({ id: "", answer: "" });
+      const sqStage = existingSQ.slice(0, 1).map(q => ({id: q.id || "", answer: "",}));
+      while (sqStage.length < 1) sqStage.push({ id: "", answer: "" });
 
       setForm({
         photoUrl: row.photoUrl || "",
@@ -265,7 +264,6 @@ export default function UserManagementPage() {
       const blank = makeBlank(rows);
       setForm(blank);
       setSqFields([
-        { id: "", answer: "" },
         { id: "", answer: "" },
       ]);
     }
@@ -520,7 +518,7 @@ export default function UserManagementPage() {
   }
 
   function resetSqToInitial() {
-    const fallback = [{ id: "", answer: "" }, { id: "", answer: "" }];
+    const fallback = [{ id: "", answer: "" }];
     const base = Array.isArray(initialSqRef.current) ? initialSqRef.current : fallback;
     setSqFields(JSON.parse(JSON.stringify(base)));
   }
@@ -576,18 +574,16 @@ export default function UserManagementPage() {
     setSqError("");
 
     const filled = sqFields.filter(q => q.id && q.answer.trim());
-    // Validations
-    if (filled.length > 2) {
-      setSqError("You can save up to 2 questions.");
-      return;
-    }
-    const ids = filled.map(f => f.id);
-    if (new Set(ids).size !== ids.length) {
-      setSqError("Please choose different questions.");
+
+    // (defensive) more than 1 should never happen but keep guard
+    if (filled.length > 1) {
+      setSqError("You can save only one security question.");
       return;
     }
 
-    const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
+    const isEditing = rows.some(
+      (r) => String(r.employeeId) === String(form.employeeId)
+    );
 
     // Clear all if nothing filled
     if (filled.length === 0) {
@@ -596,74 +592,71 @@ export default function UserManagementPage() {
           setSqSaving(true);
           await updateUser(form.employeeId, { securityQuestions: [] });
           setForm((f) => ({ ...f, securityQuestions: [] }));
-          setSqFields([{ id: "", answer: "" }, { id: "", answer: "" }]);
+          setSqFields([{ id: "", answer: "" }]);
           setSqDialogOpen(false);
-          alert.success("Security questions cleared.");
+          alert.success("Security question cleared.");
         } catch (e) {
           console.error(e);
           setSqError("Failed to save. Please try again.");
-          alert.error(e?.message || "Failed to clear security questions.");
+          alert.error(e?.message || "Failed to clear security question.");
         } finally {
           setSqSaving(false);
         }
       } else {
-        // create flow: stage as cleared
         setForm((f) => ({ ...f, securityQuestions: [] }));
-        setSqFields([{ id: "", answer: "" }, { id: "", answer: "" }]);
+        setSqFields([{ id: "", answer: "" }]);
         setSqTouched(true);
         setSqDialogOpen(false);
-        alert.info("Security questions will be cleared on Save.");
+        alert.info("Security question will be cleared on Save.");
       }
       return;
     }
 
-    // Build payload with answers (backend hashes & stamps)
-    const seen = new Set();
-    const sqUnique = [];
-    for (const q of filled) {
-      if (seen.has(q.id)) continue;
-      seen.add(q.id);
-      sqUnique.push({ id: q.id, answer: q.answer.trim() });
-    }
+    // Build payload (only 1)
+    const sqUnique = filled.map(q => ({
+      id: q.id,
+      answer: q.answer.trim(),
+    }));
 
     if (isEditing) {
-      // ✅ save immediately via PATCH
       try {
         setSqSaving(true);
         await updateUser(form.employeeId, { securityQuestions: sqUnique });
-        // Update the display summary (no answers)
         setForm((f) => ({
           ...f,
-          securityQuestions: sqUnique.map(q => ({ id: q.id, question: SQ_CATALOG[q.id] || "Security question" }))
+          securityQuestions: sqUnique.map(q => ({
+            id: q.id,
+            question: SQ_CATALOG[q.id] || "Security question",
+          })),
         }));
-        // clear answers but keep selected IDs for next open
         const cleared = sqUnique.map(q => ({ id: q.id, answer: "" }));
-        while (cleared.length < 2) cleared.push({ id: "", answer: "" });
+        while (cleared.length < 1) cleared.push({ id: "", answer: "" });
         setSqFields(cleared);
         initialSqRef.current = JSON.parse(JSON.stringify(cleared));
         setSqDialogOpen(false);
-        alert.success("Security questions saved.");
+        alert.success("Security question saved.");
       } catch (e) {
         console.error(e);
         setSqError("Failed to save. Please try again.");
-        alert.error(e?.message || "Failed to save security questions.");
+        alert.error(e?.message || "Failed to save security question.");
       } finally {
         setSqSaving(false);
       }
     } else {
-      // create flow: stage and close (will be sent on main Save)
       setForm((f) => ({
         ...f,
-        securityQuestions: sqUnique.map(q => ({ id: q.id, question: SQ_CATALOG[q.id] || "Security question" }))
+        securityQuestions: sqUnique.map(q => ({
+          id: q.id,
+          question: SQ_CATALOG[q.id] || "Security question",
+        })),
       }));
       setSqTouched(true);
-      // clear answers but keep selected IDs
       const cleared = sqUnique.map(q => ({ id: q.id, answer: "" }));
-      while (cleared.length < 2) cleared.push({ id: "", answer: "" });
+      while (cleared.length < 1) cleared.push({ id: "", answer: "" });
       setSqFields(cleared);
       initialSqRef.current = JSON.parse(JSON.stringify(cleared));
       setSqDialogOpen(false);
-      alert.info("Security questions will be saved on Create.");
+      alert.info("Security question will be saved on Create.");
     }
   }
 
@@ -1286,11 +1279,11 @@ export default function UserManagementPage() {
                     <Box>
                       <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
                         {Array.isArray(form.securityQuestions) && form.securityQuestions.length > 0
-                          ? `${form.securityQuestions.length} configured`
+                          ? "1 configured"
                           : "None configured"}
                       </Typography>
                       <Typography variant="body2" sx={{ mt: 0.25 }}>
-                        Security Questions (up to 2)
+                        Security Questions
                       </Typography>
                     </Box>
                   </Stack>
@@ -1792,8 +1785,17 @@ export default function UserManagementPage() {
       </Dialog>
 
       {/* ===== Security Questions sub-dialog ===== */}
-      <Dialog open={sqDialogOpen} onClose={requestCloseSq} maxWidth="sm" fullWidth disableAutoFocus disableRestoreFocus  TransitionProps={{ onEnter: blurActive }} PaperProps={dialogPaperGrid}>
-        <DialogTitle sx={{ pb: 0.5 }}>Security Questions (up to 2)</DialogTitle>
+      <Dialog 
+        open={sqDialogOpen} 
+        onClose={requestCloseSq} 
+        maxWidth="sm" 
+        fullWidth 
+        disableAutoFocus 
+        disableRestoreFocus  
+        TransitionProps={{ onEnter: blurActive }} 
+        PaperProps={dialogPaperGrid}
+      >
+        <DialogTitle sx={{ pb: 0.5 }}>Security Questions</DialogTitle>
           <DialogContent
             dividers
             sx={{
@@ -1803,59 +1805,55 @@ export default function UserManagementPage() {
             }}
           >
           <Stack spacing={2}>
-            {[0,1].map((idx) => (
-              <Grid key={idx} container spacing={1.5} alignItems="center">
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <FormControl fullWidth size="small" disabled={sqSaving}>
-                    <InputLabel>Question {idx+1}</InputLabel>
-                    <Select
-                      label={`Question ${idx+1}`}
-                      value={sqFields[idx].id}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setSqFields((arr) => {
-                          const next = [...arr];
-                          next[idx] = { ...next[idx], id };
-                          return next;
-                        });
-                      }}
-                    >
-                      {Object.entries(SQ_CATALOG).map(([id, text]) => {
-                        const takenByOther = selectedSqIds.includes(id) && sqFields[idx].id !== id;
-                        return (
-                          <MenuItem key={id} value={id} disabled={takenByOther}>
-                            {text}
-                          </MenuItem>
-                        );
-                      })}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <TextField
-                    size="small"
-                    label={`Answer ${idx+1}`}
-                    value={sqFields[idx].answer}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setSqFields((arr) => {
-                        const next = [...arr];
-                        next[idx] = { ...next[idx], answer: v };
-                        return next;
-                      });
-                    }}
-                    fullWidth
-                    helperText="Not case-sensitive (we normalize)"
-                    disabled={sqSaving}
-                  />
-                </Grid>
-              </Grid>
-            ))}
+            {/* Single column layout for question */}
+            <FormControl fullWidth size="small" disabled={sqSaving}>
+              <InputLabel>Question</InputLabel>
+              <Select
+                label="Question"
+                value={sqFields[0].id}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSqFields((arr) => {
+                    const next = [...arr];
+                    next[0] = { ...next[0], id };
+                    return next;
+                  });
+                }}
+              >
+                {Object.entries(SQ_CATALOG).map(([id, text]) => (
+                  <MenuItem key={id} value={id}>
+                    {text}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-            {!!sqError && <Typography variant="caption" color="error">{sqError}</Typography>}
+            {/* Single column layout for answer */}
+            <TextField
+              size="small"
+              label="Answer"
+              value={sqFields[0].answer}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSqFields((arr) => {
+                  const next = [...arr];
+                  next[0] = { ...next[0], answer: v };
+                  return next;
+                });
+              }}
+              fullWidth
+              helperText="Not case-sensitive (we normalize)"
+              disabled={sqSaving}
+            />
+
+            {!!sqError && (
+              <Typography variant="caption" color="error">
+                {sqError}
+              </Typography>
+            )}
 
             <Typography variant="caption" color="text.secondary">
-              Tip: set two distinct questions. Answers are securely hashed and never shown again.
+              Tip: set a security question. The answer is securely hashed and never shown again.
             </Typography>
           </Stack>
         </DialogContent>

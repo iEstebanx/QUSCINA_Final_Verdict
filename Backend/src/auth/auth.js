@@ -1,4 +1,4 @@
-// QUSCINA_BACKOFFICE/src/auth/auth.js
+// QUSCINA_BACKOFFICE/Backend/src/auth/auth.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -74,9 +74,9 @@ module.exports = function authRouterFactory({ db } = {}) {
   }
 
   const LOCK_POLICY = {
-    step4_minutes: 5,
-    step5_minutes: 15,
-    permanent_on: 6, // the attempt index that triggers permanent
+    step4_minutes: 0,       // no lock on 4th attempt anymore
+    step5_minutes: 15,      // 15-minute lock on 5th attempt
+    permanent_on: 6,        // 6th failed attempt -> permanent lock
   };
   const MIRROR_PERM_LOCK_TO_STATUS_INACTIVE = false;
 
@@ -630,7 +630,7 @@ module.exports = function authRouterFactory({ db } = {}) {
               statusChange: AUTH_STATUS.LOGIN_OK_BACKOFFICE_DENIED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -644,12 +644,20 @@ module.exports = function authRouterFactory({ db } = {}) {
         action: "Auth - Login Success",
         detail: {
           statusMessage: "User signed in successfully.",
-          actionDetails: baseAuditDetail,
+          actionDetails: {
+            ...baseAuditDetail,
+            remember: !!remember,
+          },
           affectedData: {
             statusChange: AUTH_STATUS.LOGIN_OK,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: {
+            ip,
+            userAgent: ua,
+            app,
+            remember: !!remember,
+          },
         },
       });
 
@@ -766,7 +774,7 @@ module.exports = function authRouterFactory({ db } = {}) {
             statusChange: AUTH_STATUS.LOGOUT_OK,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: { ip, userAgent: ua, app },
         },
       }).catch(() => {
         // don't block logout if audit insert fails
@@ -790,6 +798,8 @@ module.exports = function authRouterFactory({ db } = {}) {
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
+      const app = getAppRealm(req);
+
       if (!email) {
         await logAuditLogin({
           employeeName: "Unknown",
@@ -801,13 +811,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "start",
               email,
+              app,
               result: "missing_email",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res.status(400).json({ error: "Email is required" });
@@ -823,13 +834,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "start",
               email,
+              app,
               result: "email_not_allowed",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -849,13 +861,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "start",
               email,
+              app,
               result: "email_not_registered",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -882,6 +895,7 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "start",
               email,
+              app,
               verifyType,
               result: "extra_verification_failed",
             },
@@ -889,7 +903,7 @@ module.exports = function authRouterFactory({ db } = {}) {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -922,6 +936,7 @@ module.exports = function authRouterFactory({ db } = {}) {
                 actionType: "password_reset_otp",
                 step: "start",
                 email,
+                app,
                 result: "cooldown_active",
               },
               affectedData: {
@@ -931,6 +946,7 @@ module.exports = function authRouterFactory({ db } = {}) {
               meta: {
                 ip,
                 userAgent: ua,
+                app,
                 expiresAt: r.expiresAt ?? null,
               },
             },
@@ -953,13 +969,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "start",
               email,
+              app,
               result: "server_error",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -991,13 +1008,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionType: "password_reset_otp",
             step: "start",
             email,
+            app,
             result: "otp_sent",
           },
           affectedData: {
             statusChange: AUTH_STATUS.OTP_EMAIL_SENT,
             items: [],
           },
-          meta: { ip, userAgent: ua, expiresAt: r.expiresAt },
+          meta: { ip, userAgent: ua, app, expiresAt: r.expiresAt },
         },
       });
 
@@ -1018,6 +1036,8 @@ module.exports = function authRouterFactory({ db } = {}) {
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
+      const app = getAppRealm(req);
+
       if (!email) {
         await logAuditLogin({
           employeeName: "Unknown",
@@ -1029,13 +1049,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "resend",
               email,
+              app,
               result: "missing_email",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res.status(400).json({ error: "Email is required" });
@@ -1051,13 +1072,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "resend",
               email,
+              app,
               result: "email_not_allowed",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1077,13 +1099,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "resend",
               email,
+              app,
               result: "email_not_registered",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1112,6 +1135,7 @@ module.exports = function authRouterFactory({ db } = {}) {
                 actionType: "password_reset_otp",
                 step: "resend",
                 email,
+                app,
                 result: "cooldown_active",
               },
               affectedData: {
@@ -1121,6 +1145,7 @@ module.exports = function authRouterFactory({ db } = {}) {
               meta: {
                 ip,
                 userAgent: ua,
+                app,
                 expiresAt: r.expiresAt ?? null,
               },
             },
@@ -1142,13 +1167,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "resend",
               email,
+              app,
               result: "server_error",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1178,13 +1204,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionType: "password_reset_otp",
             step: "resend",
             email,
+            app,
             result: "otp_resent",
           },
           affectedData: {
             statusChange: AUTH_STATUS.OTP_EMAIL_RESENT,
             items: [],
           },
-          meta: { ip, userAgent: ua, expiresAt: r.expiresAt },
+          meta: { ip, userAgent: ua, app, expiresAt: r.expiresAt },
         },
       });
 
@@ -1199,16 +1226,30 @@ module.exports = function authRouterFactory({ db } = {}) {
     try {
       const email = lower(req.body?.email);
       const code = String(req.body?.code || "").trim();
+
       const ip =
         req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
         req.ip ||
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
+      const app = getAppRealm(req);
+
+      let emp = null;
+      if (email) {
+        try {
+          emp = await findByEmail(email);
+        } catch {}
+      }
+      const employeeNameForLog =
+        emp ? prettyEmployeeName(emp) : email || "Unknown";
+      const roleForLog = emp?.role || "—";
+
+      // 1) missing email/code
       if (!email || !code) {
         await logAuditLogin({
-          employeeName: email || "Unknown",
-          role: "—",
+          employeeName: employeeNameForLog,
+          role: roleForLog,
           action: "Auth - Forgot Password (Email OTP Verify Failed)",
           detail: {
             statusMessage: "Email and code are required.",
@@ -1216,13 +1257,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "verify",
               email,
+              app,
               result: "missing_email_or_code",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1230,11 +1272,14 @@ module.exports = function authRouterFactory({ db } = {}) {
           .json({ error: "Email and code are required" });
       }
 
+      // 2) fetch latest *pending* OTP
       const rec = await getLatestPendingOtp(email, { db });
-      if (!rec || rec.data.status !== "pending") {
+
+      if (!rec) {
+        // No pending OTP at all (either never requested or already expired/used)
         await logAuditLogin({
-          employeeName: email || "Unknown",
-          role: "—",
+          employeeName: employeeNameForLog,
+          role: roleForLog,
           action: "Auth - Forgot Password (Email OTP Verify Failed)",
           detail: {
             statusMessage: "Invalid or expired code.",
@@ -1242,21 +1287,28 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "verify",
               email,
-              result: "no_pending_otp",
+              app,
+              result: "no_otp_record",
             },
             affectedData: {
               statusChange: AUTH_STATUS.OTP_INVALID_OR_EXPIRED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
-        return res
-          .status(400)
-          .json({ error: "Invalid or expired code" });
+
+        return res.status(400).json({
+          error:
+            "We couldn't find an active verification code. Please request a new one.",
+          code: "OTP_NOT_FOUND",
+        });
       }
 
-      // Expired? (rec.data.expiresAt is from DB; helper used UTC in logic)
+      // NOTE: rec.data.status is assumed to be "pending" here because
+      // getLatestPendingOtp filters by status, so we don't need a status switch.
+
+      // 3) expired?
       if (Date.now() > new Date(rec.data.expiresAt).getTime()) {
         await db.query(
           `UPDATE otp SET status='expired', expired_at=UTC_TIMESTAMP() WHERE id=?`,
@@ -1264,8 +1316,8 @@ module.exports = function authRouterFactory({ db } = {}) {
         );
 
         await logAuditLogin({
-          employeeName: email || "Unknown",
-          role: "—",
+          employeeName: employeeNameForLog,
+          role: roleForLog,
           action: "Auth - Forgot Password (Email OTP Expired)",
           detail: {
             statusMessage: "OTP has expired.",
@@ -1273,31 +1325,30 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "verify",
               email,
+              app,
               result: "expired",
             },
             affectedData: {
               statusChange: AUTH_STATUS.OTP_EXPIRED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
 
-        return res
-          .status(400)
-          .json({ error: "Invalid or expired code" });
+        return res.status(400).json({
+          error:
+            "This verification code has expired. Please request a new one.",
+          code: "OTP_EXPIRED",
+        });
       }
 
+      // 4) too many attempts → always show the same lock message
       const attempts = Number(rec.data.attempts || 0);
       if (attempts >= OTP_MAX_ATTEMPTS) {
-        await db.query(
-          `UPDATE otp SET status='blocked', blocked_at=UTC_TIMESTAMP() WHERE id=?`,
-          [rec.id]
-        );
-
         await logAuditLogin({
-          employeeName: email || "Unknown",
-          role: "—",
+          employeeName: employeeNameForLog,
+          role: roleForLog,
           action: "Auth - Forgot Password (Email OTP Blocked)",
           detail: {
             statusMessage: "Too many OTP attempts.",
@@ -1305,33 +1356,38 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "verify",
               email,
-              result: "blocked",
+              app,
+              result: "blocked_existing",
             },
             affectedData: {
               statusChange: AUTH_STATUS.OTP_BLOCKED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
 
-        return res
-          .status(400)
-          .json({
-            error: "Too many attempts. Request a new code.",
-          });
+        return res.status(400).json({
+          error:
+            "Too many incorrect codes. Please wait 10 minutes and request a new verification code.",
+          code: "OTP_BLOCKED",
+        });
       }
 
+      // 5) wrong code
       const ok = await bcrypt.compare(code, rec.data.codeHash);
       if (!ok) {
         await db.query(
-          `UPDATE otp SET attempts=attempts+1, last_attempt_at=UTC_TIMESTAMP() WHERE id=?`,
+          `UPDATE otp
+             SET attempts = attempts + 1,
+                 last_attempt_at = UTC_TIMESTAMP()
+           WHERE id = ?`,
           [rec.id]
         );
 
         await logAuditLogin({
-          employeeName: email || "Unknown",
-          role: "—",
+          employeeName: employeeNameForLog,
+          role: roleForLog,
           action: "Auth - Forgot Password (Email OTP Verify Failed)",
           detail: {
             statusMessage: "Invalid OTP code.",
@@ -1339,27 +1395,29 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_otp",
               step: "verify",
               email,
+              app,
               result: "invalid_code",
             },
             affectedData: {
               statusChange: AUTH_STATUS.OTP_INVALID_OR_EXPIRED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
 
-        return res
-          .status(400)
-          .json({ error: "Invalid or expired code" });
+        return res.status(400).json({
+          error: "Invalid verification code.",
+          code: "OTP_INVALID",
+        });
       }
 
+      // 6) correct code
       await db.query(
         `UPDATE otp SET status='used', used_at=UTC_TIMESTAMP() WHERE id=?`,
         [rec.id]
       );
 
-      const emp = await findByEmail(email);
       const resetToken = jwt.sign(
         {
           purpose: "password-reset",
@@ -1371,10 +1429,8 @@ module.exports = function authRouterFactory({ db } = {}) {
       );
 
       await logAuditLogin({
-        employeeName: emp
-          ? prettyEmployeeName(emp)
-          : email || "Unknown",
-        role: emp?.role,
+        employeeName: employeeNameForLog,
+        role: roleForLog,
         action: "Auth - Forgot Password (Email OTP Verified)",
         detail: {
           statusMessage: "OTP verified. Reset token issued.",
@@ -1382,23 +1438,24 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionType: "password_reset_otp",
             step: "verify",
             email,
+            app,
             result: "otp_verified",
           },
           affectedData: {
             statusChange: AUTH_STATUS.OTP_VERIFIED_RESET_ALLOWED,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: { ip, userAgent: ua, app },
         },
       });
 
-      res.json({ ok: true, resetToken });
+      return res.json({ ok: true, resetToken });
     } catch (e) {
       next(e);
     }
   });
 
-  // -------------------- Security Questions --------------------
+  // -------------------- Security Question (single) --------------------
   const SQ_CATALOG = {
     pet: "What is the name of your first pet?",
     school: "What is the name of your elementary school?",
@@ -1418,6 +1475,8 @@ module.exports = function authRouterFactory({ db } = {}) {
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
+      const app = getAppRealm(req);
+
       if (!identifier) {
         await logAuditLogin({
           employeeName: "Unknown",
@@ -1429,13 +1488,14 @@ module.exports = function authRouterFactory({ db } = {}) {
               actionType: "password_reset_sq",
               step: "start",
               identifier,
+              app,
               result: "missing_identifier",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1450,24 +1510,25 @@ module.exports = function authRouterFactory({ db } = {}) {
           role: "—",
           action: "Auth - Forgot Password (SQ Start Failed)",
           detail: {
-            statusMessage:
-              "Account not found for identifier.",
+            statusMessage: "Account not found for identifier.",
             actionDetails: {
               actionType: "password_reset_sq",
               step: "start",
               identifier,
+              app,
               result: "account_not_found",
             },
             affectedData: {
               statusChange: AUTH_STATUS.NONE,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res.status(404).json({ error: "Account not found" });
       }
 
+      // still allow any question id from catalog; UI will enforce “only one configured”
       const allowedIds = Object.keys(SQ_CATALOG);
       const sqToken = jwt.sign(
         {
@@ -1484,18 +1545,19 @@ module.exports = function authRouterFactory({ db } = {}) {
         role: user.role,
         action: "Auth - Forgot Password (SQ Start)",
         detail: {
-          statusMessage: "Security questions flow started.",
+          statusMessage: "Security question flow started.",
           actionDetails: {
             actionType: "password_reset_sq",
             step: "start",
             identifier,
+            app,
             result: "sq_started",
           },
           affectedData: {
             statusChange: AUTH_STATUS.SQ_FLOW_STARTED,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: { ip, userAgent: ua, app },
         },
       });
 
@@ -1515,48 +1577,140 @@ module.exports = function authRouterFactory({ db } = {}) {
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
-      const fail = () =>
-        res.status(400).json({
-          error:
-            "The details you entered don’t match our records.",
-        });
+      const app = getAppRealm(req);
 
-      if (!sqToken || !Array.isArray(answers) || answers.length !== 1)
-        return fail();
+      const sqApp = `${app}_sq`;
+
+      // 🔒 Single-question flow: must be exactly one answer
+      if (!sqToken || !Array.isArray(answers) || answers.length !== 1) {
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
 
       let payload;
       try {
         payload = jwt.verify(sqToken, RESET_JWT_SECRET);
       } catch {
-        return fail();
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
       }
-      if (payload?.purpose !== "security-questions") return fail();
+      if (payload?.purpose !== "security-questions") {
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
 
       const employeeId = payload.employeeId;
       const allowedIds = Array.isArray(payload.allowedIds)
         ? payload.allowedIds
         : [];
-      if (!employeeId || !allowedIds.length) return fail();
+      if (!employeeId || !allowedIds.length) {
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
+
+      // 🔒 1) Check if this employee/app is already locked (reuse employee_lock_state)
+      const lockRow = await readLockRow(db, employeeId, sqApp);
+      const { locked, msLeft, permanent } = lockInfoFromRow(lockRow);
+
+      if (permanent) {
+        return res.status(423).json({
+          error: "Account locked. Please contact an Admin or Manager.",
+        });
+      }
+      if (locked) {
+        return res.status(423).json({
+          error:
+            "Too many incorrect answers. Please wait 15 minutes before trying again.",
+          remaining_seconds: Math.ceil(msLeft / 1000),
+        });
+      }
 
       const { id, answer } = answers[0] || {};
-      if (
-        !id ||
-        typeof answer !== "string" ||
-        !allowedIds.includes(id)
-      )
-        return fail();
+      if (!id || typeof answer !== "string" || !allowedIds.includes(id)) {
+        // malformed / unexpected – treat as generic failure (no lock bump, no info)
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
 
       const rows = await db.query(
-        `SELECT answer_hash FROM employee_security_questions WHERE employee_id = ? AND question_id = ? LIMIT 1`,
+        `SELECT answer_hash FROM employee_security_questions
+           WHERE employee_id = ? AND question_id = ? LIMIT 1`,
         [employeeId, id]
       );
-      if (!rows.length) return fail();
+      if (!rows.length) {
+        // No stored answer; generic failure
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
 
-      const ok = await bcrypt.compare(
-        norm(answer),
-        rows[0].answer_hash
+      const ok = await bcrypt.compare(norm(answer), rows[0].answer_hash);
+      if (!ok) {
+        // ❌ Wrong answer → bump lock counter in employee_lock_state
+        await db.query(
+          `INSERT INTO employee_lock_state
+              (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+           VALUES (?, ?, 1, NULL, 0, UTC_TIMESTAMP())
+           ON DUPLICATE KEY UPDATE
+             failed_login_count = failed_login_count + 1,
+             last_failed_login  = UTC_TIMESTAMP(),
+             lock_until = CASE
+               WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+               ELSE lock_until
+             END,
+             permanent_lock = CASE
+               WHEN failed_login_count + 1 >= ? THEN 1
+               ELSE permanent_lock
+             END`,
+          [
+            employeeId,
+            sqApp,
+            LOCK_POLICY.step5_minutes,   // 15 minutes on 5th failed answer
+            LOCK_POLICY.permanent_on,    // 6th+ => permanent lock
+          ]
+        );
+
+        const fresh = await readLockRow(db, employeeId, sqApp);
+        const {
+          locked: nowLocked,
+          msLeft: nowLeft,
+          permanent: nowPerm,
+        } = lockInfoFromRow(fresh);
+
+        if (nowPerm) {
+          return res.status(423).json({
+            error: "Account locked. Please contact an Admin or Manager.",
+          });
+        }
+        if (nowLocked) {
+          return res.status(423).json({
+            error:
+              "Too many incorrect answers. Please wait 15 minutes before trying again.",
+            remaining_seconds: Math.ceil(nowLeft / 1000),
+          });
+        }
+
+        // Still under the lock threshold → generic error
+        return res.status(400).json({
+          error: "The details you entered don’t match our records.",
+        });
+      }
+
+      // ✅ Correct answer → issue reset token and clear lock state for this app
+      await db.query(
+        `UPDATE employee_lock_state
+            SET failed_login_count = 0,
+                lock_until = NULL,
+                permanent_lock = 0,
+                last_failed_login = NULL
+          WHERE employee_id = ? AND app = ?`,
+        [employeeId, sqApp]
       );
-      if (!ok) return fail();
 
       const resetToken = jwt.sign(
         { purpose: "password-reset", employeeId },
@@ -1572,9 +1726,7 @@ module.exports = function authRouterFactory({ db } = {}) {
       const empAud = empRows[0] || null;
 
       await logAuditLogin({
-        employeeName: empAud
-          ? prettyEmployeeName(empAud)
-          : String(employeeId),
+        employeeName: empAud ? prettyEmployeeName(empAud) : String(employeeId),
         role: empAud?.role,
         action: "Auth - Forgot Password (SQ Verified)",
         detail: {
@@ -1584,13 +1736,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionType: "password_reset_sq",
             step: "verify",
             questionId: id,
+            app,
             result: "sq_verified",
           },
           affectedData: {
             statusChange: AUTH_STATUS.SQ_VERIFIED_RESET_ALLOWED,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: { ip, userAgent: ua, app },
         },
       });
 
@@ -1629,13 +1782,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionDetails: {
               actionType: "password_reset",
               step: "reset",
+              app,
               result: "invalid_token",
             },
             affectedData: {
               statusChange: AUTH_STATUS.PASSWORD_RESET_FAILED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1653,13 +1807,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionDetails: {
               actionType: "password_reset",
               step: "reset",
+              app,
               result: "invalid_purpose",
             },
             affectedData: {
               statusChange: AUTH_STATUS.PASSWORD_RESET_FAILED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1690,13 +1845,14 @@ module.exports = function authRouterFactory({ db } = {}) {
             actionDetails: {
               actionType: "password_reset",
               step: "reset",
+              app,
               result: "employee_not_found",
             },
             affectedData: {
               statusChange: AUTH_STATUS.PASSWORD_RESET_FAILED,
               items: [],
             },
-            meta: { ip, userAgent: ua },
+            meta: { ip, userAgent: ua, app },
           },
         });
         return res
@@ -1726,6 +1882,7 @@ module.exports = function authRouterFactory({ db } = {}) {
           actionDetails: {
             actionType: "password_reset",
             step: "reset",
+            app,
             method: payload.emailLower
               ? "email_otp_or_email"
               : "security_questions_or_unknown",
@@ -1735,7 +1892,7 @@ module.exports = function authRouterFactory({ db } = {}) {
             statusChange: AUTH_STATUS.PASSWORD_RESET_SUCCESS,
             items: [],
           },
-          meta: { ip, userAgent: ua },
+          meta: { ip, userAgent: ua, app },
         },
       });
 

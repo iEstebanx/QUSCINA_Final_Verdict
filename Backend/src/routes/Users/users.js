@@ -99,9 +99,7 @@ async function buildSQEntries(inputArr) {
   const items = inputArr.filter(
     (q) => !!q?.id && typeof q?.answer === "string" && q.answer.trim().length > 0
   );
-  if (items.length > 2) throw new Error("You can only set up to 2 security questions.");
-  const ids = items.map((q) => q.id);
-  if (new Set(ids).size !== ids.length) throw new Error("Security questions must be different.");
+  if (items.length > 1) throw new Error("Only one security question is allowed.");
 
   const out = [];
   for (const q of items) {

@@ -21,14 +21,12 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  RadioGroup,
-  FormControlLabel,
-  Radio,
   Tooltip,
   Grid,
   Card,
   CardContent,
   LinearProgress,
+  CircularProgress,
 } from "@mui/material";
 
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
@@ -61,10 +59,10 @@ export default function BackupAndRestorePage() {
   const [restoreTarget, setRestoreTarget] = useState(null);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreErr, setRestoreErr] = useState("");
+  const [restoreSuccessOpen, setRestoreSuccessOpen] = useState(false);
 
   // Backup now
   const [backupType, setBackupType] = useState("full");
-  const [backupNotes, setBackupNotes] = useState("");
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupErr, setBackupErr] = useState("");
 
@@ -72,6 +70,9 @@ export default function BackupAndRestorePage() {
   const [backupDialogOpen, setBackupDialogOpen] = useState(false);
   const [backupStatus, setBackupStatus] = useState("idle");
   const [backupInfo, setBackupInfo] = useState(null);
+
+  // confirm dialog before starting backup
+  const [backupConfirmOpen, setBackupConfirmOpen] = useState(false);
 
   // 🔹 Activities (backup_jobs) state
   const [activities, setActivities] = useState([]);
@@ -84,6 +85,13 @@ export default function BackupAndRestorePage() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleErr, setScheduleErr] = useState("");
   const [scheduleSuccess, setScheduleSuccess] = useState("");
+  // Schedule confirm dialog
+  const [scheduleConfirmOpen, setScheduleConfirmOpen] = useState(false);
+
+  // Delete confirmation dialog
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
   /* -------------------------- Loaders / API calls -------------------------- */
 
@@ -113,7 +121,6 @@ export default function BackupAndRestorePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           backupType,
-          notes: backupNotes || null,
           employeeId,
           employeeName,
           employeeRole, // "Admin", "Manager", etc
@@ -474,8 +481,12 @@ export default function BackupAndRestorePage() {
       }
 
       await loadActivities(); // show restore job in activities
+
+      // close the confirmation dialog
       handleCloseRestoreDialog();
-      alert("Restore started successfully. Please wait for it to complete.");
+
+      // 🔹 open the nice success dialog instead of window.alert
+      setRestoreSuccessOpen(true);
     } catch (err) {
       console.error("Restore error:", err);
       setRestoreErr(err.message || "Restore failed");
@@ -484,18 +495,21 @@ export default function BackupAndRestorePage() {
     }
   };
 
-  const handleDeleteBackup = async (backup) => {
-    if (!backup || !backup.filename) return;
+  const handleDeleteBackup = (backup) => {
+    setDeleteErr("");
+    setDeleteTarget(backup); // open dialog
+  };
 
-    const ok = window.confirm(
-      `Delete backup file "${backup.filename}"? This cannot be undone.`
-    );
-    if (!ok) return;
+  const confirmDeleteBackup = async () => {
+    if (!deleteTarget) return;
+
+    setDeleteLoading(true);
+    setDeleteErr("");
 
     try {
       const res = await fetch(
         `/api/settings/backup-and-restore/backups/${encodeURIComponent(
-          backup.filename
+          deleteTarget.filename
         )}`,
         { method: "DELETE" }
       );
@@ -505,13 +519,21 @@ export default function BackupAndRestorePage() {
         throw new Error(body.error || body.message || "Failed to delete backup");
       }
 
-      setBackups((prev) => prev.filter((b) => b.filename !== backup.filename));
-      await loadSummary(); // totalBackups / storageBytes
+      // remove from table
+      setBackups((prev) =>
+        prev.filter((b) => b.filename !== deleteTarget.filename)
+      );
+
+      await loadSummary(); // update storage + total backups
+
+      setDeleteTarget(null);
     } catch (err) {
-      console.error("Delete backup error:", err);
-      alert(err.message || "Failed to delete backup");
+      setDeleteErr(err.message || "Failed to delete backup");
+    } finally {
+      setDeleteLoading(false);
     }
   };
+
 
   const handleCloseBackupDialog = () => {
     if (backupStatus === "running") return;
@@ -529,7 +551,6 @@ export default function BackupAndRestorePage() {
     setScheduleSuccess("");
     setScheduleSaving(true);
 
-    // 👇 grab current user id (works for both employeeId or id shape)
     const employeeId = user?.employeeId ?? user?.id ?? null;
     const employeeRole = user?.role ?? user?.roleName ?? null;
 
@@ -538,10 +559,31 @@ export default function BackupAndRestorePage() {
         throw new Error("Time is required.");
       }
 
+      const MIN_RETENTION_DAYS = 14;
+
+      let retentionInt = null;
+      if (retentionDays !== "") {
+        retentionInt = parseInt(retentionDays, 10);
+
+        if (Number.isNaN(retentionInt)) {
+          throw new Error("Retention days must be a valid number.");
+        }
+
+        if (retentionInt < MIN_RETENTION_DAYS) {
+          setScheduleErr(
+            `Retention days must be at least ${MIN_RETENTION_DAYS}. ` +
+              "Using fewer days is not recommended because it reduces your ability " +
+              "to recover from issues that happened in the last two weeks."
+          );
+          setScheduleSaving(false);
+          return; // ❌ don’t save
+        }
+      }
+
       const payload = {
         frequency: "daily",
-        timeOfDay: scheduleTime, // "HH:MM"
-        retentionDays: retentionDays ? parseInt(retentionDays, 10) : null,
+        timeOfDay: scheduleTime,
+        retentionDays: retentionInt, // null or >= 14
         employeeId,
         employeeRole,
       };
@@ -559,7 +601,6 @@ export default function BackupAndRestorePage() {
 
       const data = await res.json();
 
-      // update summary.schedule so the card + "Next run" reflect latest
       setSummary((prev) =>
         prev
           ? {
@@ -836,76 +877,92 @@ export default function BackupAndRestorePage() {
     </Stack>
   );
 
-  /* ---------------------------- Backup Now view ---------------------------- */
+  /* ---------------------------- Enhanced Backup Now view ---------------------------- */
 
-  const renderBackupNowView = () => (
-    <Paper sx={{ p: 3 }}>
-      <Typography variant="h6" fontWeight={700} mb={3}>
-        Backup Now
-      </Typography>
+  const renderBackupNowView = () => {
+    const lastBackupText = formatLastBackup(summary?.lastBackup);
+    const scheduleText = formatSchedule(summary?.schedule);
+    const storageUsedText = summary
+      ? formatBytes(summary.storageBytes)
+      : "—";
 
-      <Typography mb={3}>
-        Create an on-demand backup of your database.
-      </Typography>
+    return (
+      <Paper sx={{ p: 3 }}>
+        <Grid container spacing={4}>
+          {/* LEFT: main action panel - expanded to use more space */}
+          <Grid item xs={12} lg={8}>
+            <Box sx={{ maxWidth: 800 }}>
+              <Typography variant="h5" fontWeight={700} mb={2}>
+                Backup Now
+              </Typography>
+              <Typography variant="body1" color="text.secondary" mb={4} sx={{ lineHeight: 1.6 }}>
+                Create an on-demand backup of your database. This is useful
+                before applying updates, importing data, or doing major changes
+                to your configuration.
+              </Typography>
 
-      <Stack spacing={3} sx={{ maxWidth: 600 }}>
-        <Box>
-          <RadioGroup
-            value={backupType}
-            onChange={(e) => setBackupType(e.target.value)}
-          >
-            <FormControlLabel
-              value="full"
-              control={<Radio />}
-              label="Full backup"
-              sx={{ mb: 1 }}
-            />
-          </RadioGroup>
-        </Box>
+              <Stack spacing={4}>
 
-        <Box>
-          <Typography fontWeight={600} mb={1}>
-            Notes (optional)
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mb={2}>
-            Example: "Before migrating inventory" – helps for future audits.
-          </Typography>
-          <TextField
-            fullWidth
-            multiline
-            minRows={3}
-            placeholder="Why are you running this backup?"
-            value={backupNotes}
-            onChange={(e) => setBackupNotes(e.target.value)}
-          />
-        </Box>
+                {/* What happens section */}
+                <Card variant="outlined" sx={{ p: 2.5 }}>
+                  <Typography variant="subtitle1" fontWeight={600} mb={2}>
+                    What this backup will do
+                  </Typography>
+                  <Stack spacing={1.5}>
+                    <Box display="flex" alignItems="flex-start">
+                      <Box sx={{ color: 'success.main', mr: 1.5, mt: 0.25 }}>•</Box>
+                      <Typography variant="body2" color="text.secondary">
+                        Create a new <strong>.sql</strong> file with the current date and time in the filename
+                      </Typography>
+                    </Box>
+                    <Box display="flex" alignItems="flex-start">
+                      <Box sx={{ color: 'success.main', mr: 1.5, mt: 0.25 }}>•</Box>
+                      <Typography variant="body2" color="text.secondary">
+                        Save the file to your configured backup folder
+                      </Typography>
+                    </Box>
+                    <Box display="flex" alignItems="flex-start">
+                      <Box sx={{ color: 'success.main', mr: 1.5, mt: 0.25 }}>•</Box>
+                      <Typography variant="body2" color="text.secondary">
+                        Leave all existing backup files untouched
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </Card>
 
-        <Box>
-          <Typography fontWeight={600} mb={1}>
-            Estimated output
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            A new <strong>.sql</strong> file will be created with the current
-            date/time in the filename.
-          </Typography>
-        </Box>
+                {/* Actions */}
+                <Box sx={{ pt: 2 }}>
+                  <Stack direction="row" spacing={2} alignItems="center">
+                    <Button
+                      variant="contained"
+                      size="large"
+                      onClick={() => setBackupConfirmOpen(true)}
+                      disabled={backupLoading}
+                      sx={{ minWidth: 140, px: 3 }}
+                    >
+                      {backupLoading ? (
+                        <CircularProgress size={20} sx={{ color: 'white' }} />
+                      ) : (
+                        'Start Backup'
+                      )}
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      onClick={() => setView("summary")}
+                      size="large"
+                    >
+                      Back
+                    </Button>
+                  </Stack>
+                </Box>
+              </Stack>
+            </Box>
+          </Grid>
 
-        <Stack direction="row" spacing={2}>
-          <Button variant="outlined" onClick={() => setView("summary")}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            size="large"
-            onClick={handleStartBackup}
-            disabled={backupLoading}
-          >
-            Start Backup
-          </Button>
-        </Stack>
-      </Stack>
-    </Paper>
-  );
+        </Grid>
+      </Paper>
+    );
+  };
 
   /* ------------------------ Restore view (Categories style) ------------------------ */
 
@@ -1102,6 +1159,10 @@ export default function BackupAndRestorePage() {
       }
     }
 
+    const minRetention = 14;
+    const retentionTooLow =
+    retentionDays !== "" && Number(retentionDays) < minRetention;
+
     return (
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" fontWeight={700} mb={3}>
@@ -1143,16 +1204,20 @@ export default function BackupAndRestorePage() {
                 placeholder="e.g. 14"
                 value={retentionDays}
                 onChange={(e) => {
-                  // only allow numbers
                   const v = e.target.value;
                   if (/^\d*$/.test(v)) setRetentionDays(v);
                 }}
+                error={retentionTooLow}
                 InputProps={{
                   endAdornment: (
                     <InputAdornment position="end">Days</InputAdornment>
                   ),
                 }}
-                helperText="Keep backups for this many days"
+                helperText={
+                  retentionTooLow
+                    ? "Minimum of 14 days is recommended so you can restore from issues in the last two weeks."
+                    : "Keep backups for this many days (minimum 14 recommended)."
+                }
               />
             </Grid>
           </Grid>
@@ -1180,20 +1245,13 @@ export default function BackupAndRestorePage() {
           <Stack direction="row" spacing={2} flexWrap="wrap">
             <Button
               variant="contained"
-              onClick={handleSaveSchedule}
+              onClick={() => setScheduleConfirmOpen(true)}
               disabled={scheduleSaving}
             >
               {scheduleSaving ? "Saving…" : "Save Changes"}
             </Button>
-            <Button
-              variant="outlined"
-              onClick={handleTestRunNow}
-              disabled={backupLoading}
-            >
-              {backupLoading ? "Running…" : "Test Run Now"}
-            </Button>
             <Button variant="text" onClick={() => setView("summary")}>
-              Cancel
+              Back
             </Button>
           </Stack>
         </Stack>
@@ -1309,6 +1367,52 @@ export default function BackupAndRestorePage() {
         {view === "activities" && renderActivitiesView()}
       </Box>
 
+      {/* Backup confirmation dialog (before starting backup) */}
+      <Dialog
+        open={backupConfirmOpen}
+        onClose={() => {
+          if (backupLoading) return;
+          setBackupConfirmOpen(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Confirm Backup</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography>
+              You are about to create a new{" "}
+              <strong>{backupType === "full" ? "full" : "partial"}</strong> backup of
+              the database.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              This will export the current database into a new <strong>.sql</strong>{" "}
+              file with the date and time in the filename. It will not delete or
+              modify existing backup files.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setBackupConfirmOpen(false)}
+            disabled={backupLoading}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={async () => {
+              setBackupConfirmOpen(false);
+              await handleStartBackup();
+            }}
+            disabled={backupLoading}
+          >
+            {backupLoading ? "Starting…" : "Confirm Backup"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Backup progress / result dialog */}
       <Dialog
         open={backupDialogOpen}
@@ -1376,6 +1480,150 @@ export default function BackupAndRestorePage() {
               Close
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete backup confirmation dialog */}
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => {
+          if (deleteLoading) return;
+          setDeleteTarget(null);
+          setDeleteErr("");
+        }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Delete Backup File</DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography>
+              Are you sure you want to delete this backup file?
+            </Typography>
+
+            {deleteTarget && (
+              <Typography variant="body2">
+                <strong>{deleteTarget.filename}</strong>
+              </Typography>
+            )}
+
+            <Typography variant="body2" color="error">
+              This action cannot be undone.
+            </Typography>
+
+            {deleteErr && (
+              <Typography variant="body2" color="error">
+                {deleteErr}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            onClick={() => setDeleteTarget(null)}
+            disabled={deleteLoading}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={confirmDeleteBackup}
+            disabled={deleteLoading}
+          >
+            {deleteLoading ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Schedule confirmation dialog */}
+      <Dialog
+        open={scheduleConfirmOpen}
+        onClose={() => {
+          if (scheduleSaving) return;
+          setScheduleConfirmOpen(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Confirm Schedule Changes</DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography>
+              You are about to update your automatic backup schedule.
+            </Typography>
+
+            <Box sx={{ bgcolor: "grey.100", p: 2, borderRadius: 1 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                New Schedule Summary
+              </Typography>
+
+              <Typography variant="body2">
+                <strong>Backup Time:</strong> {scheduleTime}
+              </Typography>
+
+              <Typography variant="body2">
+                <strong>Retention Days:</strong>{" "}
+                {retentionDays ? `${retentionDays} days` : "Not set"}
+              </Typography>
+            </Box>
+
+            <Typography variant="body2" color="text.secondary">
+              These changes will affect daily automated backups and retention cleanup.
+            </Typography>
+
+            {scheduleErr && (
+              <Typography variant="body2" color="error">
+                {scheduleErr}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            onClick={() => setScheduleConfirmOpen(false)}
+            disabled={scheduleSaving}
+          >
+            Cancel
+          </Button>
+
+          <Button
+            variant="contained"
+            onClick={async () => {
+              await handleSaveSchedule();
+              if (!scheduleErr) setScheduleConfirmOpen(false);
+            }}
+            disabled={scheduleSaving}
+          >
+            {scheduleSaving ? "Saving…" : "Confirm Changes"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Restore started success dialog */}
+      <Dialog
+        open={restoreSuccessOpen}
+        onClose={() => setRestoreSuccessOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Restore Started</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2">
+            Restore started successfully.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            variant="contained"
+            onClick={() => setRestoreSuccessOpen(false)}
+          >
+            OK
+          </Button>
         </DialogActions>
       </Dialog>
 

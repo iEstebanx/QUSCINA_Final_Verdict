@@ -193,10 +193,21 @@ export default function InventorySettingsPage() {
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
             sx={{ width: 200, minWidth: 160 }}
+            SelectProps={{
+              MenuProps: {
+                PaperProps: {
+                  className: "scroll-x",   // 🔹 reuse your custom scrollbar style
+                },
+                // optional: cap height so scrolling actually appears
+                MenuListProps: {
+                  sx: { maxHeight: 280 },
+                },
+              },
+            }}
           >
             {categories.map((cat) => (
               <MenuItem key={cat} value={cat}>
-                {cat === "all" ? "Categories" : cat}
+                {cat === "all" ? "All Categories" : cat}
               </MenuItem>
             ))}
           </TextField>
