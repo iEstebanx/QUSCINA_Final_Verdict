@@ -1,5 +1,5 @@
-// Frontend/src/pages/AuditTrail/InventoryHistoryPage.jsx
-import { useMemo, useState } from "react";
+// QUSCINA_BACKOFFICE/Frontend/src/pages/AuditTrail/InventoryHistoryPage.jsx
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Paper,
@@ -7,10 +7,6 @@ import {
   Typography,
   TextField,
   InputAdornment,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
   Button,
   Table,
   TableBody,
@@ -20,6 +16,7 @@ import {
   TablePagination,
   TableRow,
 } from "@mui/material";
+
 import SearchIcon from "@mui/icons-material/Search";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 
@@ -27,53 +24,19 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import logo from "@/assets/LOGO.png";
 
-const MOCK_ROWS = [
-  {
-    id: 1,
-    ts: "2025-10-22T20:12:00",
-    remarks: "Stock In",
-    ingredientName: "Chicken",
-    category: "Meat",
-    unit: "kg",
-    beginStock: 10,
-    adjust: 10,
-    endStock: 20,
-    unitCost: 150,
-    totalValue: 3000,
-    employee: "Chef",
-  },
-  {
-    id: 2,
-    ts: "2025-10-23T09:05:00",
-    remarks: "Stock Out",
-    ingredientName: "Milk",
-    category: "Dairy",
-    unit: "ml",
-    beginStock: 5000,
-    adjust: -1500,
-    endStock: 3500,
-    unitCost: 30,
-    totalValue: 450,
-    employee: "Chef",
-  },
-  {
-    id: 3,
-    ts: "2025-10-23T13:40:00",
-    remarks: "Waste",
-    ingredientName: "Sugar",
-    category: "Dry Goods",
-    unit: "kg",
-    beginStock: 20,
-    adjust: -3,
-    endStock: 17,
-    unitCost: 45,
-    totalValue: 765,
-    employee: "Chef",
-  },
-];
+const ING_API = "/api/inventory/ingredients";
+const ACT_API = "/api/inventory/inv-activity";
+
+const formatNumber = (n) =>
+  Number(n || 0).toLocaleString("en-PH", { maximumFractionDigits: 3 });
+
+const formatPhp = (n) =>
+  `₱${Number(n || 0).toLocaleString("en-PH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 
 const formatDateTime = (iso) => {
-  if (!iso) return "-";
   const d = new Date(iso);
   return d.toLocaleString("en-PH", {
     month: "short",
@@ -84,66 +47,123 @@ const formatDateTime = (iso) => {
   });
 };
 
-const formatDateOnly = (iso) => {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-PH", {
-    month: "long",
-    day: "2-digit",
-    year: "numeric",
-  });
-};
-
-const formatRangeForHeader = (fromDate, toDate) => {
-  if (!fromDate && !toDate) return "All Dates";
-  if (fromDate && !toDate) return fromDate;
-  if (!fromDate && toDate) return toDate;
-  return `${fromDate} – ${toDate}`;
-};
-
-const formatNumber = (n) =>
-  Number(n || 0).toLocaleString("en-PH", {
-    maximumFractionDigits: 3,
-  });
-
-const formatNumberMoney = (n) =>
-  Number(n || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-
-const formatPhp = (n) => `₱${formatNumberMoney(n)}`;
-
 export default function InventoryHistoryPage() {
-  const [range, setRange] = useState("day"); // day | week | month | custom
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [ingredients, setIngredients] = useState([]);
+  const [activity, setActivity] = useState([]);
   const [search, setSearch] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
 
+  /* LOAD INGREDIENTS */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(ING_API);
+        const j = await res.json();
+        if (j.ok) setIngredients(j.ingredients);
+      } catch (e) {
+        console.error("load ingredients failed:", e);
+      }
+    })();
+  }, []);
+
+  /* LOAD INVENTORY ACTIVITY */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${ACT_API}?limit=2000`);
+        const j = await res.json();
+        if (!j.ok) return;
+
+        const rows = (j.rows || []).map((r) => ({
+          ...r,
+          qty: Number(r.qty || 0),
+          price: Number(r.price || 0),
+        }));
+
+        setActivity(rows);
+      } catch (e) {
+        console.error("load activity failed:", e);
+      }
+    })();
+  }, []);
+
+  /* MERGE + COMPUTE */
+  const computedRows = useMemo(() => {
+    if (!activity.length || !ingredients.length) return [];
+
+    // 1) sort oldest → newest for correct running stock
+    const sorted = activity
+      .slice()
+      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+    const mapLastEnd = new Map();
+
+    const result = sorted.map((r) => {
+      const ing = ingredients.find((i) => i.id === r.ingredientId);
+
+      const previousEnd = mapLastEnd.get(r.ingredientId) ?? 0;
+      const adjust = r.io === "In" ? r.qty : -r.qty;
+      const newEnd = previousEnd + adjust;
+
+      mapLastEnd.set(r.ingredientId, newEnd);
+
+      const reasonText =
+        r.reason || r.remarks || (r.io === "In" ? "Stock In" : "Stock Out");
+
+      return {
+        id: r.id,
+        ts: r.ts,
+        reason: reasonText,
+        ingredientName: r.ingredientName || ing?.name || "Unknown",
+        category: ing?.category || "",
+        unit: ing?.type || "",
+        beginStock: previousEnd,
+        adjust,
+        endStock: newEnd,
+        unitCost: r.price,
+        totalValue: r.price * Math.abs(r.qty),
+      };
+    });
+
+    // 2) show newest first in the UI and PDF
+    return result.slice().reverse();
+  }, [activity, ingredients]);
+
+  /* SEARCH */
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return MOCK_ROWS;
+    if (!q) return computedRows;
 
-    return MOCK_ROWS.filter((row) => {
+    return computedRows.filter((row) => {
       return (
         row.ingredientName.toLowerCase().includes(q) ||
         row.category.toLowerCase().includes(q) ||
-        row.remarks.toLowerCase().includes(q)
+        (row.reason || "").toLowerCase().includes(q)
       );
     });
-  }, [search]);
+  }, [search, computedRows]);
 
+  /* PAGINATION */
   const paged = useMemo(() => {
     const start = pageState.page * pageState.rowsPerPage;
     return filtered.slice(start, start + pageState.rowsPerPage);
   }, [filtered, pageState]);
 
+  /* PDF EXPORT */
   const handlePdfExport = async () => {
-    const rowsForPdf = filtered.slice().sort((a, b) => {
-      return new Date(a.ts) - new Date(b.ts);
-    });
-    if (rowsForPdf.length === 0) return;
+    if (!filtered.length) return;
+
+    const rows = filtered.map((r) => [
+      formatDateTime(r.ts),
+      r.reason,
+      r.ingredientName,
+      r.category,
+      formatNumber(r.beginStock),
+      r.adjust >= 0 ? `+${formatNumber(r.adjust)}` : formatNumber(r.adjust),
+      formatNumber(r.endStock),
+      r.unit,
+      formatPhp(r.totalValue),
+    ]);
 
     const doc = new jsPDF({
       orientation: "portrait",
@@ -151,202 +171,64 @@ export default function InventoryHistoryPage() {
       format: "a4",
     });
 
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    let cursorY = 40;
-
-    // ---- Logo ----
     const img = new Image();
     img.src = logo;
+
     await new Promise((resolve) => {
       img.onload = resolve;
       img.onerror = resolve;
     });
 
-    const logoW = 80;
-    const logoH = 80;
-    const logoX = (pageWidth - logoW) / 2;
-    doc.addImage(img, "PNG", logoX, cursorY, logoW, logoH);
-    cursorY += logoH + 10;
+    doc.addImage(img, "PNG", 240, 20, 120, 120);
 
-    // ---- Title ----
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
-    doc.text("Inventory Report", pageWidth / 2, cursorY, { align: "center" });
-    cursorY += 28;
+    doc.text("Inventory History Report", 300, 170, { align: "center" });
 
-    // ---- Header info ----
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-
-    let headerRangeText = formatRangeForHeader(fromDate, toDate);
-    if (!fromDate && !toDate && rowsForPdf.length > 0) {
-      const first = rowsForPdf[0].ts;
-      const last = rowsForPdf[rowsForPdf.length - 1].ts;
-      headerRangeText = `${formatDateOnly(first)} – ${formatDateOnly(last)}`;
-    }
-
-    doc.text(`Date: ${headerRangeText}`, 72, cursorY);
-    cursorY += 14;
-    doc.text("Categories: All", 72, cursorY);
-    cursorY += 26;
-
-    // ---- Group rows by date ----
-    const groupedByDate = rowsForPdf.reduce((acc, row) => {
-      const label = formatDateOnly(row.ts);
-      if (!acc[label]) acc[label] = [];
-      acc[label].push(row);
-      return acc;
-    }, {});
-
-    const sectionHeaderFontSize = 12;
-
-    Object.entries(groupedByDate).forEach(([dateLabel, rows], idx) => {
-      if (idx > 0) {
-        cursorY += 18;
-      }
-
-      // page break if not enough space for heading + table
-      if (cursorY > pageHeight - 120) {
-        doc.addPage();
-        cursorY = 60;
-      }
-
-      // ---- Date heading ----
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(sectionHeaderFontSize);
-      doc.text(dateLabel, 72, cursorY);
-      cursorY += 6;
-
-      // ---- Table for that date ----
-      autoTable(doc, {
-        startY: cursorY + 8,
-        head: [
-          [
-            "Item Name",
-            "Employee",
-            "Category",
-            "Unit",
-            "Beg. Stock",
-            "Adj.",
-            "End Stock",
-            "Remarks",
-            "Unit Cost",
-            "Total Value",
-          ],
+    autoTable(doc, {
+      startY: 200,
+      head: [
+        [
+          "Date",
+          "Reason",
+          "Ingredient",
+          "Category",
+          "Current Stock",
+          "Adjustment",
+          "New Stock",
+          "Unit",
+          "Total Value",
         ],
-        body: rows.map((r) => [
-          r.ingredientName,
-          r.employee || "",
-          r.category,
-          r.unit,
-          formatNumber(r.beginStock),
-          r.adjust >= 0
-            ? `+${formatNumber(r.adjust)}`
-            : formatNumber(r.adjust),
-          formatNumber(r.endStock),
-          r.remarks,
-          formatNumberMoney(r.unitCost ?? 0),
-          formatNumberMoney(r.totalValue),
-        ]),
-        theme: "grid",
-        styles: {
-          font: "helvetica",
-          fontSize: 9,
-          cellPadding: 4,
-          lineColor: [210, 210, 210],
-          lineWidth: 0.5,
-        },
-        headStyles: {
-          fillColor: [245, 245, 245],
-          textColor: 40,
-          fontStyle: "bold",
-        },
-        bodyStyles: {
-          textColor: 50,
-        },
-        alternateRowStyles: {
-          fillColor: [252, 252, 252],
-        },
-        margin: { left: 72, right: 40 },
-        tableWidth: "auto",
-        columnStyles: {
-          4: { halign: "right" },
-          5: { halign: "right" },
-          6: { halign: "right" },
-          8: { halign: "right" },
-          9: { halign: "right" },
-        },
-      });
-
-      cursorY = doc.lastAutoTable.finalY || cursorY;
+      ],
+      body: rows,
+      theme: "grid",
+      styles: {
+        fontSize: 9,
+      },
+      headStyles: {
+        fillColor: [240, 240, 240],
+      },
     });
 
-    doc.save(`inventory-report-${headerRangeText.replace(/\s+/g, "-")}.pdf`);
+    doc.save("inventory-history.pdf");
   };
 
+  /* UI */
   return (
     <Box p={2} display="grid" gap={2}>
       <Typography variant="h5" fontWeight={800}>
-        Inventory History
+        Inventory Reports
       </Typography>
 
-      {/* Filter / Export bar */}
-      <Paper
-        sx={{
-          p: 2,
-          borderRadius: 3,
-          bgcolor: "#f9f1e7",
-        }}
-      >
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          alignItems={{ xs: "stretch", md: "center" }}
-          useFlexGap
-          flexWrap="wrap"
-        >
-          <FormControl size="small" sx={{ minWidth: 140 }}>
-            <InputLabel id="range-label">Range</InputLabel>
-            <Select
-              labelId="range-label"
-              label="Range"
-              value={range}
-              onChange={(e) => setRange(e.target.value)}
-            >
-              <MenuItem value="day">Day</MenuItem>
-              <MenuItem value="week">Week</MenuItem>
-              <MenuItem value="month">Month</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
-            </Select>
-          </FormControl>
-
+      {/* SEARCH + PDF BAR */}
+      <Paper sx={{ p: 2, borderRadius: 3 }}>
+        <Stack direction="row" spacing={2} alignItems="center">
           <TextField
             size="small"
-            type="date"
-            label="From"
-            InputLabelProps={{ shrink: true }}
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-          />
-
-          <TextField
-            size="small"
-            type="date"
-            label="To"
-            InputLabelProps={{ shrink: true }}
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-          />
-
-          <Box sx={{ flexGrow: 1 }} />
-
-          <TextField
-            size="small"
-            placeholder="Search ingredient, category, remarks"
+            placeholder="Search ingredient, category, reason"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            sx={{ minWidth: { xs: "100%", md: 260 }, maxWidth: 360 }}
+            sx={{ width: 300 }}
             InputProps={{
               startAdornment: (
                 <InputAdornment position="start">
@@ -358,8 +240,8 @@ export default function InventoryHistoryPage() {
 
           <Button
             variant="contained"
-            startIcon={<PictureAsPdfIcon />}
             color="error"
+            startIcon={<PictureAsPdfIcon />}
             onClick={handlePdfExport}
           >
             PDF
@@ -367,116 +249,55 @@ export default function InventoryHistoryPage() {
         </Stack>
       </Paper>
 
-      {/* Table */}
+      {/* TABLE */}
       <Paper sx={{ overflow: "hidden" }}>
-        <Box p={2} sx={{ minWidth: 0 }}>
-          <TableContainer
-            component={Paper}
-            elevation={0}
-            className="scroll-x"
-            sx={{ width: "100%", maxWidth: "100%" }}
-          >
-            <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 1000 }}>
-              <colgroup>
-                <col style={{ width: 170 }} /> {/* Date & Time */}
-                <col style={{ width: 130 }} /> {/* Remarks */}
-                <col style={{ width: 170 }} /> {/* Ingredient Name */}
-                <col style={{ width: 150 }} /> {/* Categories */}
-                <col style={{ width: 110 }} /> {/* Current Stock */}
-                <col style={{ width: 120 }} /> {/* Stock Adjustment */}
-                <col style={{ width: 110 }} /> {/* New Stock */}
-                <col style={{ width: 80 }} /> {/* Unit */}
-                <col style={{ width: 130 }} /> {/* Total Value */}
-              </colgroup>
-
+        <Box p={2}>
+          <TableContainer>
+            <Table stickyHeader sx={{ minWidth: 1000 }}>
               <TableHead>
                 <TableRow>
-                  <TableCell>
-                    <Typography fontWeight={600}>Date &amp; Time</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Remarks</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Ingredient Name</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Categories</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Current Stock</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Stock Adjustment</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>New Stock</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Unit</Typography>
-                  </TableCell>
-                  <TableCell>
-                    <Typography fontWeight={600}>Total Value</Typography>
-                  </TableCell>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Reason</TableCell>
+                  <TableCell>Ingredient</TableCell>
+                  <TableCell>Category</TableCell>
+                  <TableCell>Current Stock</TableCell>
+                  <TableCell>Stock Adjustment</TableCell>
+                  <TableCell>New Stock</TableCell>
+                  <TableCell>Unit</TableCell>
+                  <TableCell>Total Value</TableCell>
                 </TableRow>
               </TableHead>
 
               <TableBody>
                 {paged.map((row) => (
-                  <TableRow key={row.id} hover>
-                    <TableCell>
-                      <Typography fontWeight={600}>
-                        {formatDateTime(row.ts)}
-                      </Typography>
+                  <TableRow key={row.id}>
+                    <TableCell>{formatDateTime(row.ts)}</TableCell>
+                    <TableCell>{row.reason}</TableCell>
+                    <TableCell>{row.ingredientName}</TableCell>
+                    <TableCell>{row.category}</TableCell>
+                    <TableCell>{formatNumber(row.beginStock)}</TableCell>
+
+                    <TableCell
+                      style={{
+                        color: row.adjust >= 0 ? "green" : "red",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {row.adjust >= 0
+                        ? `+${formatNumber(row.adjust)}`
+                        : formatNumber(row.adjust)}
                     </TableCell>
-                    <TableCell>
-                      <Typography fontWeight={600}>{row.remarks}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography>{row.ingredientName}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography>{row.category}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography fontWeight={700}>
-                        {formatNumber(row.beginStock)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography
-                        fontWeight={700}
-                        color={
-                          row.adjust >= 0 ? "success.main" : "error.main"
-                        }
-                      >
-                        {row.adjust >= 0
-                          ? `+${formatNumber(row.adjust)}`
-                          : formatNumber(row.adjust)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography fontWeight={700}>
-                        {formatNumber(row.endStock)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography>{row.unit}</Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography>{formatPhp(row.totalValue)}</Typography>
-                    </TableCell>
+
+                    <TableCell>{formatNumber(row.endStock)}</TableCell>
+                    <TableCell>{row.unit}</TableCell>
+                    <TableCell>{formatPhp(row.totalValue)}</TableCell>
                   </TableRow>
                 ))}
 
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9}>
-                      <Box py={6} textAlign="center">
-                        <Typography variant="body2" color="text.secondary">
-                          No history records found.
-                        </Typography>
-                      </Box>
+                    <TableCell colSpan={9} align="center">
+                      <Typography>No history records found.</Typography>
                     </TableCell>
                   </TableRow>
                 )}
@@ -488,14 +309,14 @@ export default function InventoryHistoryPage() {
             component="div"
             count={filtered.length}
             page={pageState.page}
-            onPageChange={(_, p) =>
-              setPageState((s) => ({ ...s, page: p }))
-            }
             rowsPerPage={pageState.rowsPerPage}
+            onPageChange={(_, p) =>
+              setPageState({ ...pageState, page: p })
+            }
             onRowsPerPageChange={(e) =>
               setPageState({
                 page: 0,
-                rowsPerPage: parseInt(e.target.value, 10),
+                rowsPerPage: parseInt(e.target.value),
               })
             }
             rowsPerPageOptions={[5, 10, 25]}

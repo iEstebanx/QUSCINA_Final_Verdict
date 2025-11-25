@@ -1,5 +1,6 @@
 // QUSCINA_BACKOFFICE/Backend/src/routes/Inventory/invCategories.js
 const express = require("express");
+const { requireAuth } = require("../../auth/requireAuth");
 
 // Prefer DI, but fall back to shared pool
 let sharedDb = null;
@@ -27,7 +28,72 @@ module.exports = ({ db } = {}) => {
   const router = express.Router();
   router.use(express.json());
 
-  // Helpers
+  // 🔐 Require auth for all inventory category routes so audit logs have req.user
+  router.use(requireAuth);
+
+  // ----------------------------- AUDIT HELPERS ----------------------------- //
+
+  function getAuditUser(req) {
+    const u = req.user;
+    if (!u) {
+      return {
+        employee: "System",
+        role: "—",
+        id: null,
+      };
+    }
+
+    const employee =
+      u.employeeName ||
+      u.name ||
+      u.username ||
+      u.email ||
+      `Employee #${u.employeeId || u.sub || "Unknown"}`;
+
+    return {
+      employee,
+      role: u.role || "—",
+      id: u.employeeId || u.sub || null,
+    };
+  }
+
+  async function logInvCategoryAudit(db, req, { action, detail }) {
+    const u = getAuditUser(req);
+
+    const finalDetail = {
+      ...(detail || {}),
+      actionDetails: {
+        app: "backoffice",
+        module: "inventory-categories",
+        ...(detail?.actionDetails || {}),
+      },
+      meta: {
+        app: "backoffice",
+        userId: u.id,
+        role: u.role,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"] || "",
+        ...(detail?.meta || {}),
+      },
+    };
+
+    await db.query(
+      `INSERT INTO audit_trail (employee, role, action, detail)
+       VALUES (?, ?, ?, ?)`,
+      [u.employee, u.role, action, JSON.stringify(finalDetail)]
+    );
+  }
+
+  async function logInvCategoryAuditSafe(db, req, payload) {
+    try {
+      await logInvCategoryAudit(db, req, payload);
+    } catch (err) {
+      console.error("[inventory/inv-categories] failed to write audit trail:", err);
+    }
+  }
+
+  // ------------------------------- Helpers --------------------------------- //
+
   async function getCategoryById(id) {
     const rows = await db.query(
       `SELECT id, name, name_lower, active, created_at, updated_at
@@ -65,18 +131,29 @@ module.exports = ({ db } = {}) => {
       activityCount = Number(act?.[0]?.cnt || 0);
     }
 
+    const ingredientCount = ingr.length
+      ? Number(
+          await db
+            .query(
+              `SELECT COUNT(*) AS cnt
+                 FROM inventory_ingredients
+                WHERE category_lower = ?`,
+              [cat.name_lower]
+            )
+            .then(r => r?.[0]?.cnt || 0)
+        )
+      : 0;
+
     return {
       exists: true,
-      ingredientCount: ingr.length ? Number(await db.query(
-        `SELECT COUNT(*) AS cnt
-           FROM inventory_ingredients
-          WHERE category_lower = ?`, [cat.name_lower]
-      ).then(r => r?.[0]?.cnt || 0)) : 0,
+      ingredientCount,
       activityCount,
       sampleIngredients: ingr.map(r => String(r.name || "")),
       category: { id: String(cat.id), name: cat.name }
     };
   }
+
+  // ------------------------------- Routes ---------------------------------- //
 
   // GET /api/inventory/inv-categories
   router.get("/", async (_req, res) => {
@@ -140,6 +217,23 @@ module.exports = ({ db } = {}) => {
         updatedAt: toISO(row.updated_at),
         active: row.active ? 1 : 0,
       };
+
+      // 🔹 Audit: Inventory Category Created
+      await logInvCategoryAuditSafe(db, req, {
+        action: "Inventory Category Created",
+        detail: {
+          statusMessage: `Inventory category "${row.name}" created.`,
+          actionDetails: {
+            actionType: "create",
+            categoryId: id,
+            name: row.name,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: row.name }],
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.status(201).json({ ok: true, category });
     } catch (e) {
@@ -277,13 +371,13 @@ module.exports = ({ db } = {}) => {
       // Try to detect a real pool to use a transaction; otherwise fallback
       let result;
       if (typeof db.getConnection === "function") {
-        // Your env DOES NOT have this right now, but keeping this branch future-proof
+        // (future-proof) direct pool
         result = await renameWithTxn(db, id, newName, oldNameLower, newNameLower);
       } else if (db.pool && typeof db.pool.getConnection === "function") {
         // Some wrappers expose the pool on .pool
         result = await renameWithTxn(db.pool, id, newName, oldNameLower, newNameLower);
       } else {
-        // Fallback: sequential updates (no BEGIN/COMMIT, still works and avoids the prepared-stmt error)
+        // Fallback: sequential updates
         result = await renameWithoutTxn(id, newName, oldNameLower, newNameLower);
       }
 
@@ -296,6 +390,26 @@ module.exports = ({ db } = {}) => {
         updatedAt: toISO(after.updated_at),
         active: after.active ? 1 : 0,
       };
+
+      // 🔹 Audit: Inventory Category Updated
+      await logInvCategoryAuditSafe(db, req, {
+        action: "Inventory Category Updated",
+        detail: {
+          statusMessage: `Inventory category "${after.name}" updated.`,
+          actionDetails: {
+            actionType: "update",
+            categoryId: id,
+            oldName: before.name,
+            newName: after.name,
+            affectedIngredients: result.affectedIngredients,
+            itemsSample: result.sample,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: after.name }],
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.json({
         ok: true,
@@ -330,7 +444,29 @@ module.exports = ({ db } = {}) => {
         });
       }
 
+      const catName = usage.category?.name || null;
+
       await db.query(`DELETE FROM inventory_categories WHERE id = ?`, [id]);
+
+      // 🔹 Audit: Inventory Category Deleted
+      await logInvCategoryAuditSafe(db, req, {
+        action: "Inventory Category Deleted",
+        detail: {
+          statusMessage: catName
+            ? `Inventory category "${catName}" deleted.`
+            : `Inventory category ID ${id} deleted.`,
+          actionDetails: {
+            actionType: "delete",
+            categoryId: id,
+            name: catName,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: catName }],
+            statusChange: "NONE",
+          },
+        },
+      });
+
       return res.json({ ok: true, deleted: 1 });
     } catch (e) {
       return res.status(400).json({ ok: false, error: e?.message || "Delete failed" });
@@ -347,6 +483,7 @@ module.exports = ({ db } = {}) => {
 
       const deletable = [];
       const blocked = [];
+      const deletedItemsForAudit = [];
 
       for (const id of ids) {
         const usage = await categoryUsageById(id);
@@ -355,13 +492,37 @@ module.exports = ({ db } = {}) => {
           blocked.push({ id: String(id), name: usage?.category?.name, usage });
         } else {
           deletable.push(id);
+          deletedItemsForAudit.push({
+            id: String(id),
+            name: usage?.category?.name || null,
+          });
         }
       }
 
       if (deletable.length) {
         const placeholders = deletable.map(() => "?").join(",");
-        await db.query(`DELETE FROM inventory_categories WHERE id IN (${placeholders})`, deletable);
+        await db.query(
+          `DELETE FROM inventory_categories WHERE id IN (${placeholders})`,
+          deletable
+        );
       }
+
+      // 🔹 Audit: Inventory Categories Bulk Deleted
+      await logInvCategoryAuditSafe(db, req, {
+        action: "Inventory Categories Bulk Deleted",
+        detail: {
+          statusMessage: `Deleted ${deletable.length} inventory category(ies).`,
+          actionDetails: {
+            actionType: "bulk-delete",
+            deletedIds: deletable,
+            blocked,
+          },
+          affectedData: {
+            items: deletedItemsForAudit,
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.json({ ok: true, deleted: deletable.length, blocked });
     } catch (e) {

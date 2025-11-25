@@ -20,10 +20,6 @@ import {
   Chip,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
-import Inventory2Icon from "@mui/icons-material/Inventory2";
-import LocalOfferIcon from "@mui/icons-material/LocalOffer";
-import RestaurantMenuIcon from "@mui/icons-material/RestaurantMenu";
-import HistoryIcon from "@mui/icons-material/History";
 
 // export once and reuse everywhere
 export const APPBAR_HEIGHT = 64;

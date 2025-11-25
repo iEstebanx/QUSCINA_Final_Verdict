@@ -1,4 +1,4 @@
-// Frontend/src/pages/Settings/InventorySettings/InventorySettingsPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/Settings/InventorySettings/InventorySettingsPage.jsx
 import { useEffect, useMemo, useState } from "react";
 import {
   Box,
@@ -296,7 +296,6 @@ export default function InventorySettingsPage() {
                         }
                         onBlur={() => handleLowBlur(item)}
                         sx={{ width: 90 }}
-                        helperText="0 = disabled"
                       />
                     </TableCell>
                     <TableCell align="left">

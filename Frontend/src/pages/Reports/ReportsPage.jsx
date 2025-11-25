@@ -143,28 +143,22 @@ const paymentsByRange = {
   days: [
     { type: "Cash", tx: 20, payAmt: 2784, refundTx: 0, refundAmt: 0, net: 2784 },
     { type: "Gcash", tx: 9, payAmt: 1948, refundTx: 0, refundAmt: 0, net: 1948 },
-    { type: "Maya", tx: 1, payAmt: 835, refundTx: 0, refundAmt: 0, net: 835 },
-    { type: "Card", tx: 0, payAmt: 0, refundTx: 0, refundAmt: 0, net: 0 },
   ],
   weeks: [
-    { type: "Card", tx: 8, payAmt: 12000, refundTx: 0, refundAmt: 0, net: 12000 },
     { type: "Cash", tx: 95, payAmt: 78000, refundTx: 2, refundAmt: 1500, net: 76500 },
-    { type: "Gcash/Maya", tx: 30, payAmt: 26000, refundTx: 1, refundAmt: 500, net: 25500 },
+    { type: "Gcash", tx: 30, payAmt: 26000, refundTx: 1, refundAmt: 500, net: 25500 },
   ],
   monthly: [
-    { type: "Card", tx: 28, payAmt: 42000, refundTx: 2, refundAmt: 2000, net: 40000 },
     { type: "Cash", tx: 410, payAmt: 320000, refundTx: 6, refundAmt: 4800, net: 315200 },
-    { type: "Gcash/Maya", tx: 130, payAmt: 98000, refundTx: 4, refundAmt: 3000, net: 95000 },
+    { type: "Gcash", tx: 130, payAmt: 98000, refundTx: 4, refundAmt: 3000, net: 95000 },
   ],
   quarterly: [
-    { type: "Card", tx: 80, payAmt: 130000, refundTx: 5, refundAmt: 8000, net: 122000 },
     { type: "Cash", tx: 1200, payAmt: 980000, refundTx: 18, refundAmt: 14000, net: 966000 },
-    { type: "Gcash/Maya", tx: 400, payAmt: 320000, refundTx: 12, refundAmt: 10000, net: 310000 },
+    { type: "Gcash", tx: 400, payAmt: 320000, refundTx: 12, refundAmt: 10000, net: 310000 },
   ],
   yearly: [
-    { type: "Card", tx: 260, payAmt: 430000, refundTx: 14, refundAmt: 26000, net: 404000 },
     { type: "Cash", tx: 4800, payAmt: 3900000, refundTx: 60, refundAmt: 60000, net: 3840000 },
-    { type: "Gcash/Maya", tx: 1500, payAmt: 1200000, refundTx: 40, refundAmt: 26000, net: 1174000 },
+    { type: "Gcash", tx: 1500, payAmt: 1200000, refundTx: 40, refundAmt: 26000, net: 1174000 },
   ],
 };
 
@@ -641,7 +635,6 @@ ${excelData.categorySeries
         [
           "Date",
           "Total Orders",
-          "Retail(VAT 12%)",
           "Discounted Orders",
           "Total Revenue(Discount Included)",
           "Total Profit",
@@ -1326,7 +1319,7 @@ function ReceiptPreview({ order }) {
       <Divider />
 
       <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">Recipient</Typography>
+        <Typography variant="body2">Customer Name</Typography>
         <Typography variant="body2" fontWeight={700}>
           KYLA
         </Typography>

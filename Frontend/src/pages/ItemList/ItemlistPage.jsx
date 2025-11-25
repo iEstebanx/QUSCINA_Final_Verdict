@@ -10,6 +10,7 @@ import {
 import { useTheme } from "@mui/material/styles";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import AddIcon from "@mui/icons-material/Add";
+import SearchIcon from "@mui/icons-material/Search";
 import { useAlert } from "@/context/Snackbar/AlertContext";
 
 /* -------------------------- Name validation helpers -------------------------- */
@@ -62,6 +63,7 @@ export default function ItemlistPage() {
 
   // table filter
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [search, setSearch] = useState("");
 
   // data
   const [rows, setRows] = useState([]);
@@ -205,7 +207,9 @@ export default function ItemlistPage() {
   }, [rows]);
 
   // reset page when data/filter/page-size changes
-  useEffect(() => { setPage(0); }, [qs, rowsPerPage, rows.length]);
+  useEffect(() => {
+    setPage(0);
+  }, [qs, rowsPerPage, rows.length, search]);
 
   useEffect(() => {
     // When imagePreview changes, this cleanup will revoke the PREVIOUS blob URL
@@ -614,13 +618,32 @@ export default function ItemlistPage() {
     }
   }
 
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const name = String(r.name || "").toLowerCase();
+      const cat  = String(r.categoryName || "").toLowerCase();
+      return name.includes(q) || cat.includes(q);
+    });
+  }, [rows, search]);
+
   // selection helpers
-  const allChecked = rows.length > 0 && rows.every(r => selected.includes(r.id));
-  const someChecked = rows.some(r => selected.includes(r.id)) && !allChecked;
+  const allChecked =
+    filteredRows.length > 0 &&
+    filteredRows.every((r) => selected.includes(r.id));
+
+  const someChecked =
+    filteredRows.some((r) => selected.includes(r.id)) && !allChecked;
+
   const toggleAll = () => {
-    const ids = rows.map(r => r.id);
-    const everyIncluded = ids.every(id => selected.includes(id));
-    setSelected(s => (everyIncluded ? s.filter(id => !ids.includes(id)) : Array.from(new Set([...s, ...ids]))));
+    const ids = filteredRows.map((r) => r.id);
+    const everyIncluded = ids.every((id) => selected.includes(id));
+    setSelected((s) =>
+      everyIncluded
+        ? s.filter((id) => !ids.includes(id))
+        : Array.from(new Set([...s, ...ids]))
+    );
   };
   const toggleOne = (id) => {
     setSelected(s => (s.includes(id) ? s.filter(x => x !== id) : [...s, id]));
@@ -783,7 +806,6 @@ export default function ItemlistPage() {
               onClick={() => {
                 const nextF = { ...emptyForm };
 
-                // Set initial state explicitly
                 setF(nextF);
                 setItemIngredients([]);
                 setSaveErr("");
@@ -791,7 +813,6 @@ export default function ItemlistPage() {
                 setCreateShowErrors(false);
                 setCreateTouched({ category: false });
 
-                // Snapshot from what we *just* set
                 initialCreateRef.current = snapshotFormFrom(nextF, []);
                 createTouchedRef.current = false;
               }}
@@ -802,9 +823,32 @@ export default function ItemlistPage() {
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
 
+            {/* 🔎 NEW search field (left of Category dropdown) */}
+            <TextField
+              size="small"
+              placeholder="Search item or category"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              sx={{
+                flexGrow: 1,
+                minWidth: 200,
+                maxWidth: 360,
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+            />
+
             <FormControl
               size="small"
-              sx={{ minWidth: { xs: 160, sm: 200 }, flex: { xs: "1 1 160px", sm: "0 0 auto" } }}
+              sx={{
+                minWidth: { xs: 160, sm: 200 },
+                flexShrink: 0,
+              }}
             >
               <InputLabel id="itemlist-category-label">Category</InputLabel>
               <Select
@@ -964,7 +1008,7 @@ export default function ItemlistPage() {
           {/* Pagination */}
           <TablePagination
             component="div"
-            count={rows.length}
+            count={filteredRows.length}
             page={page}
             onPageChange={handleChangePage}
             rowsPerPage={rowsPerPage}
@@ -1162,7 +1206,9 @@ export default function ItemlistPage() {
                     <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                     <TableCell data-label="Qty" align="center">Qty</TableCell>
-                    <TableCell data-label="Unit Cost" align="center">Unit Cost</TableCell>
+                    <TableCell data-label="Costing Per Pack" align="center">
+                      Costing Per Pack
+                    </TableCell>
                     <TableCell data-label="Action" align="center">Action</TableCell>
                   </TableRow>
                 </TableHead>
@@ -1294,14 +1340,17 @@ export default function ItemlistPage() {
                         </TableCell>
 
                         <TableCell
-                          data-label="Unit Cost"
+                          data-label="Costing Per Pack"
                           align="center"
                           sx={{ minWidth: 112 }}
                         >
                           <TextField
                             size="small"
-                            // display the computed cost (qty * unitPrice)
-                            value={row.cost != null ? row.cost : ""}
+                            // Costing Per Pack (unit cost copied from Inventory)
+                            value={
+                              row.price != null
+                                ? Number(row.price).toFixed(2)
+                                : ""}
                             inputMode="decimal"
                             placeholder="0.00"
                             fullWidth
@@ -1601,7 +1650,7 @@ export default function ItemlistPage() {
                       <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                       <TableCell data-label="Qty" align="center">Qty</TableCell>
-                      <TableCell data-label="Unit Cost" align="center">Unit Cost</TableCell>
+                      <TableCell data-label="Costing Per Pack" align="center">Costing Per Pack</TableCell>
                       <TableCell data-label="Action" align="center">Action</TableCell>
                     </TableRow>
                   </TableHead>
@@ -1733,14 +1782,17 @@ export default function ItemlistPage() {
                           </TableCell>
 
                           <TableCell
-                            data-label="Unit Cost"
+                            data-label="Costing Per Pack"
                             align="center"
                             sx={{ minWidth: 112 }}
                           >
                             <TextField
                               size="small"
-                              // display the computed cost (qty * unitPrice)
-                              value={row.cost != null ? row.cost : ""}
+                              // Costing Per Pack (unit cost copied from Inventory)
+                              value={
+                                row.price != null
+                                  ? Number(row.price).toFixed(2)
+                                  : ""}
                               inputMode="decimal"
                               placeholder="0.00"
                               fullWidth

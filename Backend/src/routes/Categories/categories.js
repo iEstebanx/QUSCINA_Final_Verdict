@@ -1,20 +1,27 @@
 // QUSCINA_BACKOFFICE/Backend/src/routes/Categories/categories.js
 const express = require("express");
 const multer = require("multer");
+const { requireAuth } = require("../../auth/requireAuth");
 
 // Prefer DI, but fall back to shared pool
 let sharedDb = null;
 try {
   sharedDb = require("../../shared/db/mysql").db;
-} catch { /* ignore until DI provides db */ }
+} catch {
+  /* ignore until DI provides db */
+}
 
 module.exports = ({ db } = {}) => {
   db = db || sharedDb;
   if (!db) throw new Error("DB pool not available");
 
   const router = express.Router();
+
   // Ensure JSON body is parsed for DELETE (bulk) even if app-level parser changes.
   router.use(express.json());
+
+  // 🔐 All category routes require auth so audit logs can use req.user
+  router.use(requireAuth);
 
   /* ----------------------------- Multer config ----------------------------- */
   const upload = multer({
@@ -49,6 +56,8 @@ module.exports = ({ db } = {}) => {
     return true;
   }
 
+  const SAMPLE_LIMIT = 6;
+
   function toSafeLimit(v, max = SAMPLE_LIMIT) {
     const n = Number(v);
     if (!Number.isFinite(n) || n <= 0) return max;
@@ -58,7 +67,6 @@ module.exports = ({ db } = {}) => {
   /* --------- Items.category* column auto-detect (camel vs snake) ---------- */
   let _itemsTableKnownMissing = false;
   let ITEMS_CATEGORY_COL = "categoryId"; // default expectation in your schema
-  const SAMPLE_LIMIT = 6;
 
   async function _resolveItemsCategoryColumn(db) {
     try {
@@ -187,6 +195,68 @@ module.exports = ({ db } = {}) => {
       return map;
     }
   }
+
+  /* ------------------------- AUDIT TRAIL HELPERS ------------------------- */
+
+  function getAuditUser(req) {
+    const u = req.user;
+    if (!u) {
+      return {
+        employee: "System",
+        role: "—",
+        id: null,
+      };
+    }
+
+    const employee =
+      u.employeeName ||
+      u.name ||
+      u.username ||
+      u.email ||
+      `Employee #${u.employeeId || u.sub || "Unknown"}`;
+
+    return {
+      employee,
+      role: u.role || "—",
+      id: u.employeeId || u.sub || null,
+    };
+  }
+
+  async function logCategoryAudit(db, req, { action, detail }) {
+    const u = getAuditUser(req);
+
+    const finalDetail = {
+      ...(detail || {}),
+      actionDetails: {
+        app: "backoffice",
+        module: "categories",
+        ...(detail?.actionDetails || {}),
+      },
+      meta: {
+        app: "backoffice",
+        userId: u.id,
+        role: u.role,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"] || "",
+        ...(detail?.meta || {}),
+      },
+    };
+
+    await db.query(
+      `INSERT INTO audit_trail (employee, role, action, detail)
+       VALUES (?, ?, ?, ?)`,
+      [u.employee, u.role, action, JSON.stringify(finalDetail)]
+    );
+  }
+
+  async function logCategoryAuditSafe(db, req, payload) {
+    try {
+      await logCategoryAudit(db, req, payload);
+    } catch (err) {
+      console.error("[categories] failed to write audit trail:", err);
+    }
+  }
+
   /* --------------------------------- Routes -------------------------------- */
 
   /** GET /api/categories */
@@ -236,7 +306,9 @@ module.exports = ({ db } = {}) => {
       if (req.file && req.file.buffer && req.file.mimetype) {
         const raw = req.file.buffer;
         if (raw.length > MAX_RAW_IMAGE_BYTES) {
-          return res.status(413).json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
+          return res
+            .status(413)
+            .json({ ok: false, error: "Image too large. Please upload ≤ 600 KB." });
         }
         const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
         await db.query(
@@ -245,6 +317,23 @@ module.exports = ({ db } = {}) => {
         );
         imageUrl = dataUrl;
       }
+
+      // 🔹 Audit: Category Created
+      await logCategoryAuditSafe(db, req, {
+        action: "Category Created",
+        detail: {
+          statusMessage: `Category "${nameRaw}" created.`,
+          actionDetails: {
+            actionType: "create",
+            categoryId: id,
+            name: nameRaw,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: nameRaw }],
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.status(201).json({ ok: true, id: String(id), imageUrl });
     } catch (e) {
@@ -306,12 +395,35 @@ module.exports = ({ db } = {}) => {
       let sample = [];
       if (nameChanged) {
         const rows = await db.query(
-          `SELECT COUNT(*) AS n FROM items WHERE categoryId = ?`,
+          `SELECT COUNT(*) AS n FROM items WHERE ${ITEMS_CATEGORY_COL} = ?`,
           [id]
         );
         affectedItems = Number(rows?.[0]?.n || 0);
         sample = await sampleItemNames(id, 5); // <= add up to 5 names
       }
+
+      // 🔹 Audit: Category Updated
+      const statusMessage = newName
+        ? `Category "${newName}" updated.`
+        : `Category ID ${id} updated.`;
+
+      await logCategoryAuditSafe(db, req, {
+        action: "Category Updated",
+        detail: {
+          statusMessage,
+          actionDetails: {
+            actionType: "update",
+            categoryId: id,
+            newName,
+            affectedItems,
+            itemsSample: sample,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: newName }],
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.json({ ok: true, affectedItems, sample });
     } catch (e) {
@@ -329,7 +441,8 @@ module.exports = ({ db } = {}) => {
   router.delete("/:id", async (req, res, next) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "invalid id" });
+      if (!Number.isFinite(id))
+        return res.status(400).json({ ok: false, error: "invalid id" });
 
       const inUse = await categoryUsageCount(id);
       if (inUse > 0) {
@@ -342,7 +455,41 @@ module.exports = ({ db } = {}) => {
         });
       }
 
+      // grab name before delete for nicer message (best-effort)
+      let catName = null;
+      try {
+        const rows = await db.query(
+          `SELECT name FROM categories WHERE id = ? LIMIT 1`,
+          [id]
+        );
+        catName = rows?.[0]?.name || null;
+      } catch {
+        /* ignore */
+      }
+
       await db.query(`DELETE FROM categories WHERE id = ?`, [id]);
+
+      // 🔹 Audit: Category Deleted
+      const statusMessage = catName
+        ? `Category "${catName}" deleted.`
+        : `Category ID ${id} deleted.`;
+
+      await logCategoryAuditSafe(db, req, {
+        action: "Category Deleted",
+        detail: {
+          statusMessage,
+          actionDetails: {
+            actionType: "delete",
+            categoryId: id,
+            name: catName,
+          },
+          affectedData: {
+            items: [{ id: String(id), name: catName }],
+            statusChange: "NONE",
+          },
+        },
+      });
+
       return res.json({ ok: true, deleted: 1 });
     } catch (e) {
       next(e);
@@ -386,6 +533,23 @@ module.exports = ({ db } = {}) => {
         const placeholders = deletable.map(() => "?").join(",");
         await db.query(`DELETE FROM categories WHERE id IN (${placeholders})`, deletable);
       }
+
+      // 🔹 Audit: Categories Bulk Deleted
+      await logCategoryAuditSafe(db, req, {
+        action: "Categories Bulk Deleted",
+        detail: {
+          statusMessage: `Deleted ${deletable.length} category(ies).`,
+          actionDetails: {
+            actionType: "bulk-delete",
+            deletedIds: deletable,
+            blocked,
+          },
+          affectedData: {
+            items: deletable.map((id) => ({ id: String(id) })),
+            statusChange: "NONE",
+          },
+        },
+      });
 
       return res.json({ ok: true, deleted: deletable.length, blocked });
     } catch (e) {

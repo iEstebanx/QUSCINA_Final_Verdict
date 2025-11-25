@@ -1,4 +1,4 @@
-// Frontend/src/components/Sidebar/Sidebar.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/components/Sidebar/Sidebar.jsx
 import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
 import { NavLink, useLocation } from "react-router-dom";
@@ -19,7 +19,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import RestaurantMenuIcon from "@mui/icons-material/RestaurantMenu";
-import ListAltIcon from "@mui/icons-material/ListAlt";
+// import ListAltIcon from "@mui/icons-material/ListAlt"; // ⬅️ no longer needed
 import CategoryIcon from "@mui/icons-material/Category";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
@@ -227,10 +227,7 @@ function SidebarContent({ collapsed }) {
 
   const path = location.pathname;
 
-  const isMenuActive = useMemo(() => path.startsWith("/menu"), [path]);
-  const isInventoryActive = useMemo(() => path.startsWith("/inventory"), [path]);
-
-  // Reports is active for /reports AND for the existing inventory-history route
+  // Menu no longer needs group active state
   const isReportsActive = useMemo(
     () =>
       path.startsWith("/reports") ||
@@ -240,27 +237,18 @@ function SidebarContent({ collapsed }) {
 
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
-  const [openMenu, setOpenMenu] = useState(isMenuActive);
   const [openReports, setOpenReports] = useState(isReportsActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
   useEffect(() => {
     if (!collapsed) {
-      setOpenMenu(isMenuActive);
       setOpenReports(isReportsActive);
       setOpenSettings(isSettingsActive);
     }
-  }, [
-    collapsed,
-    isMenuActive,
-    isInventoryActive,
-    isReportsActive,
-    isSettingsActive,
-  ]);
+  }, [collapsed, isReportsActive, isSettingsActive]);
 
   useEffect(() => {
     if (collapsed) {
-      setOpenMenu(false);
       setOpenReports(false);
       setOpenSettings(false);
     }
@@ -310,31 +298,15 @@ function SidebarContent({ collapsed }) {
           collapsed={collapsed}
         />
 
-        {/* Menu group */}
-        <NavGroup
+        {/* Menu as direct link to Item List */}
+        <NavLeaf
+          to="/menu/items"
           label="Menu"
           icon={RestaurantMenuIcon}
           collapsed={collapsed}
-          open={openMenu}
-          onToggle={() => setOpenMenu((v) => !v)}
-          active={isMenuActive}
-        >
-          <NavLeaf
-            to="/menu/items"
-            label="Item List"
-            icon={ListAltIcon}
-            collapsed={collapsed}
-          />
-          {/* Categories moved under Settings */}
-          <NavLeaf
-            to="/menu/discounts"
-            label="Discounts"
-            icon={LocalOfferIcon}
-            collapsed={collapsed}
-          />
-        </NavGroup>
+        />
 
-        {/* Reports group: Reports + Inventory History */}
+        {/* Reports group: Reports + Inventory Reports */}
         <NavGroup
           label="Reports"
           icon={BarChartIcon}
@@ -352,7 +324,7 @@ function SidebarContent({ collapsed }) {
           />
           <NavLeaf
             to="/reports/inventory-history"
-            label="Inventory History"
+            label="Inventory Reports"
             icon={HistoryIcon}
             collapsed={collapsed}
           />
@@ -391,7 +363,15 @@ function SidebarContent({ collapsed }) {
             collapsed={collapsed}
           />
 
-          {/* 4. Payment Types */}
+          {/* 4. Discounts */}
+          <NavLeaf
+            to="/settings/discounts"
+            label="Discounts"
+            icon={LocalOfferIcon}
+            collapsed={collapsed}
+          />
+
+          {/* 5. Payment Types */}
           <NavLeaf
             to="/settings/payment-types"
             label="Payment Types"
@@ -399,7 +379,7 @@ function SidebarContent({ collapsed }) {
             collapsed={collapsed}
           />
 
-          {/* 5. Authorization Pins */}
+          {/* 6. Authorization Pins */}
           <NavLeaf
             to="/settings/authorization-pins"
             label="Authorization Pins"
@@ -407,7 +387,7 @@ function SidebarContent({ collapsed }) {
             collapsed={collapsed}
           />
 
-          {/* 6. Categories (Menu + Inventory) */}
+          {/* 7. Categories (Menu + Inventory) */}
           <NavLeaf
             to="/settings/categories"
             label="Categories"

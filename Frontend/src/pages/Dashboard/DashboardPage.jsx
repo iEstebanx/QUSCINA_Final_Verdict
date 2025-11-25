@@ -28,16 +28,11 @@ import {
   Grid,
 } from "@mui/material";
 import {
-  XAxis,
-  YAxis,
-  CartesianGrid,
   Tooltip,
   PieChart,
   Pie,
   Cell,
   ResponsiveContainer,
-  BarChart,
-  Bar,
 } from "recharts";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
 import TrendingDownIcon from "@mui/icons-material/TrendingDown";
@@ -79,7 +74,6 @@ const bestSellersByRange = {
 const paymentDataByRange = {
   days: [
     { name: "Cash", value: 62.5, amount: 1738, transactions: 25 },
-    { name: "Gcash/Maya", value: 25, amount: 695, transactions: 18 },
     { name: "Card", value: 12.5, amount: 347, transactions: 7 },
   ],
   // ... other ranges
@@ -90,7 +84,6 @@ const metricsData = {
   days: {
     totalSales: 2780,
     totalOrders: 52,
-    profit: 0,
     averageOrder: 53.46,
     customerCount: 45,
     growth: 12.5,
@@ -153,34 +146,6 @@ const QuickStats = ({ metrics }) => (
           </Typography>
           <Typography variant="caption" color="text.secondary">
             Total Orders
-          </Typography>
-        </CardContent>
-      </Card>
-    </Grid>
-
-    {/* ⭐ NEW — PROFIT (inserted here) */}
-    <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: "center", p: 1 }}>
-        <CardContent>
-          <Typography variant="h6" fontWeight="bold" color="warning.main">
-            {peso(metrics.profit)}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Profit
-          </Typography>
-        </CardContent>
-      </Card>
-    </Grid>
-
-    {/* Avg Order */}
-    <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: "center", p: 1 }}>
-        <CardContent>
-          <Typography variant="h6" fontWeight="bold" color="success.main">
-            {peso(metrics.averageOrder)}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Avg Order
           </Typography>
         </CardContent>
       </Card>
@@ -508,60 +473,56 @@ export default function DashboardPage() {
           </Paper>
         </Box>
 
-
-        {/* ============================ Payment Methods ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", md: "span 4" } }}>
+        {/* ============================ Best Sellers ============================ */}
+        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
           <Paper sx={cardSx}>
             <Box sx={cardHeaderSx}>
-              <PaymentIcon color="primary" />
+              <TrendingUpIcon color="primary" />
               <Typography variant="h6" fontWeight={800}>
-                Payment Methods
+                Best Sellers
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                <Box sx={{ height: 200 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={paymentData}
-                        dataKey="value"
-                        nameKey="name"
-                        outerRadius="80%"
-                        label={({ name, value }) => `${name} ${value}%`}
-                      >
-                        {paymentData.map((_, i) => (
-                          <Cell
-                            key={i}
-                            fill={[theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3]}
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(v) => [`${v}%`, 'Percentage']} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </Box>
-                <Stack spacing={1} sx={{ mt: 1 }}>
-                  {paymentData.map((d, i) => (
-                    <Box key={d.name} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Typography variant="body2">
-                        <Box component="span" sx={{ 
-                          width: 8, 
-                          height: 8, 
-                          borderRadius: '50%', 
-                          display: 'inline-block',
-                          backgroundColor: [theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3],
-                          mr: 1 
-                        }} />
-                        {d.name}
+              <List dense sx={{ flex: 1 }}>
+                {bestSellers.map((item, i) => (
+                <ListItem key={i} disableGutters sx={{ py: 1 }}>
+                  {/* Rank number */}
+                  <Avatar
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      mr: 2,
+                      bgcolor: theme.palette.primary.main,
+                      fontSize: 14,
+                    }}
+                  >
+                    {i + 1}
+                  </Avatar>
+
+                  {/* Item name */}
+                  <ListItemText
+                    primary={
+                      <Typography variant="body2" fontWeight="medium">
+                        {item.name}
                       </Typography>
-                      <Typography variant="body2" fontWeight="bold">
-                        {peso(d.amount)} ({d.transactions} txn)
-                      </Typography>
-                    </Box>
-                  ))}
-                </Stack>
-              </Box>
+                    }
+                  />
+
+                  {/* Orders + Trend Icon on the RIGHT */}
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 90 }}>
+                    <Typography variant="body2" fontWeight="bold">
+                      {item.orders} orders
+                    </Typography>
+
+                    {item.trend === "up" ? (
+                      <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
+                    ) : (
+                      <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
+                    )}
+                  </Box>
+                </ListItem>
+                ))}
+              </List>
             </Box>
           </Paper>
         </Box>
@@ -656,59 +617,63 @@ export default function DashboardPage() {
           </Paper>
         </Box>
 
-        {/* ============================ Best Sellers ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
+        {/* ============================ Payment Methods ============================ */}
+        <Box sx={{ gridColumn: { xs: "span 12", md: "span 4" } }}>
           <Paper sx={cardSx}>
             <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
+              <PaymentIcon color="primary" />
               <Typography variant="h6" fontWeight={800}>
-                Best Sellers
+                Payment Methods
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <List dense sx={{ flex: 1 }}>
-                {bestSellers.map((item, i) => (
-                <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                  {/* Rank number */}
-                  <Avatar
-                    sx={{
-                      width: 32,
-                      height: 32,
-                      mr: 2,
-                      bgcolor: theme.palette.primary.main,
-                      fontSize: 14,
-                    }}
-                  >
-                    {i + 1}
-                  </Avatar>
-
-                  {/* Item name */}
-                  <ListItemText
-                    primary={
-                      <Typography variant="body2" fontWeight="medium">
-                        {item.name}
+              <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                <Box sx={{ height: 200 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={paymentData}
+                        dataKey="value"
+                        nameKey="name"
+                        outerRadius="80%"
+                        label={({ name, value }) => `${name} ${value}%`}
+                      >
+                        {paymentData.map((_, i) => (
+                          <Cell
+                            key={i}
+                            fill={[theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(v) => [`${v}%`, 'Percentage']} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </Box>
+                <Stack spacing={1} sx={{ mt: 1 }}>
+                  {paymentData.map((d, i) => (
+                    <Box key={d.name} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="body2">
+                        <Box component="span" sx={{ 
+                          width: 8, 
+                          height: 8, 
+                          borderRadius: '50%', 
+                          display: 'inline-block',
+                          backgroundColor: [theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3],
+                          mr: 1 
+                        }} />
+                        {d.name}
                       </Typography>
-                    }
-                  />
-
-                  {/* Orders + Trend Icon on the RIGHT */}
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 90 }}>
-                    <Typography variant="body2" fontWeight="bold">
-                      {item.orders} orders
-                    </Typography>
-
-                    {item.trend === "up" ? (
-                      <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
-                    ) : (
-                      <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
-                    )}
-                  </Box>
-                </ListItem>
-                ))}
-              </List>
+                      <Typography variant="body2" fontWeight="bold">
+                        {peso(d.amount)} ({d.transactions} txn)
+                      </Typography>
+                    </Box>
+                  ))}
+                </Stack>
+              </Box>
             </Box>
           </Paper>
         </Box>
+
       </Box>
     </Box>
   );

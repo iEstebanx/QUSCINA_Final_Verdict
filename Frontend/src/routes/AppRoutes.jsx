@@ -13,7 +13,6 @@ import DashboardPage from "../pages/Dashboard/DashboardPage";
 import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
 
 import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
-import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
 
 import ReportsPage from "../pages/Reports/ReportsPage";
 import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
@@ -21,6 +20,7 @@ import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
 import InventorySettingsPage from "@/pages/Settings/InventorySettings/InventorySettingsPage.jsx";
+import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
 import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
 import AuthorizationPinsPage from "@/pages/Settings/AuthorizationPins/AuthorizationPinsPage.jsx";
 import Categories from "@/pages/Settings/Categories/Categories.jsx";
@@ -52,7 +52,10 @@ export default function AppRoutes() {
 
           {/* Menu */}
           <Route path="/menu/items" element={<ItemlistPage />} />
-          <Route path="/menu/discounts" element={<DiscountPage />} />
+          <Route
+            path="/settings/discounts"
+            element={<DiscountPage />}
+          />
           {/* Old Menu Categories -> Settings Categories */}
           <Route
             path="/menu/categories"

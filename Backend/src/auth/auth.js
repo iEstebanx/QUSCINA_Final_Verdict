@@ -1763,6 +1763,8 @@ module.exports = function authRouterFactory({ db } = {}) {
         "";
       const ua = String(req.headers["user-agent"] || "").slice(0, 255);
 
+      const app = getAppRealm(req);  
+
       if (!resetToken || !newPassword) {
         return res.status(400).json({
           error: "resetToken and newPassword are required",

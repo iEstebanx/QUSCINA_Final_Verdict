@@ -76,20 +76,20 @@ const AUTH_STATUS_LEGEND = {
   },
 
   // 🔹 User Management statuses
-  USER_CREATED:         { label: "User Created", color: "success" },
-  USER_UPDATED:         { label: "User Updated", color: "info" },
-  USER_DELETED:         { label: "User Deleted", color: "error" },
-  USER_UNLOCKED:        { label: "User Unlocked", color: "info" },
-  USER_PASSWORD_CHANGED:{ label: "Password Changed", color: "success" },
-  USER_SQ_UPDATED:      { label: "Security Questions Updated", color: "info" },
+  USER_CREATED: { label: "User Created", color: "success" },
+  USER_UPDATED: { label: "User Updated", color: "info" },
+  USER_DELETED: { label: "User Deleted", color: "error" },
+  USER_UNLOCKED: { label: "User Unlocked", color: "info" },
+  USER_PASSWORD_CHANGED: { label: "Password Changed", color: "success" },
+  USER_SQ_UPDATED: { label: "Security Questions Updated", color: "info" },
 
   // Logout
-  LOGOUT_OK:            { label: "Logout Successful", color: "info" },
+  LOGOUT_OK: { label: "Logout Successful", color: "info" },
 
   // 🔹 Authorization PIN settings
-  PIN_SET:    { label: "PIN Set",    color: "success" },
-  PIN_CHANGED:{ label: "PIN Changed",color: "success" },
-  PIN_RESET:  { label: "PIN Reset",  color: "warning" },
+  PIN_SET: { label: "PIN Set", color: "success" },
+  PIN_CHANGED: { label: "PIN Changed", color: "success" },
+  PIN_RESET: { label: "PIN Reset", color: "warning" },
 };
 
 /* ============================================================
@@ -100,7 +100,7 @@ function getModuleKind(row) {
 
   // 🔐 Treat all account-credential actions as "auth"
   if (action.startsWith("Auth -")) return "auth";
-  if (action.startsWith("Login")) return "auth";   // "Login - POS", "Login Failed - POS"
+  if (action.startsWith("Login")) return "auth"; // "Login - POS", "Login Failed - POS"
   if (action.startsWith("Logout")) return "auth";
 
   if (action.startsWith("POS -")) return "pos";
@@ -140,6 +140,11 @@ function getActionLabel(row) {
     return action.replace("System - ", "");
   }
 
+  // 🔹 POS-prefixed actions: "POS - Open Shift", "POS - Cash In", etc.
+  if (action.startsWith("POS - ")) {
+    return action.replace("POS - ", "");
+  }
+
   // Fallback: keep original
   return action;
 }
@@ -170,7 +175,7 @@ export default function AuditTrailPage() {
       const v = String(raw).toLowerCase();
 
       if (sourceFilter === "Backoffice") return v === "backoffice";
-      if (sourceFilter === "POS")        return v === "pos";
+      if (sourceFilter === "POS") return v === "pos";
 
       return true;
     });
@@ -212,6 +217,11 @@ export default function AuditTrailPage() {
   const moduleKind = getModuleKind(selectedRow);
   const isAuth = moduleKind === "auth";
   const isSystem = moduleKind === "system";
+
+  // 🔹 extra helpers for the dialog (you mentioned these)
+  const moduleName = selectedRow?.detail?.actionDetails?.module || "";
+  const isItemLog = moduleName === "items";
+  const isIngredientLog = moduleName === "inventory_ingredients";
 
   const dialogTitle =
     selectedRow?.action === "POS - Void"
@@ -302,11 +312,7 @@ export default function AuditTrailPage() {
             </Stack>
 
             {/* Right side: Refresh button */}
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={loadLogs}
-            >
+            <Button variant="outlined" size="small" onClick={loadLogs}>
               Refresh
             </Button>
           </Stack>
@@ -329,7 +335,11 @@ export default function AuditTrailPage() {
               borderRadius: 2,
             }}
           >
-            <Table stickyHeader aria-label="audit trail table" sx={{ minWidth: 760, tableLayout: "fixed" }}>
+            <Table
+              stickyHeader
+              aria-label="audit trail table"
+              sx={{ minWidth: 760, tableLayout: "fixed" }}
+            >
               {/* NEW colgroup INCLUDING "Source" */}
               <colgroup>
                 <col style={{ width: "18%" }} />
@@ -350,13 +360,19 @@ export default function AuditTrailPage() {
 
                   {/* center-aligned */}
                   <TableCell align="center">
-                    <Typography fontWeight={600} sx={{ textAlign: "center" }}>
+                    <Typography
+                      fontWeight={600}
+                      sx={{ textAlign: "center" }}
+                    >
                       Timestamp
                     </Typography>
                   </TableCell>
 
                   <TableCell align="center">
-                    <Typography fontWeight={600} sx={{ textAlign: "center" }}>
+                    <Typography
+                      fontWeight={600}
+                      sx={{ textAlign: "center" }}
+                    >
                       Source
                     </Typography>
                   </TableCell>
@@ -364,7 +380,6 @@ export default function AuditTrailPage() {
               </TableHead>
 
               <TableBody>
-
                 {/* 🔄 Loading State */}
                 {loading ? (
                   <TableRow>
@@ -377,7 +392,6 @@ export default function AuditTrailPage() {
                     </TableCell>
                   </TableRow>
                 ) : paged.length === 0 ? (
-                  
                   /* ❗Empty State */
                   <TableRow>
                     <TableCell colSpan={4}>
@@ -388,9 +402,7 @@ export default function AuditTrailPage() {
                       </Box>
                     </TableCell>
                   </TableRow>
-
                 ) : (
-
                   /* ✅ Normal Rows */
                   paged.map((r) => {
                     const rawSource =
@@ -400,7 +412,8 @@ export default function AuditTrailPage() {
 
                     const sourceLabel =
                       typeof rawSource === "string" && rawSource !== "—"
-                        ? rawSource.charAt(0).toUpperCase() + rawSource.slice(1)
+                        ? rawSource.charAt(0).toUpperCase() +
+                          rawSource.slice(1)
                         : "—";
 
                     return (
@@ -439,9 +452,7 @@ export default function AuditTrailPage() {
                       </TableRow>
                     );
                   })
-
                 )}
-
               </TableBody>
             </Table>
           </TableContainer>
@@ -476,24 +487,26 @@ export default function AuditTrailPage() {
         PaperProps={{
           sx: {
             borderRadius: 2,
-            maxHeight: '85vh',
+            maxHeight: "85vh",
             overflow: "hidden",
           },
         }}
       >
         {selectedRow && (
           <>
-            <DialogTitle sx={{ pb: 1, pt: 2.5, px: 3 }}>
-              <Stack spacing={0.5}>
-                <Typography variant="h6" fontWeight={700} component="div">
-                  {dialogTitle}
+            <DialogTitle>
+              <Typography variant="h6">{dialogTitle}</Typography>
+
+              {/* ✅ Show statusMessage for ALL modules, including items */}
+              {selectedRow.detail?.statusMessage && (
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ fontSize: "0.875rem" }}
+                >
+                  {selectedRow.detail.statusMessage}
                 </Typography>
-                {selectedRow.detail?.statusMessage && (
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
-                    {selectedRow.detail.statusMessage}
-                  </Typography>
-                )}
-              </Stack>
+              )}
             </DialogTitle>
 
             <DialogContent dividers className="scroll-x" sx={{ p: 0 }}>
@@ -503,15 +516,33 @@ export default function AuditTrailPage() {
                       USER INFORMATION - COMPACT
                      ---------------------------------------------------- */}
                   <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
-                      <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
+                    <Paper
+                      variant="outlined"
+                      sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
+                    >
+                      <Typography
+                        variant="subtitle1"
+                        fontWeight={600}
+                        gutterBottom
+                        color="primary"
+                        sx={{ fontSize: "1rem" }}
+                      >
                         User Information
                       </Typography>
 
                       <Stack spacing={1.5} mt={1.5}>
-                        <CompactDetailRow label="Employee" value={selectedRow.employee} />
-                        <CompactDetailRow label="Role" value={selectedRow.role || "—"} />
-                        <CompactDetailRow label="Timestamp" value={selectedRow.timestamp} />
+                        <CompactDetailRow
+                          label="Employee"
+                          value={selectedRow.employee}
+                        />
+                        <CompactDetailRow
+                          label="Role"
+                          value={selectedRow.role || "—"}
+                        />
+                        <CompactDetailRow
+                          label="Timestamp"
+                          value={selectedRow.timestamp}
+                        />
 
                         {/* SOURCE */}
                         {(() => {
@@ -521,26 +552,38 @@ export default function AuditTrailPage() {
                             "—";
                           const label =
                             typeof raw === "string" && raw !== "—"
-                              ? raw.charAt(0).toUpperCase() + raw.slice(1)
+                              ? raw.charAt(0).toUpperCase() +
+                                raw.slice(1)
                               : "—";
 
-                          return <CompactDetailRow label="Source" value={label} />;
+                          return (
+                            <CompactDetailRow label="Source" value={label} />
+                          );
                         })()}
                       </Stack>
 
-                      {isAuth && selectedRow.detail?.affectedData?.statusChange && 
-                        selectedRow.detail.affectedData.statusChange !== "NONE" && (
+                      {isAuth &&
+                        selectedRow.detail?.affectedData?.statusChange &&
+                        selectedRow.detail.affectedData.statusChange !==
+                          "NONE" && (
                           <Box mt={2}>
                             <Typography
                               variant="caption"
                               color="text.secondary"
-                              sx={{ mb: 1, display: 'block', fontWeight: 600 }}
+                              sx={{
+                                mb: 1,
+                                display: "block",
+                                fontWeight: 600,
+                              }}
                             >
                               Status
                             </Typography>
-                            <StatusChip detail={selectedRow.detail} isAuth={true} />
+                            <StatusChip
+                              detail={selectedRow.detail}
+                              isAuth={true}
+                            />
                           </Box>
-                      )}
+                        )}
                     </Paper>
                   </Grid>
 
@@ -549,8 +592,17 @@ export default function AuditTrailPage() {
                      ---------------------------------------------------- */}
                   {!isAuth && (
                     <Grid item xs={12} md={4}>
-                      <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
-                        <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
+                      <Paper
+                        variant="outlined"
+                        sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
+                      >
+                        <Typography
+                          variant="subtitle1"
+                          fontWeight={600}
+                          gutterBottom
+                          color="primary"
+                          sx={{ fontSize: "1rem" }}
+                        >
                           Affected Data
                         </Typography>
 
@@ -567,8 +619,17 @@ export default function AuditTrailPage() {
                       ACTION DETAILS - COMPACT
                      ---------------------------------------------------- */}
                   <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
-                      <Typography variant="subtitle1" fontWeight={600} gutterBottom color="primary" sx={{ fontSize: '1rem' }}>
+                    <Paper
+                      variant="outlined"
+                      sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
+                    >
+                      <Typography
+                        variant="subtitle1"
+                        fontWeight={600}
+                        gutterBottom
+                        color="primary"
+                        sx={{ fontSize: "1rem" }}
+                      >
                         Action Details
                       </Typography>
 
@@ -586,10 +647,10 @@ export default function AuditTrailPage() {
             </DialogContent>
 
             <DialogActions sx={{ px: 3, py: 2 }}>
-              <Button 
-                variant="contained" 
-                size="medium" 
-                sx={{ minWidth: 100, borderRadius: 1.5 }} 
+              <Button
+                variant="contained"
+                size="medium"
+                sx={{ minWidth: 100, borderRadius: 1.5 }}
                 onClick={() => setSelectedRow(null)}
               >
                 Close
@@ -607,12 +668,32 @@ export default function AuditTrailPage() {
    ============================================================ */
 function CompactDetailRow({ label, value }) {
   return (
-    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1, py: 0.5 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ minWidth: 80, fontSize: '0.75rem', fontWeight: 600 }}>
+    <Box
+      sx={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        gap: 1,
+        py: 0.5,
+      }}
+    >
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ minWidth: 80, fontSize: "0.75rem", fontWeight: 600 }}
+      >
         {label}
       </Typography>
 
-      <Typography variant="body2" fontWeight={500} sx={{ textAlign: "right", wordBreak: "break-word", fontSize: '0.8125rem' }}>
+      <Typography
+        variant="body2"
+        fontWeight={500}
+        sx={{
+          textAlign: "right",
+          wordBreak: "break-word",
+          fontSize: "0.8125rem",
+        }}
+      >
         {value || "—"}
       </Typography>
     </Box>
@@ -639,24 +720,32 @@ function AuthActionDetails({ detail }) {
 
   const rememberRaw = a.remember ?? meta.remember;
   const rememberLabel =
-    rememberRaw === true ? "Yes" :
-    rememberRaw === false ? "No"  :
-    "—";
+    rememberRaw === true
+      ? "Yes"
+      : rememberRaw === false
+      ? "No"
+      : "—";
 
   return (
     <Stack spacing={1.5} mt={1.5}>
       <CompactDetailRow label="Action Type" value={a.actionType || "login"} />
       {a.app && <CompactDetailRow label="App" value={a.app} />}
       <CompactDetailRow label="Remember Me" value={rememberLabel} />
-      {a.loginType && <CompactDetailRow label="Login Method" value={loginMethodLabel} />}
-      {a.identifier && <CompactDetailRow label="Login ID" value={a.identifier} />}
+      {a.loginType && (
+        <CompactDetailRow label="Login Method" value={loginMethodLabel} />
+      )}
+      {a.identifier && (
+        <CompactDetailRow label="Login ID" value={a.identifier} />
+      )}
 
       {(legend?.label || a.result) && (
         <CompactDetailRow label="Result" value={legend?.label || a.result} />
       )}
 
       {meta.ip && <CompactDetailRow label="IP Address" value={meta.ip} />}
-      {meta.userAgent && <CompactDetailRow label="Device / Browser" value={meta.userAgent} />}
+      {meta.userAgent && (
+        <CompactDetailRow label="Device / Browser" value={meta.userAgent} />
+      )}
     </Stack>
   );
 }
@@ -664,15 +753,276 @@ function AuthActionDetails({ detail }) {
 function GenericActionDetails({ detail }) {
   const a = detail?.actionDetails || {};
 
+  const app = String(a.app || "").toLowerCase();
+  const actionType = a.actionType || "";
+
+  const isPosShiftOpen  = app === "pos" && actionType === "Open Shift";
+  const isPosShiftClose = app === "pos" && actionType === "Close Shift";
+  const isPosCashMove   = app === "pos" && actionType === "Cash Move";
+
+  const formatPeso = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return `₱${n.toFixed(2)}`;
+  };
+
+  /* ============================================
+     POS - Open Shift
+     ============================================ */
+  if (isPosShiftOpen) {
+    const denoms = Array.isArray(a.denominations) ? a.denominations : [];
+    const nonZeroDenoms = denoms.filter((d) => Number(d.qty) > 0);
+
+    return (
+      <Stack spacing={1.5} mt={1.5}>
+        <CompactDetailRow label="Action Type" value="Open Shift" />
+
+        {a.terminalId && (
+          <CompactDetailRow label="Terminal" value={a.terminalId} />
+        )}
+
+        {a.shiftId && (
+          <CompactDetailRow
+            label="Shift ID"
+            value={String(a.shiftId)}
+          />
+        )}
+
+        <CompactDetailRow
+          label="Opening Float"
+          value={formatPeso(a.openingFloat)}
+        />
+
+        {nonZeroDenoms.length > 0 && (
+          <Box mt={1}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mb: 0.5, display: "block", fontWeight: 600 }}
+            >
+              Denominations
+            </Typography>
+
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 0.5,
+              }}
+            >
+              {nonZeroDenoms.map((d, idx) => (
+                <Chip
+                  key={idx}
+                  size="small"
+                  label={`${formatPeso(d.denom_value)} × ${d.qty}`}
+                  sx={{ borderRadius: 1, fontSize: "0.75rem" }}
+                  variant="outlined"
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+      </Stack>
+    );
+  }
+
+  /* ============================================
+     POS - Cash Move (cash_in / cash_out / safe_drop / payout / refund_cash)
+     ============================================ */
+  if (isPosCashMove) {
+    const denoms = Array.isArray(a.denominations) ? a.denominations : [];
+    const nonZeroDenoms = denoms.filter((d) => Number(d.qty) > 0);
+
+    const typeLabel = a.moveTypeLabel || "Cash Move";
+
+    return (
+      <Stack spacing={1.5} mt={1.5}>
+        <CompactDetailRow label="Action Type" value={typeLabel} />
+
+        {a.shiftId && (
+          <CompactDetailRow
+            label="Shift ID"
+            value={String(a.shiftId)}
+          />
+        )}
+
+        <CompactDetailRow
+          label="Amount"
+          value={formatPeso(a.amount)}
+        />
+
+        {a.reason && (
+          <CompactDetailRow
+            label="Reason"
+            value={a.reason}
+          />
+        )}
+
+        {nonZeroDenoms.length > 0 && (
+          <Box mt={1}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mb: 0.5, display: "block", fontWeight: 600 }}
+            >
+              Denominations
+            </Typography>
+
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 0.5,
+              }}
+            >
+              {nonZeroDenoms.map((d, idx) => (
+                <Chip
+                  key={idx}
+                  size="small"
+                  label={`${formatPeso(d.denom_value)} × ${d.qty}`}
+                  sx={{ borderRadius: 1, fontSize: "0.75rem" }}
+                  variant="outlined"
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+      </Stack>
+    );
+  }
+
+  /* ============================================
+     POS - Close Shift / Remit
+     ============================================ */
+  if (isPosShiftClose) {
+    const varianceLabel =
+      a.varianceLabel ||
+      (typeof a.variance === "number" && a.variance !== 0
+        ? a.variance > 0
+          ? `Over by ${formatPeso(a.variance)}`
+          : `Short by ${formatPeso(Math.abs(a.variance))}`
+        : "Balanced");
+
+    return (
+      <Stack spacing={1.5} mt={1.5}>
+        <CompactDetailRow label="Action Type" value="Close Shift" />
+
+        {a.terminalId && (
+          <CompactDetailRow label="Terminal" value={a.terminalId} />
+        )}
+
+        {a.shiftId && (
+          <CompactDetailRow
+            label="Shift ID"
+            value={String(a.shiftId)}
+          />
+        )}
+
+        <CompactDetailRow
+          label="Declared Cash"
+          value={formatPeso(a.declaredCash)}
+        />
+
+        <CompactDetailRow
+          label="Expected Cash"
+          value={formatPeso(a.expectedCash)}
+        />
+
+        <CompactDetailRow
+          label="Variance"
+          value={varianceLabel}
+        />
+
+        {a.closingNote && (
+          <CompactDetailRow
+            label="Closing Note"
+            value={a.closingNote}
+          />
+        )}
+      </Stack>
+    );
+  }
+
+  /* ============================================
+     🔁 FALLBACK: existing generic behavior
+     (ingredients, items, discounts, etc.)
+     ============================================ */
+
+  const moduleName = a.module;
+  const isIngredientLog = moduleName === "inventory_ingredients";
+
+  // movement is set by backend ingredients.js for stock changes
+  // {
+  //   label: "Stock In" | "Stock Out",
+  //   type: "in" | "out",
+  //   delta,
+  //   beforeStock,
+  //   afterStock
+  // }
+  const movement = isIngredientLog ? a.movement || null : null;
+
+  // Grab the first affected ingredient to get its unit (type)
+  const firstItem = detail?.affectedData?.items?.[0] || {};
+  const unit = firstItem.type || ""; // e.g. "g", "kg", "pcs"
+
   const showAmount = a.amount != null && a.amount !== "—";
   const showReason = !!a.reason;
 
   return (
     <Stack spacing={1.5} mt={1.5}>
+      {/* Always show action type */}
       <CompactDetailRow label="Action Type" value={a.actionType} />
 
-      {a.recipient && <CompactDetailRow label="Recipient" value={a.recipient} />}
-      {a.receiptNo && <CompactDetailRow label="Receipt No." value={a.receiptNo} />}
+      {/* ============================================
+          🔥 Inventory Ingredients: Stock In / Out
+         ============================================ */}
+      {isIngredientLog && movement && (
+        <>
+          <CompactDetailRow
+            label="Stock Movement"
+            value={
+              movement.label ||
+              (movement.type === "in" ? "Stock In" : "Stock Out")
+            }
+          />
+
+          <CompactDetailRow
+            label="Quantity Changed"
+            value={`${movement.delta > 0 ? "+" : ""}${movement.delta}${
+              unit ? " " + unit : ""
+            }`}
+          />
+
+          <CompactDetailRow
+            label="Previous Stock"
+            value={
+              movement.beforeStock != null
+                ? `${movement.beforeStock}${unit ? " " + unit : ""}`
+                : "—"
+            }
+          />
+
+          <CompactDetailRow
+            label="New Stock"
+            value={
+              movement.afterStock != null
+                ? `${movement.afterStock}${unit ? " " + unit : ""}`
+                : "—"
+            }
+          />
+        </>
+      )}
+
+      {/* ============================================
+          Existing generic fields (POS / others)
+         ============================================ */}
+      {a.recipient && (
+        <CompactDetailRow label="Recipient" value={a.recipient} />
+      )}
+
+      {a.receiptNo && (
+        <CompactDetailRow label="Receipt No." value={a.receiptNo} />
+      )}
 
       {showAmount && (
         <CompactDetailRow label="Amount Total" value={a.amount} />
@@ -683,7 +1033,7 @@ function GenericActionDetails({ detail }) {
           <Typography
             variant="caption"
             color="text.secondary"
-            sx={{ mb: 1, display: 'block', fontWeight: 600 }}
+            sx={{ mb: 1, display: "block", fontWeight: 600 }}
           >
             Reason
           </Typography>
@@ -695,7 +1045,7 @@ function GenericActionDetails({ detail }) {
               borderRadius: 1,
               fontWeight: 600,
               fontSize: "0.75rem",
-              height: '24px'
+              height: "24px",
             }}
             color="primary"
             variant="outlined"
@@ -718,7 +1068,10 @@ function SystemActionDetails({ detail }) {
     (detail?.schedule ? "Manual" : "") ||
     "";
 
-  const backupType = a.backupType || job.backup_type || (detail?.schedule ? "Schedule" : "");
+  const backupType =
+    a.backupType ||
+    job.backup_type ||
+    (detail?.schedule ? "Schedule" : "");
 
   const sizeLabel =
     a.amount && a.amount !== "—"
@@ -729,11 +1082,22 @@ function SystemActionDetails({ detail }) {
 
   return (
     <Stack spacing={1.5} mt={1.5}>
-      <CompactDetailRow label="Action Type" value={a.actionType || job.action || "—"} />
-      {backupType && <CompactDetailRow label="Backup Type" value={backupType} />}
-      {trigger && <CompactDetailRow label="Trigger Source" value={trigger} />}
-      {a.reference && <CompactDetailRow label="File / Reference" value={a.reference} />}
-      {sizeLabel && <CompactDetailRow label="Backup Size" value={sizeLabel} />}
+      <CompactDetailRow
+        label="Action Type"
+        value={a.actionType || job.action || "—"}
+      />
+      {backupType && (
+        <CompactDetailRow label="Backup Type" value={backupType} />
+      )}
+      {trigger && (
+        <CompactDetailRow label="Trigger Source" value={trigger} />
+      )}
+      {a.reference && (
+        <CompactDetailRow label="File / Reference" value={a.reference} />
+      )}
+      {sizeLabel && (
+        <CompactDetailRow label="Backup Size" value={sizeLabel} />
+      )}
       {a.reason && <CompactDetailRow label="Notes" value={a.reason} />}
     </Stack>
   );
@@ -742,38 +1106,336 @@ function SystemActionDetails({ detail }) {
 /* ============================================================
    AFFECTED DATA (generic + system) - COMPACT VERSION
    ============================================================ */
+
+// Friendly labels for item change fields (UI)
+const ITEM_FIELD_LABELS_UI = {
+  name: "name",
+  description: "description",
+  categoryId: "category",
+  categoryName: "category",
+  price: "price",
+  costOverall: "cost",
+  profit: "profit",
+};
+
+function summarizeItemChangedFieldsUI(changedKeys = []) {
+  const labels = [];
+  for (const key of changedKeys) {
+    const label = ITEM_FIELD_LABELS_UI[key];
+    if (!label) continue;
+    if (!labels.includes(label)) labels.push(label);
+  }
+
+  if (!labels.length) return "";
+
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+
+  return labels.join(", ");
+}
+
 function GenericAffectedData({ detail }) {
   const items = detail?.affectedData?.items || [];
+  const moduleName = detail?.actionDetails?.module;
+
+  const isDiscountLog   = moduleName === "discounts";
+  const isIngredientLog = moduleName === "inventory_ingredients";
+  const isItemLog       = moduleName === "items";
+  const isActivityLog   = moduleName === "inventory_activity"; // reserved for later
+
+  const formatDiscountValue = (item) => {
+    const raw = item?.value;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return "—";
+
+    const type = item?.type || "percent";
+    if (type === "percent") return `${n}%`;
+
+    return `₱${n.toFixed(2)}`;
+  };
+
+  const formatPrice = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return `₱${n.toFixed(2)}`;
+  };
+
+  // For item logs we want to show which fields changed
+  const itemChanges     = detail?.actionDetails?.changes || null;
+  const itemChangeKeys  = itemChanges ? Object.keys(itemChanges) : [];
+  const itemActionType  = detail?.actionDetails?.actionType || "";
+  const backendFriendly = detail?.actionDetails?.changedFields || ""; // from backend
+
+  let itemChangeSummary = "";
+  if (isItemLog) {
+    if (itemActionType === "update") {
+      // Prefer friendly string from backend, fall back to local mapping
+      const friendly =
+        typeof backendFriendly === "string" && backendFriendly.trim()
+          ? backendFriendly.trim()
+          : summarizeItemChangedFieldsUI(itemChangeKeys);
+
+      if (friendly) {
+        itemChangeSummary = `Updated: ${friendly}`;
+      }
+    } else if (itemActionType === "create") {
+      itemChangeSummary = "Item created.";
+    } else if (itemActionType === "delete") {
+      itemChangeSummary = "Item deleted.";
+    }
+  }
 
   return (
     <>
       <Box mt={1.5}>
-        <Typography variant="caption" color="text.secondary" sx={{ mb: 1.5, display: 'block', fontWeight: 600 }}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ mb: 1.5, display: "block", fontWeight: 600 }}
+        >
           Items
         </Typography>
 
         {items.length ? (
-          <Stack spacing={1}>
-            {items.map((it, idx) => (
-              <Box
-                key={idx}
-                sx={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  py: 0.75,
-                  px: 1,
-                  borderRadius: 0.75,
-                  bgcolor: "action.hover",
-                  fontSize: '0.8125rem'
-                }}
-              >
-                <Typography variant="body2" sx={{ fontSize: '0.8125rem' }}>{it.name}</Typography>
-              </Box>
-            ))}
-          </Stack>
+          <Box
+            sx={{
+              display: "grid",
+              gap: 1,
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: "repeat(auto-fit, minmax(200px, 1fr))",
+              },
+            }}
+          >
+            {items.map((it, idx) => {
+              // 🔹 Discounts: show Name + Value
+              if (isDiscountLog) {
+                const valueLabel = formatDiscountValue(it);
+
+                return (
+                  <Box
+                    key={idx}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 1,
+                      bgcolor: "action.hover",
+                      fontSize: "0.8125rem",
+                      minHeight: "60px",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          fontWeight: 500,
+                          wordBreak: "break-word",
+                          flex: 1,
+                        }}
+                      >
+                        {it.name || it.code || "—"}
+                      </Typography>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        mt: 1,
+                      }}
+                    >
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {valueLabel}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              }
+
+              // 🔹 Inventory Ingredients: show name + category + unit + stock + price
+              if (isIngredientLog) {
+                const currentStock =
+                  it.currentStock != null ? Number(it.currentStock) : null;
+                const lowStock =
+                  it.lowStock != null ? Number(it.lowStock) : null;
+
+                return (
+                  <Box
+                    key={idx}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 1,
+                      bgcolor: "action.hover",
+                      fontSize: "0.8125rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 0.5,
+                    }}
+                  >
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 600,
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {it.name || "—"}
+                    </Typography>
+
+                    {it.category && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Category: {it.category}
+                      </Typography>
+                    )}
+
+                    {it.type && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Unit: {it.type}
+                      </Typography>
+                    )}
+
+                    {(currentStock !== null || lowStock !== null) && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Stock:{" "}
+                        {currentStock !== null
+                          ? `${currentStock}${it.type ? " " + it.type : ""}`
+                          : "—"}
+                        {lowStock !== null ? ` (Low: ${lowStock})` : ""}
+                      </Typography>
+                    )}
+
+                    {it.price != null && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Price: {formatPrice(it.price)}
+                      </Typography>
+                    )}
+                  </Box>
+                );
+              }
+
+              // 🔹 Items (menu items): show name + category + price + changes
+              if (isItemLog) {
+                const priceLabel =
+                  it.price != null ? formatPrice(it.price) : null;
+                const categoryLabel = it.categoryName || it.category || null;
+
+                return (
+                  <Box
+                    key={idx}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 1,
+                      bgcolor: "action.hover",
+                      fontSize: "0.8125rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 0.5,
+                    }}
+                  >
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 600,
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {it.name || "—"}
+                    </Typography>
+
+                    {categoryLabel && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Category: {categoryLabel}
+                      </Typography>
+                    )}
+
+                    {priceLabel && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        Price: {priceLabel}
+                      </Typography>
+                    )}
+
+                    {itemChangeSummary && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block", mt: 0.5, fontWeight: 600 }}
+                      >
+                        {itemChangeSummary}
+                      </Typography>
+                    )}
+                  </Box>
+                );
+              }
+
+              // 🔹 Default (non-discount/non-ingredient/non-item) behavior: just the name
+              return (
+                <Box
+                  key={idx}
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    py: 1,
+                    px: 1.5,
+                    borderRadius: 1,
+                    bgcolor: "action.hover",
+                    fontSize: "0.8125rem",
+                    minHeight: "48px",
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontSize: "0.8125rem",
+                      wordBreak: "break-word",
+                      flex: 1,
+                    }}
+                  >
+                    {it.name}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Box>
         ) : (
-          <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic", fontSize: '0.8125rem' }}>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ fontStyle: "italic", fontSize: "0.8125rem" }}
+          >
             No items affected
           </Typography>
         )}
@@ -782,11 +1444,15 @@ function GenericAffectedData({ detail }) {
       {detail?.affectedData?.statusChange &&
         detail.affectedData.statusChange !== "NONE" && (
           <Box mt={2}>
-            <Typography variant="caption" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>Status Change</Typography>
+            <Typography
+              variant="caption"
+              sx={{ mb: 1, display: "block", fontWeight: 600 }}
+            >
+              Status Change
+            </Typography>
             <StatusChip detail={detail} isAuth={false} />
           </Box>
-        )
-      }
+        )}
     </>
   );
 }
@@ -800,7 +1466,11 @@ function SystemAffectedData({ detail }) {
   return (
     <>
       <Box mt={1.5}>
-        <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ mb: 1, display: "block", fontWeight: 600 }}
+        >
           Status
         </Typography>
         <StatusChip detail={detail} />
@@ -808,30 +1478,58 @@ function SystemAffectedData({ detail }) {
 
       {job && (
         <Box mt={2}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mb: 1, display: "block", fontWeight: 600 }}
+          >
             Job Details
           </Typography>
 
           <Stack spacing={1}>
-            {job.status && <CompactDetailRow label="Job Status" value={job.status} />}
-            {job.filename && <CompactDetailRow label="Filename" value={job.filename} />}
-            {job.env && <CompactDetailRow label="Environment" value={job.env} />}
-            {job.backup_dir && <CompactDetailRow label="Backup Directory" value={job.backup_dir} />}
+            {job.status && (
+              <CompactDetailRow label="Job Status" value={job.status} />
+            )}
+            {job.filename && (
+              <CompactDetailRow label="Filename" value={job.filename} />
+            )}
+            {job.env && (
+              <CompactDetailRow label="Environment" value={job.env} />
+            )}
+            {job.backup_dir && (
+              <CompactDetailRow
+                label="Backup Directory"
+                value={job.backup_dir}
+              />
+            )}
           </Stack>
         </Box>
       )}
 
       {schedule && (
         <Box mt={2}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block', fontWeight: 600 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mb: 1, display: "block", fontWeight: 600 }}
+          >
             Schedule
           </Typography>
 
           <Stack spacing={1}>
             <CompactDetailRow label="Frequency" value={schedule.frequency} />
-            <CompactDetailRow label="Time of Day" value={schedule.time_of_day} />
-            <CompactDetailRow label="Retention Days" value={String(schedule.retention_days) || "—"} />
-            <CompactDetailRow label="Next Run" value={schedule.next_run_at || "—"} />
+            <CompactDetailRow
+              label="Time of Day"
+              value={schedule.time_of_day}
+            />
+            <CompactDetailRow
+              label="Retention Days"
+              value={String(schedule.retention_days) || "—"}
+            />
+            <CompactDetailRow
+              label="Next Run"
+              value={schedule.next_run_at || "—"}
+            />
           </Stack>
         </Box>
       )}
@@ -855,11 +1553,11 @@ function StatusChip({ detail, isAuth }) {
     <Chip
       label={legend?.label || statusKey}
       size="small"
-      sx={{ 
-        borderRadius: 1, 
-        fontWeight: 600, 
+      sx={{
+        borderRadius: 1,
+        fontWeight: 600,
         fontSize: "0.75rem",
-        height: '24px'
+        height: "24px",
       }}
       color={legend?.color || "default"}
       variant={legend ? "filled" : "outlined"}

@@ -396,7 +396,7 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   `category` VARCHAR(60) NOT NULL,
   `category_lower` VARCHAR(60)
     GENERATED ALWAYS AS (LOWER(`category`)) STORED,
-  `type` VARCHAR(30) NOT NULL,
+  `type` VARCHAR(30) NOT NULL DEFAULT 'pack',
   `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -408,9 +408,11 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
   KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`),
 
-  -- same checks you specified (MySQL 8.0.16+)
-  CONSTRAINT `chk_category_nonempty` CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
-  CONSTRAINT `chk_type_nonempty`     CHECK (CHAR_LENGTH(TRIM(`type`)) > 0)
+  CONSTRAINT `chk_category_nonempty`
+    CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
+
+  CONSTRAINT `chk_type_pack_only`
+    CHECK (`type` = 'pack')
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
@@ -422,7 +424,7 @@ CREATE TABLE IF NOT EXISTS `inventory_activity` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `ts` DATETIME NULL,
   `employee` VARCHAR(60) NULL,
-  `remarks` VARCHAR(255) NULL,
+  `reason` VARCHAR(255) NULL,
   `io` ENUM('In','Out') NOT NULL DEFAULT 'In',
   `qty` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `price` DECIMAL(12,2) NOT NULL DEFAULT 0,

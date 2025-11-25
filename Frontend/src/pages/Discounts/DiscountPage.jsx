@@ -1,4 +1,4 @@
-// Frontend/src/pages/Discounts/DiscountPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/Discounts/DiscountPage.jsx
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
