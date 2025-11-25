@@ -6,22 +6,35 @@ const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
 /* =============================================================
-   🔥 FIXED API BASE LOGIC
-   Local dev  -> "" (Vite proxy handles /api)
-   Production -> Railway backend
-   Env var    -> optional override (VITE_API_BASE)
+   API BASE LOGIC (NO ENV NEEDED)
+   - Local dev (localhost/127.0.0.1) -> ""  (so /api goes to Vite proxy)
+   - Anything else (Vercel, etc.)   -> Railway backend
 ============================================================= */
 
-const PROD_API_BASE = "https://quscinabackofficebackend-production.up.railway.app";
+const RAILWAY_API_ORIGIN =
+  "https://quscinabackofficebackend-production.up.railway.app";
 
-const API_BASE =
-  import.meta.env?.VITE_API_BASE ||
-  (typeof window !== "undefined" &&
-  window.location.hostname.endsWith("vercel.app")
-    ? PROD_API_BASE
-    : "");
+function computeApiBase() {
+  if (typeof window === "undefined") return ""; // SSR safety
 
-// join("/api/auth/login") -> builds correct URL for dev + prod
+  const host = window.location.hostname;
+
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.startsWith("192.168.") ||
+    host.startsWith("10.");
+
+  // Local dev -> use Vite proxy (/api ...)
+  if (isLocal) return "";
+
+  // Production (Vercel, etc.) -> hit Railway directly
+  return RAILWAY_API_ORIGIN;
+}
+
+const API_BASE = computeApiBase();
+
+// join("/api/auth/login") -> correct URL for dev + prod
 const join = (p) =>
   `${API_BASE}`.replace(/\/+$/, "") +
   `/${String(p || "").replace(/^\/+/, "")}`;
@@ -84,7 +97,7 @@ export function AuthProvider({ children }) {
         } catch {}
       }
 
-      // 3) Fallback: /api/auth/me?soft=1
+      // 3) Fallback: /api/auth/me?soft=1 (cookie session)
       try {
         const res = await fetch(join("/api/auth/me?soft=1"), {
           credentials: "include",
