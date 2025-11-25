@@ -17,6 +17,7 @@
     "@mui/x-data-grid": "^8.10.1",
     "@mui/x-date-pickers": "^8.10.0",
     "axios": "^1.11.0",
+    "date-fns": "^4.1.0",
     "dayjs": "^1.11.13",
     "jspdf": "^3.0.4",
     "jspdf-autotable": "^5.0.2",

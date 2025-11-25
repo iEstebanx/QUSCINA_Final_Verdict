@@ -42,55 +42,6 @@ import PeopleIcon from "@mui/icons-material/People";
 import { useNavigate } from "react-router-dom";
 import { subscribeUsers } from "@/services/Users/users";
 
-/* ----------------------------- Enhanced Mock Data ----------------------------- */
-const salesSeriesByRange = {
-  days: [
-    { name: "Oct 21", sales: 1200, orders: 45, customers: 38 },
-    { name: "Oct 22", sales: 1900, orders: 62, customers: 52 },
-    { name: "Oct 23", sales: 1500, orders: 51, customers: 44 },
-    { name: "Oct 24", sales: 2100, orders: 68, customers: 58 },
-    { name: "Oct 25", sales: 1800, orders: 59, customers: 49 },
-  ],
-  weeks: [
-    { name: "Week 1", sales: 8500, orders: 280, customers: 240 },
-    { name: "Week 2", sales: 9200, orders: 310, customers: 265 },
-    { name: "Week 3", sales: 7800, orders: 260, customers: 220 },
-    { name: "Week 4", sales: 9500, orders: 320, customers: 275 },
-  ],
-  // ... other ranges remain similar but with enhanced data
-};
-
-const bestSellersByRange = {
-  days: [
-    { name: "Crispy Kare Kare", sales: 1125, orders: 15, trend: "up" },
-    { name: "Inihaw na Liempo", sales: 840, orders: 12, trend: "up" },
-    { name: "Sinigang na Baboy", sales: 680, orders: 8, trend: "up" },
-    { name: "Adobong Manok", sales: 420, orders: 6, trend: "down" },
-    { name: "Bulalo", sales: 600, orders: 5, trend: "up" },
-  ],
-  // ... other ranges
-};
-
-const paymentDataByRange = {
-  days: [
-    { name: "Cash", value: 62.5, amount: 1738, transactions: 25 },
-    { name: "Card", value: 12.5, amount: 347, transactions: 7 },
-  ],
-  // ... other ranges
-};
-
-// Additional metrics data
-const metricsData = {
-  days: {
-    totalSales: 2780,
-    totalOrders: 52,
-    averageOrder: 53.46,
-    customerCount: 45,
-    growth: 12.5,
-  },
-  // ... other ranges
-};
-
 const peso = (n) =>
   `₱${Number(n || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -122,7 +73,6 @@ const formatDateTime = (iso) => {
 // Quick Stats Component
 const QuickStats = ({ metrics }) => (
   <Grid container spacing={2} sx={{ mb: 2 }}>
-
     {/* Total Sales */}
     <Grid item xs={6} sm={3}>
       <Card sx={{ textAlign: "center", p: 1 }}>
@@ -164,7 +114,6 @@ const QuickStats = ({ metrics }) => (
         </CardContent>
       </Card>
     </Grid>
-
   </Grid>
 );
 
@@ -175,6 +124,11 @@ export default function DashboardPage() {
   const [employees, setEmployees] = useState([]);
   const [lowStockItems, setLowStockItems] = useState([]);
   const [lowStockErr, setLowStockErr] = useState("");
+
+  // ------------------------ Date Range State ------------------------
+  const [range, setRange] = useState("days");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   useEffect(() => {
     // reuse the same live list as UserManagement
@@ -227,36 +181,61 @@ export default function DashboardPage() {
         setLowStockErr(e?.message || "Failed to load low stock");
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // ------------------------ Date Range State ------------------------
-  const [range, setRange] = useState("days");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  // ------------------------ LIVE DASHBOARD DATA (REAL) ------------------------
+  const [salesSeries, setSalesSeries] = useState([]); // currently unused, reserved for future chart
+  const [bestSellers, setBestSellers] = useState([]);
+  const [paymentData, setPaymentData] = useState([]);
+  const [metrics, setMetrics] = useState({
+    totalSales: 0,
+    totalOrders: 0,
+    averageOrder: 0,
+  });
 
-  // ---------------------------- Get Filtered Data ----------------------------
-  const getFilteredData = () => {
-    if (range === "custom" && customFrom && customTo) {
-      // Custom range filtering logic...
-      return {
-        salesSeries: salesSeriesByRange.days,
-        bestSellers: bestSellersByRange.days,
-        paymentData: paymentDataByRange.days,
-        metrics: metricsData.days,
-      };
-    }
-    
-    const effectiveRangeKey = range === "custom" ? "days" : range;
-    return {
-      salesSeries: salesSeriesByRange[effectiveRangeKey] || salesSeriesByRange.days,
-      bestSellers: bestSellersByRange[effectiveRangeKey] || bestSellersByRange.days,
-      paymentData: paymentDataByRange[effectiveRangeKey] || paymentDataByRange.days,
-      metrics: metricsData[effectiveRangeKey] || metricsData.days,
+  useEffect(() => {
+    let alive = true;
+
+    const load = async () => {
+      const qs =
+        range === "custom" && customFrom && customTo
+          ? `range=custom&from=${customFrom}&to=${customTo}`
+          : `range=${range}`;
+
+      try {
+        // metrics
+        const mRes = await fetch(`/api/dashboard/metrics?${qs}`);
+        const mData = await mRes.json();
+        if (alive && mData.ok) setMetrics(mData.metrics);
+
+        // sales series
+        const sRes = await fetch(`/api/dashboard/sales-series?${qs}`);
+        const sData = await sRes.json();
+        if (alive && sData.ok) setSalesSeries(sData.series);
+
+        // best sellers
+        const bRes = await fetch(`/api/dashboard/best-sellers?${qs}`);
+        const bData = await bRes.json();
+        if (alive && bData.ok) setBestSellers(bData.bestSellers);
+
+        // payments
+        const pRes = await fetch(`/api/dashboard/payments?${qs}`);
+        const pData = await pRes.json();
+        if (alive && pData.ok) setPaymentData(pData.payments);
+      } catch (err) {
+        console.error("[dashboard load failed]", err);
+      }
     };
-  };
 
-  const { salesSeries, yesterdaySales, bestSellers, paymentData, metrics } = getFilteredData();
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [range, customFrom, customTo]);
+
   const metricsWithAccounts = {
     ...metrics,
     customerCount: employees.length,
@@ -280,8 +259,8 @@ export default function DashboardPage() {
     fontWeight: 800,
     borderBottom: `1px solid ${theme.palette.divider}`,
     backgroundColor: theme.palette.background.default,
-    display: 'flex',
-    alignItems: 'center',
+    display: "flex",
+    alignItems: "center",
     gap: 1,
   };
 
@@ -335,7 +314,7 @@ export default function DashboardPage() {
               <MenuItem value="custom">Custom</MenuItem>
             </Select>
           </FormControl>
-          
+
           <TextField
             size="small"
             type="date"
@@ -375,15 +354,14 @@ export default function DashboardPage() {
           gridTemplateColumns: "repeat(12, 1fr)",
           gridAutoRows: `minmax(${cardHeights.xs}px, auto)`,
 
-          [theme.breakpoints.up('sm')]: {
+          [theme.breakpoints.up("sm")]: {
             gridAutoRows: `minmax(${cardHeights.sm}px, auto)`,
           },
-          [theme.breakpoints.up('md')]: {
+          [theme.breakpoints.up("md")]: {
             gridAutoRows: `minmax(${cardHeights.md}px, auto)`,
           },
         }}
       >
-
         {/* ============================ User Accounts ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", lg: "span 8" } }}>
           <Paper sx={cardSx}>
@@ -432,8 +410,12 @@ export default function DashboardPage() {
                           <Chip
                             size="small"
                             label={emp.status || "Unknown"}
-                            color={emp.status === "Active" ? "success" : "default"}
-                            variant={emp.status === "Active" ? "filled" : "outlined"}
+                            color={
+                              emp.status === "Active" ? "success" : "default"
+                            }
+                            variant={
+                              emp.status === "Active" ? "filled" : "outlined"
+                            }
                           />
                         </TableCell>
                         <TableCell>
@@ -485,42 +467,55 @@ export default function DashboardPage() {
             <Box sx={cardContentSx}>
               <List dense sx={{ flex: 1 }}>
                 {bestSellers.map((item, i) => (
-                <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                  {/* Rank number */}
-                  <Avatar
-                    sx={{
-                      width: 32,
-                      height: 32,
-                      mr: 2,
-                      bgcolor: theme.palette.primary.main,
-                      fontSize: 14,
-                    }}
-                  >
-                    {i + 1}
-                  </Avatar>
+                  <ListItem key={i} disableGutters sx={{ py: 1 }}>
+                    {/* Rank number */}
+                    <Avatar
+                      sx={{
+                        width: 32,
+                        height: 32,
+                        mr: 2,
+                        bgcolor: theme.palette.primary.main,
+                        fontSize: 14,
+                      }}
+                    >
+                      {i + 1}
+                    </Avatar>
 
-                  {/* Item name */}
-                  <ListItemText
-                    primary={
-                      <Typography variant="body2" fontWeight="medium">
-                        {item.name}
+                    {/* Item name */}
+                    <ListItemText
+                      primary={
+                        <Typography variant="body2" fontWeight="medium">
+                          {item.name}
+                        </Typography>
+                      }
+                    />
+
+                    {/* Orders + Trend Icon on the RIGHT */}
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                        minWidth: 90,
+                      }}
+                    >
+                      <Typography variant="body2" fontWeight="bold">
+                        {item.orders} orders
                       </Typography>
-                    }
-                  />
 
-                  {/* Orders + Trend Icon on the RIGHT */}
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 90 }}>
-                    <Typography variant="body2" fontWeight="bold">
-                      {item.orders} orders
-                    </Typography>
-
-                    {item.trend === "up" ? (
-                      <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
-                    ) : (
-                      <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
-                    )}
-                  </Box>
-                </ListItem>
+                      {item.trend === "up" ? (
+                        <TrendingUpIcon
+                          color="success"
+                          sx={{ fontSize: 20 }}
+                        />
+                      ) : (
+                        <TrendingDownIcon
+                          color="error"
+                          sx={{ fontSize: 20 }}
+                        />
+                      )}
+                    </Box>
+                  </ListItem>
                 ))}
               </List>
             </Box>
@@ -541,8 +536,10 @@ export default function DashboardPage() {
               {/* Small summary */}
               <Typography variant="body2" color="text.secondary">
                 {lowStockItems.length
-                  ? `${lowStockItems.filter(i => i.alert === "critical").length} Critical · ${
-                      lowStockItems.filter(i => i.alert === "warning").length
+                  ? `${
+                      lowStockItems.filter((i) => i.alert === "critical").length
+                    } Critical · ${
+                      lowStockItems.filter((i) => i.alert === "warning").length
                     } Warning`
                   : "All good"}
               </Typography>
@@ -572,7 +569,11 @@ export default function DashboardPage() {
                     />
                     <ListItemText
                       primary={
-                        <Typography variant="body2" fontWeight="medium" noWrap>
+                        <Typography
+                          variant="body2"
+                          fontWeight="medium"
+                          noWrap
+                        >
                           {item.name}
                         </Typography>
                       }
@@ -584,8 +585,12 @@ export default function DashboardPage() {
                       }}
                     />
                     <Chip
-                      label={item.alert === "critical" ? "Critical" : "Warning"}
-                      color={item.alert === "critical" ? "error" : "warning"}
+                      label={
+                        item.alert === "critical" ? "Critical" : "Warning"
+                      }
+                      color={
+                        item.alert === "critical" ? "error" : "warning"
+                      }
                       size="small"
                     />
                   </ListItem>
@@ -596,7 +601,8 @@ export default function DashboardPage() {
                     <ListItemText
                       primary={
                         <Typography variant="body2" color="text.secondary">
-                          No items are currently below their low stock thresholds.
+                          No items are currently below their low stock
+                          thresholds.
                         </Typography>
                       }
                     />
@@ -627,7 +633,14 @@ export default function DashboardPage() {
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+              <Box
+                sx={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                }}
+              >
                 <Box sx={{ height: 200 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -641,26 +654,47 @@ export default function DashboardPage() {
                         {paymentData.map((_, i) => (
                           <Cell
                             key={i}
-                            fill={[theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3]}
+                            fill={
+                              [
+                                theme.palette.primary.main,
+                                theme.palette.secondary.main,
+                                theme.palette.success.main,
+                              ][i % 3]
+                            }
                           />
                         ))}
                       </Pie>
-                      <Tooltip formatter={(v) => [`${v}%`, 'Percentage']} />
+                      <Tooltip formatter={(v) => [`${v}%`, "Percentage"]} />
                     </PieChart>
                   </ResponsiveContainer>
                 </Box>
                 <Stack spacing={1} sx={{ mt: 1 }}>
                   {paymentData.map((d, i) => (
-                    <Box key={d.name} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Box
+                      key={d.name}
+                      sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
                       <Typography variant="body2">
-                        <Box component="span" sx={{ 
-                          width: 8, 
-                          height: 8, 
-                          borderRadius: '50%', 
-                          display: 'inline-block',
-                          backgroundColor: [theme.palette.primary.main, theme.palette.secondary.main, theme.palette.success.main][i % 3],
-                          mr: 1 
-                        }} />
+                        <Box
+                          component="span"
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            display: "inline-block",
+                            backgroundColor:
+                              [
+                                theme.palette.primary.main,
+                                theme.palette.secondary.main,
+                                theme.palette.success.main,
+                              ][i % 3],
+                            mr: 1,
+                          }}
+                        />
                         {d.name}
                       </Typography>
                       <Typography variant="body2" fontWeight="bold">
@@ -673,7 +707,6 @@ export default function DashboardPage() {
             </Box>
           </Paper>
         </Box>
-
       </Box>
     </Box>
   );

@@ -874,9 +874,6 @@ export default function InventoryPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ts: stockForm.date
-            ? new Date(stockForm.date).toISOString()
-            : undefined,
           employee: "Chef",
           reason: stockForm.reason || (io === "In" ? "Stock In" : "Stock Out"),
           io,
@@ -888,6 +885,7 @@ export default function InventoryPage() {
             : picked.name,
         }),
       });
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true)
         throw new Error(data?.error || `HTTP ${res.status}`);

@@ -101,24 +101,35 @@ export default function InventorySettingsPage() {
   const filteredItems = useMemo(() => {
     const term = search.trim().toLowerCase();
 
-    return ingredients.filter((item) => {
+    // 1. Apply filters
+    let list = ingredients.filter((item) => {
       if (selectedCategory !== "all" && item.category !== selectedCategory) {
         return false;
       }
-
       if (term) {
         const haystack = `${item.name} ${item.category} ${item.unit}`.toLowerCase();
         if (!haystack.includes(term)) return false;
       }
-
       if (showLowOnly) {
         const cur = Number(item.currentStock || 0);
         const low = Number(item.lowStock || 0);
         if (!(low > 0 && cur > 0 && cur <= low)) return false;
       }
-
       return true;
     });
+
+    // 2. Sort: Low stock items FIRST
+    list.sort((a, b) => {
+      const aLow = a.isLow ? 1 : 0;
+      const bLow = b.isLow ? 1 : 0;
+
+      if (aLow !== bLow) return bLow - aLow; // LOW first
+
+      // Optional: sort alphabetically inside groups
+      return a.name.localeCompare(b.name);
+    });
+
+    return list;
   }, [ingredients, selectedCategory, search, showLowOnly]);
 
   const handleLowChange = (id, value) => {

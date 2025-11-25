@@ -275,6 +275,7 @@ CREATE TABLE IF NOT EXISTS `items` (
   `profit`            DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- price - costOverall
 
   `active`            TINYINT(1)   NOT NULL DEFAULT 1,
+  'manualAvailable'   TINYINT(1) NOT NULL DEFAULT 1,
 
   `createdAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updatedAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -545,6 +546,151 @@ CREATE TABLE IF NOT EXISTS pos_cash_move_denoms (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+
+-- ============================================================
+-- POS ORDERS (header)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS pos_orders (
+  order_id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  shift_id          BIGINT UNSIGNED NOT NULL,
+  terminal_id       VARCHAR(60) NOT NULL,
+
+  status            ENUM('pending','open','paid','voided','refunded')
+                    NOT NULL DEFAULT 'pending',
+
+  order_type        ENUM('Dine-in','Take-out')
+                    NOT NULL DEFAULT 'Dine-in',
+
+  source            VARCHAR(60) NOT NULL DEFAULT 'Cashier POS',
+
+  customer_name     VARCHAR(80) NOT NULL DEFAULT 'Walk-in',
+  table_no          VARCHAR(10) NULL,
+
+  gross_amount      DECIMAL(12,2) NOT NULL DEFAULT 0.00,  -- sum of line totals
+  discount_amount   DECIMAL(12,2) NOT NULL DEFAULT 0.00,  -- total discount
+  net_amount        DECIMAL(12,2) NOT NULL DEFAULT 0.00,  -- gross - discount
+  tax_amount        DECIMAL(12,2) NOT NULL DEFAULT 0.00,  -- 0 for now
+
+  opened_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  closed_at         DATETIME NULL,
+
+  created_by CHAR(9) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  voided_by  CHAR(9) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  voided_at         DATETIME NULL,
+  void_reason       VARCHAR(255) NULL,
+
+  notes             VARCHAR(255) NULL,
+
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (order_id),
+
+  KEY ix_orders_shift_status (shift_id, status),
+  KEY ix_orders_table_status (table_no, status),
+
+  CONSTRAINT fk_orders_shift
+    FOREIGN KEY (shift_id) REFERENCES pos_shifts(shift_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+
+  CONSTRAINT fk_orders_created_by
+    FOREIGN KEY (created_by) REFERENCES employees(employee_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+
+  CONSTRAINT fk_orders_voided_by
+    FOREIGN KEY (voided_by) REFERENCES employees(employee_id)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- POS ORDER ITEMS (lines)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pos_order_items (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id     BIGINT UNSIGNED NOT NULL,
+
+  item_id      INT UNSIGNED NULL,                -- FK → items.id (nullable for deleted menu items)
+  item_name    VARCHAR(60) NOT NULL,             -- snapshot
+  item_price   DECIMAL(12,2) NOT NULL DEFAULT 0, -- per unit
+  qty          DECIMAL(12,3) NOT NULL DEFAULT 1, -- allow fractional if ever needed
+  line_total   DECIMAL(12,2) NOT NULL DEFAULT 0, -- item_price * qty
+
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_order_items_order (order_id),
+
+  CONSTRAINT fk_order_items_order
+    FOREIGN KEY (order_id) REFERENCES pos_orders(order_id)
+    ON DELETE CASCADE,
+
+  CONSTRAINT fk_order_items_item
+    FOREIGN KEY (item_id) REFERENCES items(id)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- POS ORDER DISCOUNTS (header-level)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pos_order_discounts (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id     BIGINT UNSIGNED NOT NULL,
+
+  name         VARCHAR(80) NOT NULL,        -- e.g. "PWD", "Senior", etc.
+  percent      DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  amount       DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_order_discounts_order (order_id),
+
+  CONSTRAINT fk_order_discounts_order
+    FOREIGN KEY (order_id) REFERENCES pos_orders(order_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- POS ORDER PAYMENTS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pos_order_payments (
+  payment_id   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id     BIGINT UNSIGNED NOT NULL,
+  shift_id     BIGINT UNSIGNED NOT NULL,
+
+  slot_no      TINYINT UNSIGNED NOT NULL DEFAULT 1,  -- 1 or 2 for split
+  method_name  VARCHAR(60) NOT NULL,                 -- "Cash", "GCash", etc.
+  amount       DECIMAL(12,2) NOT NULL,               -- positive = sale, negative = refund (if you want)
+  is_refund    TINYINT(1) NOT NULL DEFAULT 0,
+
+  gcash_last4  CHAR(4) NULL,                         -- for your GCash flow
+
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (payment_id),
+  KEY ix_order_payments_order (order_id),
+  KEY ix_order_payments_shift (shift_id),
+
+  CONSTRAINT fk_order_payments_order
+    FOREIGN KEY (order_id) REFERENCES pos_orders(order_id)
+    ON DELETE CASCADE,
+
+  CONSTRAINT fk_order_payments_shift
+    FOREIGN KEY (shift_id) REFERENCES pos_shifts(shift_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================
 -- Settings (Payment Types)
 -- ============================================================
@@ -676,3 +822,17 @@ CREATE TABLE audit_trail (
   timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   detail JSON NOT NULL
 );backup_jobs
+
+
+-- ============================================================
+-- Detected Printers (Settings Cashier-POS)
+-- ============================================================
+CREATE TABLE detected_printers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  printerId VARCHAR(255),
+  name VARCHAR(255),
+  type VARCHAR(255),
+  source VARCHAR(50),
+  deviceId VARCHAR(255),
+  lastSeen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

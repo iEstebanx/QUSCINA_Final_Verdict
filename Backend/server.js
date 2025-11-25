@@ -20,22 +20,31 @@ app.set("trust proxy", true);
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 
-// Allowed origins for local dev + LAN (Vite proxy hits from http://localhost:5173)
+// Allowed origins for local dev, LAN, Vercel, Railway domain
 const allowedPatterns = [
-  /^http:\/\/localhost(?::\d+)?$/,
-  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,
-  /^capacitor:\/\/localhost$/,
-  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/,
-  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/
+  /^http:\/\/localhost(?::\d+)?$/,                  // local dev
+  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,               // local dev
+  /^capacitor:\/\/localhost$/,                     // mobile
+  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/, // LAN
+  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,          // LAN
+
+  // 👉 ANY Vercel frontend, e.g. https://myapp.vercel.app
+  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
+
+  // 👉 Your own backend domain on Railway
+  /^https:\/\/quscinabackofficebackend-production\.up\.railway\.app$/,
 ];
 
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedPatterns.some((rx) => rx.test(origin))) cb(null, true);
-      else cb(new Error(`CORS blocked: ${origin}`));
+      if (!origin || allowedPatterns.some((rx) => rx.test(origin))) {
+        cb(null, true);
+      } else {
+        cb(new Error(`CORS blocked: ${origin}`));
+      }
     },
-    credentials: true
+    credentials: true,
   })
 );
 
@@ -85,20 +94,33 @@ app.use((err, _req, res, _next) => {
 });
 
 // ✅ Boot
-const { PORT } = process.env;
-if (!PORT) {
-  console.error("❌ PORT not set. Put PORT=5000 in Backend/.env");
-  process.exit(1);
-}
+// Prefer the platform port (Railway sets PORT), fall back to 5000 for local dev.
+const PORT = Number(process.env.PORT) || 5000;
+
+// Detect if we are running on Railway
+const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT;
 
 (async () => {
   try {
-    await ping(); // fail fast if DB creds are wrong
+    if (IS_RAILWAY) {
+      // On Railway: try to ping DB, but don't kill the process if it fails.
+      try {
+        await ping();
+        console.log("✅ [Railway] DB ping OK");
+      } catch (e) {
+        console.warn("⚠️ [Railway] DB ping failed at startup (continuing):", e.message);
+      }
+    } else {
+      // Local dev / other environments: fail fast if DB is misconfigured.
+      await ping();
+      console.log("✅ DB ping OK");
+    }
+
     app.listen(PORT, () => {
-      console.log(`🚀 API running on http://localhost:${PORT}`);
+      console.log(`🚀 API running on port ${PORT}`);
     });
   } catch (e) {
-    console.error("❌ Failed DB ping on startup:", e.message);
+    console.error("❌ Failed during startup:", e.message);
     process.exit(1);
   }
 })();

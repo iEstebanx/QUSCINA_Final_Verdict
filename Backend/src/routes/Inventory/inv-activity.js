@@ -208,7 +208,9 @@ module.exports = ({ db } = {}) => {
       const tsVal =
         typeof tsRaw === "string" && tsRaw.trim() ? new Date(tsRaw) : null;
 
-      const now = new Date();
+      const now = new Date(
+        new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" })
+      );
 
       const id = await db.tx(async (conn) => {
         // 1) insert activity row (column is now `reason`)
@@ -217,7 +219,7 @@ module.exports = ({ db } = {}) => {
             (ts, employee, reason, io, qty, price, ingredientId, ingredientName, createdAt, updatedAt)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            tsVal,
+            now,
             employee,
             reason,
             io,

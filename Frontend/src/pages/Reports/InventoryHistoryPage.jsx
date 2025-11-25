@@ -15,7 +15,18 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  RadioGroup,
+  Radio,
+  FormControlLabel,
 } from "@mui/material";
+
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 
 import SearchIcon from "@mui/icons-material/Search";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
@@ -47,11 +58,35 @@ const formatDateTime = (iso) => {
   });
 };
 
+const pdfHeadStyles = {
+  fillColor: [230, 230, 230],
+  textColor: [0, 0, 0],
+  fontStyle: "bold",
+};
+
+// helper for YYYY-MM-DD
+const dateToYMD = (d) => {
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 export default function InventoryHistoryPage() {
   const [ingredients, setIngredients] = useState([]);
   const [activity, setActivity] = useState([]);
   const [search, setSearch] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
+
+  // dialog state
+  const [pdfOpen, setPdfOpen] = useState(false);
+  const [pdfMode, setPdfMode] = useState("all");
+  const [pdfFrom, setPdfFrom] = useState(null);
+  const [pdfTo, setPdfTo] = useState(null);
+
+  const [noDataOpen, setNoDataOpen] = useState(false);
+  const [noDataMessage, setNoDataMessage] = useState("");
 
   /* LOAD INGREDIENTS */
   useEffect(() => {
@@ -129,6 +164,23 @@ export default function InventoryHistoryPage() {
     return result.slice().reverse();
   }, [activity, ingredients]);
 
+  // all YYYY-MM-DD dates that have at least one history row
+  const activeDateSet = useMemo(() => {
+    const s = new Set();
+    for (const r of computedRows) {
+      const d = new Date(r.ts);
+      s.add(dateToYMD(d));
+    }
+    return s;
+  }, [computedRows]);
+
+  const isDateDisabled = (date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return true;
+    // if somehow no history at all, don't lock the calendar completely
+    if (!activeDateSet.size) return false;
+    return !activeDateSet.has(dateToYMD(date));
+  };
+
   /* SEARCH */
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -150,10 +202,109 @@ export default function InventoryHistoryPage() {
   }, [filtered, pageState]);
 
   /* PDF EXPORT */
-  const handlePdfExport = async () => {
-    if (!filtered.length) return;
+  const handlePdfExport = async ({ mode = "all", from, to } = {}) => {
+    // base rows respect search
+    let baseRows = filtered;
+    let rangeLabel = "All records";
 
-    const rows = filtered.map((r) => [
+    const now = new Date();
+    const todayYMD = dateToYMD(now);
+
+    const startOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      0, 0, 0, 0
+    );
+    const endOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      23, 59, 59, 999
+    );
+
+    if (mode === "today") {
+      // 🔹 STRICT today only
+      baseRows = filtered.filter((r) => {
+        const dt = new Date(r.ts);
+        return dateToYMD(dt) === todayYMD;
+      });
+      rangeLabel = `${todayYMD} (Today)`;
+    } else if (mode === "week") {
+      const startOfWeek = new Date(startOfToday);
+      const day = startOfToday.getDay(); // 0 = Sun, 1 = Mon, ...
+      const mondayDiff = (day + 6) % 7; // convert so 0 = Mon
+      startOfWeek.setDate(startOfToday.getDate() - mondayDiff);
+
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      endOfWeek.setHours(23, 59, 59, 999);
+
+      baseRows = filtered.filter((r) => {
+        const dt = new Date(r.ts);
+        return dt >= startOfWeek && dt <= endOfWeek;
+      });
+
+      rangeLabel = `${dateToYMD(startOfWeek)} to ${dateToYMD(
+        endOfWeek
+      )} (This Week)`;
+    } else if (mode === "month") {
+      const startOfMonth = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1,
+        0, 0, 0, 0
+      );
+      const endOfMonth = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0,
+        23, 59, 59, 999
+      );
+
+      baseRows = filtered.filter((r) => {
+        const dt = new Date(r.ts);
+        return dt >= startOfMonth && dt <= endOfMonth;
+      });
+
+      rangeLabel = `${dateToYMD(startOfMonth)} to ${dateToYMD(
+        endOfMonth
+      )} (This Month)`;
+    } else if (mode === "range" && from && to) {
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+      fromDate.setHours(0, 0, 0, 0);
+      toDate.setHours(23, 59, 59, 999);
+
+      baseRows = filtered.filter((r) => {
+        const dt = new Date(r.ts);
+        return dt >= fromDate && dt <= toDate;
+      });
+
+      const fromYMD = dateToYMD(fromDate);
+      const toYMD = dateToYMD(toDate);
+      rangeLabel = `${fromYMD} to ${toYMD}`;
+    } else {
+      // "all" → keep all filtered rows
+      rangeLabel = "All records (current search results)";
+    }
+
+    // ❗ if the chosen range has no data, DO NOT export everything
+    if (!baseRows.length) {
+      let humanRange = "the selected range";
+      if (mode === "today") humanRange = "today";
+      else if (mode === "week") humanRange = "this week";
+      else if (mode === "month") humanRange = "this month";
+      else if (mode === "range") humanRange = "the selected date range";
+
+      setNoDataMessage(
+        `No inventory history found for ${humanRange}. There is nothing to export.`
+      );
+      setNoDataOpen(true);
+      return;
+    }
+
+    const rows = baseRows.map((r) => [
       formatDateTime(r.ts),
       r.reason,
       r.ingredientName,
@@ -185,8 +336,13 @@ export default function InventoryHistoryPage() {
     doc.setFontSize(18);
     doc.text("Inventory History Report", 300, 170, { align: "center" });
 
+    // small date range text under title
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Date range: ${rangeLabel}`, 300, 188, { align: "center" });
+
     autoTable(doc, {
-      startY: 200,
+      startY: 210,
       head: [
         [
           "Date",
@@ -205,12 +361,25 @@ export default function InventoryHistoryPage() {
       styles: {
         fontSize: 9,
       },
-      headStyles: {
-        fillColor: [240, 240, 240],
-      },
+      headStyles: pdfHeadStyles,
     });
 
     doc.save("inventory-history.pdf");
+  };
+
+  const handlePdfDialogConfirm = () => {
+    if (pdfMode === "range" && (!pdfFrom || !pdfTo)) {
+      // no dates selected → do nothing (you can add snackbar here)
+      return;
+    }
+
+    handlePdfExport({
+      mode: pdfMode,
+      from: pdfFrom,
+      to: pdfTo,
+    });
+
+    setPdfOpen(false);
   };
 
   /* UI */
@@ -242,7 +411,7 @@ export default function InventoryHistoryPage() {
             variant="contained"
             color="error"
             startIcon={<PictureAsPdfIcon />}
-            onClick={handlePdfExport}
+            onClick={() => setPdfOpen(true)}
           >
             PDF
           </Button>
@@ -316,13 +485,118 @@ export default function InventoryHistoryPage() {
             onRowsPerPageChange={(e) =>
               setPageState({
                 page: 0,
-                rowsPerPage: parseInt(e.target.value),
+                rowsPerPage: parseInt(e.target.value, 10),
               })
             }
             rowsPerPageOptions={[5, 10, 25]}
           />
         </Box>
       </Paper>
+
+      {/* PDF EXPORT DIALOG */}
+      <Dialog
+        open={pdfOpen}
+        onClose={() => setPdfOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Export Inventory History</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2} mt={1}>
+            <RadioGroup
+              value={pdfMode}
+              onChange={(e) => setPdfMode(e.target.value)}
+            >
+              <FormControlLabel
+                value="all"
+                control={<Radio />}
+                label="All dates (current search results)"
+              />
+              <FormControlLabel
+                value="today"
+                control={<Radio />}
+                label="Today"
+              />
+              <FormControlLabel
+                value="week"
+                control={<Radio />}
+                label="This week"
+              />
+              <FormControlLabel
+                value="month"
+                control={<Radio />}
+                label="This month"
+              />
+              <FormControlLabel
+                value="range"
+                control={<Radio />}
+                label="Custom date range"
+              />
+            </RadioGroup>
+
+            {pdfMode === "range" && (
+              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <DatePicker
+                    label="From"
+                    value={pdfFrom}
+                    onChange={(newVal) => setPdfFrom(newVal)}
+                    slotProps={{
+                      textField: {
+                        size: "small",
+                        fullWidth: true,
+                      },
+                    }}
+                    shouldDisableDate={isDateDisabled}
+                  />
+
+                  <DatePicker
+                    label="To"
+                    value={pdfTo}
+                    onChange={(newVal) => setPdfTo(newVal)}
+                    slotProps={{
+                      textField: {
+                        size: "small",
+                        fullWidth: true,
+                      },
+                    }}
+                    shouldDisableDate={isDateDisabled}
+                  />
+                </Stack>
+              </LocalizationProvider>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPdfOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handlePdfDialogConfirm}
+          >
+            Download PDF
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* NO DATA TO EXPORT DIALOG */}
+      <Dialog
+        open={noDataOpen}
+        onClose={() => setNoDataOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>No data to export</DialogTitle>
+        <DialogContent dividers>
+          <Typography>{noDataMessage}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNoDataOpen(false)} autoFocus>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 }

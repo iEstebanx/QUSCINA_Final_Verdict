@@ -1,0 +1,57 @@
+# ---- Node / React (both Frontend & Backend)
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# ---- Build outputs
+dist/
+build/
+**/dist/
+**/build/
+
+.env
+# ---- Vite / CRA temp
+.vite/
+.cache/
+*.cache
+
+# ---- Logs
+logs/
+**/logs/
+*.log
+
+# ---- OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ---- Firebase
+.firebase/
+.firebase-tools.json
+# keep config files tracked:
+!firebase.json
+!.firebaserc
+
+# If you keep service account keys locally, never commit them:
+serviceAccount*.json
+**/serviceAccount*.json
+backend/firebase-account.json
+
+# ---- Test coverage
+coverage/
+
+# ---- Optional: Capacitor/Android/iOS (ignore if not present)
+android/
+ios/
+
+# Ignore VS Code local history
+.history/

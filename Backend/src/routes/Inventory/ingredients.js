@@ -316,7 +316,7 @@ module.exports = ({ db } = {}) => {
           .json({ ok: false, error: "Unit is not allowed." });
       }
 
-      const now = new Date();
+      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }));
       const result = await db.query(
         `INSERT INTO inventory_ingredients
           (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
