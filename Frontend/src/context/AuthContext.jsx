@@ -5,21 +5,53 @@ import PropTypes from "prop-types";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
-const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+/* =============================================================
+   🔥 FIXED API BASE LOGIC
+   Local dev  -> "" (Vite proxy handles /api)
+   Production -> Railway backend
+   Env var    -> optional override (VITE_API_BASE)
+============================================================= */
+
+const PROD_API_BASE = "https://quscinabackofficebackend-production.up.railway.app";
+
+const API_BASE =
+  import.meta.env?.VITE_API_BASE ||
+  (typeof window !== "undefined" &&
+  window.location.hostname.endsWith("vercel.app")
+    ? PROD_API_BASE
+    : "");
+
+// join("/api/auth/login") -> builds correct URL for dev + prod
+const join = (p) =>
+  `${API_BASE}`.replace(/\/+$/, "") +
+  `/${String(p || "").replace(/^\/+/, "")}`;
+
+/* =============================================================
+   Safe JSON helper
+============================================================= */
 
 async function safeJson(res) {
   const text = await res.text();
-  try { return text ? JSON.parse(text) : {}; }
-  catch { return { error: text || res.statusText || "Invalid response" }; }
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text || res.statusText || "Invalid response" };
+  }
 }
 
+/* =============================================================
+   Auth Provider
+============================================================= */
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);   // { employeeId, role, ... }
+  const [user, setUser] = useState(null); // { employeeId, role, ... }
   const [token, setToken] = useState(null); // optional JWT
   const [ready, setReady] = useState(false);
 
-  // Bootstrap from storage (session first, then local). If empty, ask backend.
+  /* =============================================================
+     Bootstrap login state
+  ============================================================= */
+
   useEffect(() => {
     let cancelled = false;
 
@@ -52,7 +84,7 @@ export function AuthProvider({ children }) {
         } catch {}
       }
 
-      // 3) Fallback: cookie session (soft)
+      // 3) Fallback: /api/auth/me?soft=1
       try {
         const res = await fetch(join("/api/auth/me?soft=1"), {
           credentials: "include",
@@ -66,29 +98,39 @@ export function AuthProvider({ children }) {
       } catch {
         /* ignore */
       }
+
       if (!cancelled) setReady(true);
     }
 
     bootstrap();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // in AuthContext (same file where setUser/setToken live)
-  async function login(identifier, password, { remember } = {}) {
-    // if this file doesn't have safeJson/join, either import them or inline:
-    // const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
-    // async function safeJson(res) { const t = await res.text(); try { return t ? JSON.parse(t) : {}; } catch { return { error: t || res.statusText || "Invalid response" }; } }
+  /* =============================================================
+     LOGIN
+  ============================================================= */
 
+  async function login(identifier, password, { remember } = {}) {
     let res;
+
     try {
       res = await fetch(join("/api/auth/login"), {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
-        body: JSON.stringify({ identifier, password, remember, app: "backoffice" }),
+        headers: {
+          "Content-Type": "application/json",
+          "X-App": "backoffice",
+        },
+        body: JSON.stringify({
+          identifier,
+          password,
+          remember,
+          app: "backoffice",
+        }),
       });
     } catch (networkErr) {
-      // Network/timeout/etc → throw with status 0 so UI can show a nice message
       const err = new Error("Unable to reach server. Check your connection.");
       err.status = 0;
       err.data = null;
@@ -98,33 +140,35 @@ export function AuthProvider({ children }) {
     const data = await safeJson(res);
 
     if (!res.ok) {
-      // ✨ Enrich the error so caller can branch on status (423 temp/permanent lock)
       const err = new Error(data?.error || res.statusText || "Login failed");
-      err.status = res.status;   // e.g., 401, 403, 423
-      err.data = data || null;   // may contain { remaining_seconds }
+      err.status = res.status;
+      err.data = data || null;
       throw err;
     }
 
-    // ✅ success → keep your existing behavior
+    // success
     const u = data.user || null;
     setUser(u);
     setToken(data.token || null);
 
-    // Save to chosen storage
+    // remember me
     const store = remember ? localStorage : sessionStorage;
     store.setItem("qd_token", data.token || "");
     store.setItem("qd_user", JSON.stringify(u));
 
-    // Clear the other store to avoid stale values
+    // clear other store
     const other = remember ? sessionStorage : localStorage;
     other.removeItem("qd_token");
     other.removeItem("qd_user");
 
-    return u; // (unchanged) callers expecting a user keep working
+    return u;
   }
 
+  /* =============================================================
+     LOGOUT
+  ============================================================= */
+
   async function logout() {
-    // Instant UI clear
     setUser(null);
     setToken(null);
     localStorage.removeItem("qd_token");
@@ -139,11 +183,19 @@ export function AuthProvider({ children }) {
         headers: { "Content-Type": "application/json" },
       });
     } catch {
-      // ignore – even if server fails, client is already logged out
+      /* ignore */
     }
   }
 
-  const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);
+  /* =============================================================
+     Return context
+  ============================================================= */
+
+  const value = useMemo(
+    () => ({ user, token, ready, login, logout }),
+    [user, token, ready]
+  );
+
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
