@@ -38,8 +38,9 @@ const FRONTEND_ORIGIN =
 app.use(
   cors({
     origin(origin, cb) {
-      // allow server-to-server / curl / Postman (no Origin)
+      // allow server-to-server / curl / Postman (no Origin header)
       if (!origin) {
+        console.log("[CORS] no origin (server-to-server) -> allowed");
         return cb(null, true);
       }
 
@@ -49,9 +50,11 @@ app.use(
       console.log("[CORS] incoming origin:", origin, {
         matchPattern,
         matchFrontend,
+        FRONTEND_ORIGIN,
       });
 
       if (matchPattern || matchFrontend) {
+        console.log("[CORS] allowed:", origin);
         return cb(null, true);
       }
 
