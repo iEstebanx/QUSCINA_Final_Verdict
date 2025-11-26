@@ -12,7 +12,7 @@ export const useAuth = () => useContext(AuthCtx);
 ============================================================= */
 
 const RAILWAY_API_ORIGIN =
-  "https://quscinabackofficebackend-production.up.railway.app";
+  "https://quscinabackoffice-production.up.railway.app";
 
 function computeApiBase() {
   if (typeof window === "undefined") return "";
