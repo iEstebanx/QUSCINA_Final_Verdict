@@ -22,27 +22,42 @@ app.use(cookieParser());
 
 // Allowed origins for local dev, LAN, Vercel, Railway domain
 const allowedPatterns = [
-  /^http:\/\/localhost(?::\d+)?$/,                  // local dev
-  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,               // local dev
-  /^capacitor:\/\/localhost$/,                     // mobile
-  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/, // LAN
-  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,          // LAN
-
-  // 👉 ANY Vercel frontend, e.g. https://myapp.vercel.app
-  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
-
-  // 👉 Your own backend domain on Railway
+  /^http:\/\/localhost(?::\d+)?$/,                   // local dev
+  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,                // local dev
+  /^capacitor:\/\/localhost$/,                      // mobile
+  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/,  // LAN
+  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,           // LAN
+  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,             // any Vercel app
   /^https:\/\/quscinabackofficebackend-production\.up\.railway\.app$/,
 ];
+
+// 🔹 Explicit frontend origin (env or fallback)
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN || "https://quscina-backoffice.vercel.app";
 
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedPatterns.some((rx) => rx.test(origin))) {
-        cb(null, true);
-      } else {
-        cb(new Error(`CORS blocked: ${origin}`));
+      // allow server-to-server / curl / Postman (no Origin)
+      if (!origin) {
+        return cb(null, true);
       }
+
+      const matchPattern = allowedPatterns.some((rx) => rx.test(origin));
+      const matchFrontend = origin === FRONTEND_ORIGIN;
+
+      console.log("[CORS] incoming origin:", origin, {
+        matchPattern,
+        matchFrontend,
+      });
+
+      if (matchPattern || matchFrontend) {
+        return cb(null, true);
+      }
+
+      const err = new Error(`CORS blocked: ${origin}`);
+      console.error("[CORS] BLOCKED:", origin);
+      return cb(err);
     },
     credentials: true,
   })
