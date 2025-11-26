@@ -46,12 +46,6 @@ async function safeJson(res) {
   }
 }
 
-async function safeJson(res) {
-  const text = await res.text();
-  try { return text ? JSON.parse(text) : {}; }
-  catch { return { error: text || res.statusText || "Invalid response" }; }
-}
-
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);   // { employeeId, role, ... }
   const [token, setToken] = useState(null); // optional JWT
