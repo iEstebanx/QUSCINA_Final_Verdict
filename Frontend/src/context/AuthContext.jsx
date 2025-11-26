@@ -5,66 +5,21 @@ import PropTypes from "prop-types";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-/* =============================================================
-   API BASE LOGIC (NO ENV NEEDED)
-   - Local dev (localhost/127.0.0.1) -> ""  (so /api goes to Vite proxy)
-   - Anything else (Vercel, etc.)   -> Railway backend
-============================================================= */
-
-const RAILWAY_API_ORIGIN =
-  "https://quscinabackofficebackend-production.up.railway.app";
-
-function computeApiBase() {
-  if (typeof window === "undefined") return ""; // SSR safety
-
-  const host = window.location.hostname;
-
-  const isLocal =
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host.startsWith("192.168.") ||
-    host.startsWith("10.");
-
-  // Local dev -> use Vite proxy (/api ...)
-  if (isLocal) return "";
-
-  // Production (Vercel, etc.) -> hit Railway directly
-  return RAILWAY_API_ORIGIN;
-}
-
-const API_BASE = computeApiBase();
-
-// join("/api/auth/login") -> correct URL for dev + prod
-const join = (p) =>
-  `${API_BASE}`.replace(/\/+$/, "") +
-  `/${String(p || "").replace(/^\/+/, "")}`;
-
-/* =============================================================
-   Safe JSON helper
-============================================================= */
+const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
+console.log("[AuthContext] API_BASE at build:", API_BASE);
 
 async function safeJson(res) {
   const text = await res.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { error: text || res.statusText || "Invalid response" };
-  }
+  try { return text ? JSON.parse(text) : {}; }
+  catch { return { error: text || res.statusText || "Invalid response" }; }
 }
 
-/* =============================================================
-   Auth Provider
-============================================================= */
-
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null); // { employeeId, role, ... }
+  const [user, setUser] = useState(null);   // { employeeId, role, ... }
   const [token, setToken] = useState(null); // optional JWT
   const [ready, setReady] = useState(false);
 
-  /* =============================================================
-     Bootstrap login state
-  ============================================================= */
-
+  // Bootstrap from storage (session first, then local). If empty, ask backend.
   useEffect(() => {
     let cancelled = false;
 
@@ -97,7 +52,7 @@ export function AuthProvider({ children }) {
         } catch {}
       }
 
-      // 3) Fallback: /api/auth/me?soft=1 (cookie session)
+      // 3) Fallback: cookie session (soft)
       try {
         const res = await fetch(join("/api/auth/me?soft=1"), {
           credentials: "include",
@@ -111,39 +66,29 @@ export function AuthProvider({ children }) {
       } catch {
         /* ignore */
       }
-
       if (!cancelled) setReady(true);
     }
 
     bootstrap();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  /* =============================================================
-     LOGIN
-  ============================================================= */
-
+  // in AuthContext (same file where setUser/setToken live)
   async function login(identifier, password, { remember } = {}) {
-    let res;
+    // if this file doesn't have safeJson/join, either import them or inline:
+    // const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+    // async function safeJson(res) { const t = await res.text(); try { return t ? JSON.parse(t) : {}; } catch { return { error: t || res.statusText || "Invalid response" }; } }
 
+    let res;
     try {
       res = await fetch(join("/api/auth/login"), {
         method: "POST",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-App": "backoffice",
-        },
-        body: JSON.stringify({
-          identifier,
-          password,
-          remember,
-          app: "backoffice",
-        }),
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+        body: JSON.stringify({ identifier, password, remember, app: "backoffice" }),
       });
     } catch (networkErr) {
+      // Network/timeout/etc → throw with status 0 so UI can show a nice message
       const err = new Error("Unable to reach server. Check your connection.");
       err.status = 0;
       err.data = null;
@@ -153,35 +98,33 @@ export function AuthProvider({ children }) {
     const data = await safeJson(res);
 
     if (!res.ok) {
+      // ✨ Enrich the error so caller can branch on status (423 temp/permanent lock)
       const err = new Error(data?.error || res.statusText || "Login failed");
-      err.status = res.status;
-      err.data = data || null;
+      err.status = res.status;   // e.g., 401, 403, 423
+      err.data = data || null;   // may contain { remaining_seconds }
       throw err;
     }
 
-    // success
+    // ✅ success → keep your existing behavior
     const u = data.user || null;
     setUser(u);
     setToken(data.token || null);
 
-    // remember me
+    // Save to chosen storage
     const store = remember ? localStorage : sessionStorage;
     store.setItem("qd_token", data.token || "");
     store.setItem("qd_user", JSON.stringify(u));
 
-    // clear other store
+    // Clear the other store to avoid stale values
     const other = remember ? sessionStorage : localStorage;
     other.removeItem("qd_token");
     other.removeItem("qd_user");
 
-    return u;
+    return u; // (unchanged) callers expecting a user keep working
   }
 
-  /* =============================================================
-     LOGOUT
-  ============================================================= */
-
   async function logout() {
+    // Instant UI clear
     setUser(null);
     setToken(null);
     localStorage.removeItem("qd_token");
@@ -196,19 +139,11 @@ export function AuthProvider({ children }) {
         headers: { "Content-Type": "application/json" },
       });
     } catch {
-      /* ignore */
+      // ignore – even if server fails, client is already logged out
     }
   }
 
-  /* =============================================================
-     Return context
-  ============================================================= */
-
-  const value = useMemo(
-    () => ({ user, token, ready, login, logout }),
-    [user, token, ready]
-  );
-
+  const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
