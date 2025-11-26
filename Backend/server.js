@@ -21,14 +21,12 @@ app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 
 /**
- * 🔓 CORS (simplified so Vercel ↔ Railway just works)
- * - origin: true → reflects the incoming Origin header
- * - credentials: true → allows cookies / Authorization
- *
- * Once everything works, we can tighten this later if you want.
+ * 🔓 CORS (Vercel ↔ Railway)
+ * origin: true → reflects whatever Origin the browser sends
+ * credentials: true → allows cookies / Authorization headers
  */
 const corsOptions = {
-  origin: true, // reflect Origin header (allows Vercel + localhost)
+  origin: true, // allows all your Vercel domains + localhost
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
@@ -39,9 +37,7 @@ const corsOptions = {
   ],
 };
 
-app.use(cors(corsOptions));
-// Preflight
-app.options("*", cors(corsOptions));
+app.use(cors(corsOptions)); // ✅ THIS IS ENOUGH, NO app.options("*")
 
 // 🔄 Health check (also verifies DB connectivity)
 app.get("/api/health", async (_req, res) => {
