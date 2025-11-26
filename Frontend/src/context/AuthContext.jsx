@@ -5,9 +5,35 @@ import PropTypes from "prop-types";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
+/* =============================================================
+   API BASE LOGIC (NO ENV)
+   Local dev -> Vite proxy ("" so /api routes go through proxy)
+   Production (Vercel) -> Railway backend
+============================================================= */
 
-// 🔹 2) join helper – same as before
+const RAILWAY_API_ORIGIN =
+  "https://quscinabackofficebackend-production.up.railway.app";
+
+function computeApiBase() {
+  if (typeof window === "undefined") return "";
+
+  const host = window.location.hostname;
+
+  // Local dev (Vite)
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.startsWith("192.168.") ||
+    host.startsWith("10.");
+
+  if (isLocal) return ""; // ← dev uses proxy (http://localhost:5173 → backend)
+
+  // Otherwise we're on Vercel production or preview
+  return RAILWAY_API_ORIGIN;
+}
+
+const API_BASE = computeApiBase();
+
 const join = (p = "") =>
   `${API_BASE}`.replace(/\/+$/, "") + `/${String(p).replace(/^\/+/, "")}`;
 
