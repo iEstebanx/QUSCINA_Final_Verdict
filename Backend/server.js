@@ -21,62 +21,27 @@ app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 
 /**
- * CORS: allow
- *  - local dev (localhost, LAN)
- *  - your Vercel frontend (main + preview URLs)
- *  - your own Railway domain (if ever needed)
+ * 🔓 CORS (simplified so Vercel ↔ Railway just works)
+ * - origin: true → reflects the incoming Origin header
+ * - credentials: true → allows cookies / Authorization
+ *
+ * Once everything works, we can tighten this later if you want.
  */
-const allowedOrigins = [
-  // 🔹 Your production Vercel domain
-  "https://quscina-backoffice.vercel.app",
+const corsOptions = {
+  origin: true, // reflect Origin header (allows Vercel + localhost)
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-App",
+    "X-Requested-With",
+  ],
+};
 
-  // 🔹 Preview deployments for this project
-  /^https:\/\/quscina-backoffice-[a-z0-9-]+\.vercel\.app$/,
-
-  // 🔹 Local dev / Vite
-  "http://localhost:5173",
-  "http://localhost:5000",
-  /^http:\/\/localhost(?::\d+)?$/,
-  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,
-  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/,
-  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,
-  /^capacitor:\/\/localhost$/,
-
-  // 🔹 Your own backend on Railway (internal calls)
-  /^https:\/\/quscinabackofficebackend-production\.up\.railway\.app$/,
-];
-
-app.use(
-  cors({
-    origin(origin, callback) {
-      // Non-browser (curl, Postman) → no Origin header → allow
-      if (!origin) return callback(null, true);
-
-      const ok = allowedOrigins.some((o) =>
-        o instanceof RegExp ? o.test(origin) : o === origin
-      );
-
-      if (ok) {
-        return callback(null, true);
-      }
-
-      console.warn("[CORS] blocked:", origin);
-      // ❗ Do NOT throw an error here, just deny CORS silently
-      return callback(null, false);
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-App",
-      "X-Requested-With",
-    ],
-  })
-);
-
-// Optional: handle preflight explicitly
-app.options("*", cors());
+app.use(cors(corsOptions));
+// Preflight
+app.options("*", cors(corsOptions));
 
 // 🔄 Health check (also verifies DB connectivity)
 app.get("/api/health", async (_req, res) => {
@@ -105,7 +70,10 @@ try {
 
 try {
   const mountRoutes = require("./src/routes");
-  app.use("/api", typeof mountRoutes === "function" ? mountRoutes({ db }) : mountRoutes);
+  app.use(
+    "/api",
+    typeof mountRoutes === "function" ? mountRoutes({ db }) : mountRoutes
+  );
 } catch (err) {
   console.warn("⚠️ API routes missing or failed to load:", err?.message || err);
 }
