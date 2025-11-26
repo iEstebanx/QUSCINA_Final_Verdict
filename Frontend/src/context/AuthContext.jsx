@@ -1,6 +1,7 @@
 // Frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
+import { API_BASE, joinApi } from "@/utils/apiBase";
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);

@@ -661,17 +661,25 @@ module.exports = function authRouterFactory({ db } = {}) {
         },
       });
 
-      const token = issueAuthToken(user);
-      // ✅ NEW — always set cookie, remember only changes maxAge
+      const isProd =
+        process.env.RAILWAY_ENVIRONMENT ||
+        process.env.NODE_ENV === "production";
+
       res.cookie("qd_token", token, {
         httpOnly: true,
-        sameSite: "lax",
-        secure: false,          // true when HTTPS
-        path: "/api",           // or "/" if you prefer
+        path: "/api",
+        ...(isProd
+          ? {
+              sameSite: "none", // required for cross-site cookies
+              secure: true,     // must be true when SameSite=None
+            }
+          : {
+              sameSite: "lax",  // OK for localhost dev
+              secure: false,
+            }),
         ...(remember
-          ? { maxAge: 7 * 24 * 60 * 60 * 1000 }   // 7 days
-          : {}                                    // session cookie (until browser close)
-        ),
+          ? { maxAge: 7 * 24 * 60 * 60 * 1000 }
+          : {}),
       });
 
       return res.json({
