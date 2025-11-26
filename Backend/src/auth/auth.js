@@ -661,6 +661,9 @@ module.exports = function authRouterFactory({ db } = {}) {
         },
       });
 
+      // 🔐 issue JWT
+      const token = issueAuthToken(user);
+
       const isProd =
         process.env.RAILWAY_ENVIRONMENT ||
         process.env.NODE_ENV === "production";
@@ -670,11 +673,11 @@ module.exports = function authRouterFactory({ db } = {}) {
         path: "/api",
         ...(isProd
           ? {
-              sameSite: "none", // required for cross-site cookies
-              secure: true,     // must be true when SameSite=None
+              sameSite: "none",
+              secure: true,
             }
           : {
-              sameSite: "lax",  // OK for localhost dev
+              sameSite: "lax",
               secure: false,
             }),
         ...(remember
