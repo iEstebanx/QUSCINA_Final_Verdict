@@ -6,7 +6,19 @@ const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
 const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
-console.log("[AuthContext] API_BASE at build:", API_BASE);
+
+// 🔹 2) join helper – same as before
+const join = (p = "") =>
+  `${API_BASE}`.replace(/\/+$/, "") + `/${String(p).replace(/^\/+/, "")}`;
+
+async function safeJson(res) {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text || res.statusText || "Invalid response" };
+  }
+}
 
 async function safeJson(res) {
   const text = await res.text();
@@ -54,7 +66,8 @@ export function AuthProvider({ children }) {
 
       // 3) Fallback: cookie session (soft)
       try {
-        const res = await fetch(join("/api/auth/me?soft=1"), {
+        console.log("[AuthContext] calling me:", join("/auth/me?soft=1"));
+        const res = await fetch(join("/auth/me?soft=1"), {
           credentials: "include",
           cache: "no-store",
         });

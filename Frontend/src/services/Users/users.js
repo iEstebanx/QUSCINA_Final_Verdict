@@ -1,24 +1,24 @@
 // Frontend/src/services/Users/users.jsx
-const API_BASE = import.meta.env?.VITE_API_BASE || "";
 
-// join("/api/users") -> `${API_BASE}/api/users` without double slashes
-const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+// VITE_API_BASE = "https://quscinabackoffice-production.up.railway.app/api"
+const API_BASE = (import.meta.env?.VITE_API_BASE || "").replace(/\/+$/, "");
+
+// Always pass paths WITHOUT /api prefix here, e.g. join("/users")
+const join = (p = "") =>
+  `${API_BASE}/${String(p).replace(/^\/+/, "")}`;
 
 async function safeJson(res) {
   const text = await res.text();
-  try { return text ? JSON.parse(text) : {}; }
-  catch { return { error: text || res.statusText || "Invalid response" }; }
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text || res.statusText || "Invalid response" };
+  }
 }
 
 /**
  * Subscribe to the users list by polling the backend.
- * NOTE: Each user row now also includes:
- *   - failedLoginCount: number
- *   - lockUntil: ISO string | null
- *   - permanentLock: boolean
- * Usage:
- *   const unsub = subscribeUsers(({ rows }) => setRows(rows), { intervalMs: 5000 });
- *   return () => unsub();
+ * Backend route: GET /api/users
  */
 export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
   let active = true;
@@ -26,12 +26,12 @@ export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
 
   async function tick() {
     try {
-      const res = await fetch(join("/api/users"), { credentials: "include" });
+      const res = await fetch(join("/users"), { credentials: "include" });
       const data = await safeJson(res);
       if (res.ok && active && Array.isArray(data)) {
         cb({ rows: data });
       } else if (!res.ok) {
-        const msg = data?.error || res.statusText || "GET /api/users failed";
+        const msg = data?.error || res.statusText || "GET /users failed";
         console.error(msg);
         onError?.(msg);
       }
@@ -44,18 +44,29 @@ export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
   }
 
   tick();
-  return () => { active = false; if (timer) clearTimeout(timer); };
+  return () => {
+    active = false;
+    if (timer) clearTimeout(timer);
+  };
 }
 
+/**
+ * One-shot fetch of all users
+ * Backend: GET /api/users
+ */
 export async function fetchUsersOnce() {
-  const res = await fetch(join("/api/users"), { credentials: "include" });
+  const res = await fetch(join("/users"), { credentials: "include" });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "List users failed");
   return data; // array
 }
 
+/**
+ * Create user
+ * Backend: POST /api/users
+ */
 export async function createUser(payload) {
-  const res = await fetch(join("/api/users"), {
+  const res = await fetch(join("/users"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -66,8 +77,12 @@ export async function createUser(payload) {
   return data;
 }
 
+/**
+ * Update user
+ * Backend: PATCH /api/users/:employeeId
+ */
 export async function updateUser(employeeId, patch) {
-  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}`), {
+  const res = await fetch(join(`/users/${encodeURIComponent(employeeId)}`), {
     method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -78,9 +93,13 @@ export async function updateUser(employeeId, patch) {
   return data;
 }
 
+/**
+ * Delete user
+ * Backend: DELETE /api/users/:employeeId
+ */
 export async function deleteUser(employeeId, { signal } = {}) {
   if (!employeeId) throw new Error("employeeId is required");
-  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}`), {
+  const res = await fetch(join(`/users/${encodeURIComponent(employeeId)}`), {
     method: "DELETE",
     credentials: "include",
     headers: { Accept: "application/json" },
@@ -92,18 +111,20 @@ export async function deleteUser(employeeId, { signal } = {}) {
 }
 
 /**
- * 🔓 Unlock a user account (clears failedLoginCount, lockUntil, permanentLock)
- * Backend route: POST /api/users/:employeeId/unlock
+ * 🔓 Unlock a user account
+ * Backend: POST /api/users/:employeeId/unlock
  */
-
 export async function unlockUser(employeeId, { app, scope } = {}) {
   if (!employeeId) throw new Error("employeeId is required");
-  const res = await fetch(join(`/api/users/${encodeURIComponent(employeeId)}/unlock`), {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app, scope }), // app: 'backoffice' | 'pos' | 'kiosk' | ... ; scope: 'all'
-  });
+  const res = await fetch(
+    join(`/users/${encodeURIComponent(employeeId)}/unlock`),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app, scope }), // app: 'backoffice' | 'pos' | 'kiosk' | ... ; scope: 'all'
+    }
+  );
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Unlock user failed");
   return data; // { ok: true }
