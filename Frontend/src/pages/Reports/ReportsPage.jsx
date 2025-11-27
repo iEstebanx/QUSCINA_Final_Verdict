@@ -48,6 +48,7 @@ import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
 import PaymentsIcon from "@mui/icons-material/Payments";
 import ReplayIcon from "@mui/icons-material/Replay";
 import GridOnIcon from "@mui/icons-material/GridOn"; // Excel icon
+import { useAuth } from "@/context/AuthContext";
 
 // 🔹 PDF libs + logo
 import jsPDF from "jspdf";
@@ -82,6 +83,27 @@ const pdfHeadStyles = {
 
 /* --------------------------------- Page --------------------------------- */
 export default function ReportsPage() {
+  const { user } = useAuth();
+
+  const preparedBy = useMemo(() => {
+    if (!user) return "Prepared by: N/A";
+
+    const loginId =
+      user.employeeId || user.username || user.email || user.id || "";
+
+    const fullName = [user.firstName, user.lastName]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+
+    if (loginId && fullName) {
+      return `Prepared by: ${loginId} - ${fullName}`;
+    }
+    if (loginId) return `Prepared by: ${loginId}`;
+    if (fullName) return `Prepared by: ${fullName}`;
+    return "Prepared by: N/A";
+  }, [user]);
+
   // 🔹 Range preset (Day/Week/Monthly/etc. + Custom)
   const [range, setRange] = useState("days");
 
@@ -247,6 +269,7 @@ export default function ReportsPage() {
     bestSellerData,
     staffPerformanceData,
     ordersData,
+    preparedBy,
   }) => {
     const reportInfo = {
       title: "Sales Report",
@@ -320,26 +343,28 @@ export default function ReportsPage() {
         : "";
 
     const fullCSV = `Sales Report - ${reportInfo.dateRange}
-Generated: ${reportInfo.generatedAt}
+    Generated: ${reportInfo.generatedAt}
 
-TOP 5 CATEGORIES
-${categoryCSV || "No data"}
+    TOP 5 CATEGORIES
+    ${categoryCSV || "No data"}
 
-SALES BY PAYMENT TYPE
-${paymentsCSV || "No data"}
+    SALES BY PAYMENT TYPE
+    ${paymentsCSV || "No data"}
 
-BEST SELLERS
-${bestSellerCSV || "No data"}
+    BEST SELLERS
+    ${bestSellerCSV || "No data"}
 
-ORDERS
-${ordersCSV || "No data"}
+    ORDERS
+    ${ordersCSV || "No data"}
 
-STAFF PERFORMANCE
-${staffCSV || "No data"}
+    STAFF PERFORMANCE
+    ${staffCSV || "No data"}
 
-SALES CHART DATA
-Date,Amount
-${chartCSV || ""}`;
+    SALES CHART DATA
+    Date,Amount
+    ${chartCSV || ""}
+
+    ${preparedBy || "Prepared by: N/A"}`;
 
     return fullCSV;
   };
@@ -369,6 +394,7 @@ ${chartCSV || ""}`;
       bestSellerData: bestSeller,
       staffPerformanceData: staffPerformance,
       ordersData: filteredOrders,
+      preparedBy,
     });
 
     triggerExcelDownload(csv, currentRangeLabel);
@@ -419,6 +445,7 @@ ${chartCSV || ""}`;
         bestSellerData,
         staffPerformanceData,
         ordersData,
+        preparedBy,
       });
 
       triggerExcelDownload(csv, label);
@@ -448,6 +475,7 @@ ${chartCSV || ""}`;
     paymentsData,
     bestSellerData,
     staffPerformanceData,
+    preparedBy,
   }) => {
     const totalSales = paymentsData.reduce((sum, p) => sum + (p.net || 0), 0);
     const totalOrders = paymentsData.reduce((sum, p) => sum + (p.tx || 0), 0);
@@ -675,6 +703,15 @@ ${chartCSV || ""}`;
       margin: { left: 72, right: 40 },
     });
 
+    // 🔹 Prepared by footer
+    const footerY = doc.lastAutoTable
+      ? doc.lastAutoTable.finalY + 32
+      : cursorY + 32;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
+
     doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
   };
 
@@ -687,6 +724,7 @@ ${chartCSV || ""}`;
       paymentsData: payments,
       bestSellerData: bestSeller,
       staffPerformanceData: staffPerformance,
+      preparedBy,
     });
   };
 
@@ -732,6 +770,7 @@ ${chartCSV || ""}`;
         paymentsData,
         bestSellerData,
         staffPerformanceData,
+        preparedBy,
       });
 
       setPdfDialogOpen(false);
@@ -1144,7 +1183,7 @@ ${chartCSV || ""}`;
         </Paper>
 
         {/* ================= Latest Order ================= */}
-        <Paper sx={{ p: 2, overflow: "hidden" }}>
+        {/* <Paper sx={{ p: 2, overflow: "hidden" }}>
           <Stack direction="row" spacing={2} flexWrap="wrap" mb={2}>
             <MetricCard
               icon={<ReceiptLongIcon />}
@@ -1166,7 +1205,7 @@ ${chartCSV || ""}`;
           </Stack>
 
           <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            {/* Left: table */}
+
             <Box sx={{ flex: 2, minWidth: 300 }}>
               <TableContainer
                 component={Paper}
@@ -1243,7 +1282,6 @@ ${chartCSV || ""}`;
                 labelRowsPerPage="Rows per page:"
               />
 
-              {/* Small screens: preview BELOW the table */}
               {isSmall && (
                 <Box sx={{ mt: 2 }}>
                   <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
@@ -1259,7 +1297,6 @@ ${chartCSV || ""}`;
               )}
             </Box>
 
-            {/* Desktop: preview on the RIGHT */}
             {!isSmall && (
               <Box sx={{ flex: 1, minWidth: 320 }}>
                 <Paper
@@ -1286,7 +1323,7 @@ ${chartCSV || ""}`;
               </Box>
             )}
           </Stack>
-        </Paper>
+        </Paper> */}
       </Box>
 
       {/* ================= PDF Range Dialog ================= */}

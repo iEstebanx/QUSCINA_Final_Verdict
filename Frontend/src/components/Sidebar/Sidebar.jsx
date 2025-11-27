@@ -265,27 +265,34 @@ function SidebarContent({ collapsed }) {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Brand */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          p: 1.25,
-          justifyContent: collapsed ? "center" : "flex-start",
-        }}
+      <NavLink
+        to="/dashboard"
+        style={{ textDecoration: "none", color: "inherit" }}
       >
-        <Box
-          component="img"
-          src={logo}
-          alt="Quscina logo"
-          sx={{ width: 28, height: 28, flexShrink: 0, borderRadius: 1 }}
-        />
-        {!collapsed && (
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            QUSCINA Backoffice
-          </Typography>
-        )}
-      </Box>
+        <ButtonBase
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            p: 1.25,
+            justifyContent: collapsed ? "center" : "flex-start",
+            width: "100%",
+            borderRadius: 0, // keep it flat like a header, tweak if you want hover bg
+          }}
+        >
+          <Box
+            component="img"
+            src={logo}
+            alt="Quscina logo"
+            sx={{ width: 28, height: 28, flexShrink: 0, borderRadius: 1 }}
+          />
+          {!collapsed && (
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              QUSCINA Backoffice
+            </Typography>
+          )}
+        </ButtonBase>
+      </NavLink>
 
       <Divider sx={{ mb: 1 }} />
 

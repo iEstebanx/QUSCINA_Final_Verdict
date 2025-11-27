@@ -445,7 +445,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           variant="contained"
           onClick={handleOpenShift}
           color="primary"
-          disabled={submitting}
+          disabled={true}// disabled={submitting}
         >
           {submitting ? "Opening…" : "Open Shift"}
         </Button>

@@ -929,7 +929,7 @@ export default function ItemlistPage() {
                   <TableCell><Typography fontWeight={600}>Item Name</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Category</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Price</Typography></TableCell>
-                  <TableCell><Typography fontWeight={600}>Cost Overall</Typography></TableCell>
+                  {/* <TableCell><Typography fontWeight={600}>Cost Overall</Typography></TableCell> */}
                   <TableCell><Typography fontWeight={600}>Description</Typography></TableCell>
                   <TableCell align="center"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
@@ -938,7 +938,7 @@ export default function ItemlistPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Box py={6} textAlign="center">
                         <CircularProgress size={24} />
                       </Box>
@@ -946,7 +946,7 @@ export default function ItemlistPage() {
                   </TableRow>
                 ) : err ? (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="error">{err}</Typography>
                       </Box>
@@ -954,7 +954,7 @@ export default function ItemlistPage() {
                   </TableRow>
                 ) : rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           No items yet. Click <strong>Add Item</strong> to create your first product.
@@ -996,9 +996,9 @@ export default function ItemlistPage() {
                       <TableCell>
                         <Typography>{r.price != null ? `₱${Number(r.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Typography>
                       </TableCell>
-                      <TableCell>
+                      {/* <TableCell>
                         <Typography>{r.costOverall != null ? `₱${Number(r.costOverall).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Typography>
-                      </TableCell>
+                      </TableCell> */}
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Typography noWrap title={r.description || ""}>{r.description || "—"}</Typography>
                       </TableCell>
@@ -1221,16 +1221,16 @@ export default function ItemlistPage() {
                     <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                     <TableCell data-label="Qty" align="center">Qty</TableCell>
-                    <TableCell data-label="Costing Per Pack" align="center">
+                    {/* <TableCell data-label="Costing Per Pack" align="center">
                       Costing Per Pack
-                    </TableCell>
+                    </TableCell> */}
                     <TableCell data-label="Action" align="center">Action</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {ingLoading && (
                     <TableRow>
-                      <TableCell colSpan={6}>
+                      <TableCell colSpan={5}>
                         <Box py={2} textAlign="center">
                           <CircularProgress size={20} />
                         </Box>
@@ -1240,7 +1240,7 @@ export default function ItemlistPage() {
 
                   {!ingLoading && itemIngredients.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6}>
+                      <TableCell colSpan={5}>
                         <Box py={3} textAlign="center">
                           <Typography variant="body2" color="text.secondary">
                             No ingredients added. Click "Add Ingredient".
@@ -1354,7 +1354,7 @@ export default function ItemlistPage() {
                           />
                         </TableCell>
 
-                        <TableCell
+                        {/* <TableCell
                           data-label="Costing Per Pack"
                           align="center"
                           sx={{ minWidth: 112 }}
@@ -1378,7 +1378,7 @@ export default function ItemlistPage() {
                               ),
                             }}
                           />
-                        </TableCell>
+                        </TableCell> */}
 
                         <TableCell
                           data-label="Action"
@@ -1410,7 +1410,7 @@ export default function ItemlistPage() {
             justifyContent="flex-end"
             sx={{ mt: 2, flexWrap: "wrap" }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Cost Overall"
                 size="small"
@@ -1421,7 +1421,7 @@ export default function ItemlistPage() {
                 }}
                 sx={{ width: 140 }}
               />
-            </Box>
+            </Box> */}
 
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
@@ -1438,7 +1438,7 @@ export default function ItemlistPage() {
               />
             </Box>
 
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Profit / Margin"
                 size="small"
@@ -1452,7 +1452,7 @@ export default function ItemlistPage() {
                 InputProps={{ readOnly: true }}
                 sx={{ width: 220 }}
               />
-            </Box>
+            </Box> */}
           </Stack>
 
           {saveErr && (
@@ -1665,14 +1665,14 @@ export default function ItemlistPage() {
                       <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                       <TableCell data-label="Qty" align="center">Qty</TableCell>
-                      <TableCell data-label="Costing Per Pack" align="center">Costing Per Pack</TableCell>
+                      {/* <TableCell data-label="Costing Per Pack" align="center">Costing Per Pack</TableCell> */}
                       <TableCell data-label="Action" align="center">Action</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {ingLoading && (
                       <TableRow>
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={5}>
                           <Box py={2} textAlign="center">
                             <CircularProgress size={20} />
                           </Box>
@@ -1682,7 +1682,7 @@ export default function ItemlistPage() {
 
                     {!ingLoading && itemIngredients.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={5}>
                           <Box py={3} textAlign="center">
                             <Typography variant="body2" color="text.secondary">
                               No ingredients added. Click "Add Ingredient".
@@ -1796,7 +1796,7 @@ export default function ItemlistPage() {
                             />
                           </TableCell>
 
-                          <TableCell
+                          {/* <TableCell
                             data-label="Costing Per Pack"
                             align="center"
                             sx={{ minWidth: 112 }}
@@ -1820,7 +1820,7 @@ export default function ItemlistPage() {
                                 ),
                               }}
                             />
-                          </TableCell>
+                          </TableCell> */}
 
                           <TableCell
                             data-label="Action"
@@ -1849,9 +1849,9 @@ export default function ItemlistPage() {
                 spacing={2}
                 alignItems="center"
                 justifyContent="flex-end"
-                sx={{ mt: 3, flexWrap: "wrap" }}
+                sx={{ mt: 2, flexWrap: "wrap" }}
               >
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <TextField
                     label="Cost Overall"
                     size="small"
@@ -1862,7 +1862,7 @@ export default function ItemlistPage() {
                     }}
                     sx={{ width: 140 }}
                   />
-                </Box>
+                </Box> */}
 
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <TextField
@@ -1879,7 +1879,7 @@ export default function ItemlistPage() {
                   />
                 </Box>
 
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <TextField
                     label="Profit / Margin"
                     size="small"
@@ -1893,7 +1893,7 @@ export default function ItemlistPage() {
                     InputProps={{ readOnly: true }}
                     sx={{ width: 220 }}
                   />
-                </Box>
+                </Box> */}
               </Stack>
             </Box>
           </Stack>

@@ -166,6 +166,9 @@ export default function POSOrdersPage() {
           borderRight: `1px solid ${alpha(sidebarContrast, 0.18)}`,
           overflowY: "auto",
           py: 2,
+          height: "calc(100vh - 64px)", // Fixed height: viewport height minus header
+          position: "sticky",
+          top: 64, // Stick below the header
         }}
       >
         {loading && !receipts.length && (

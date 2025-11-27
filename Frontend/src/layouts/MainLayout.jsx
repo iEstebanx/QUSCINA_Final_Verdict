@@ -21,12 +21,13 @@ export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);   // desktop/tablet
   const [mobileOpen, setMobileOpen] = useState(false); // phone
 
- const isPosMenu   = location.pathname.startsWith("/pos/menu");
- const isPosCharge = location.pathname.startsWith("/pos/charge");
- const isPosOrders = location.pathname.startsWith("/pos/orders");
- const isPosRefund = location.pathname.startsWith("/pos/refund");
- // POS screens should hug the bottom (no extra padding)
- const isPosTight = isPosMenu || isPosCharge || isPosOrders || isPosRefund;
+  const isPosMenu   = location.pathname.startsWith("/pos/menu");
+  const isPosCharge = location.pathname.startsWith("/pos/charge");
+  const isPosOrders = location.pathname.startsWith("/pos/orders");
+  const isPosRefund = location.pathname.startsWith("/pos/refund");
+
+  // POS screens should hug the bottom (no extra padding)
+  const isPosTight = isPosMenu || isPosCharge || isPosOrders || isPosRefund;
 
   // Effective header widths: charge page ignores sidebar width
   const effectiveWidth = isPosCharge ? 0 : SIDEBAR_WIDTH;
@@ -60,7 +61,7 @@ export default function MainLayout() {
           />
         )}
 
-        {/* Header (AppHeader already handles back button + breadcrumbs) */}
+        {/* Header */}
         <AppHeader
           collapsed={collapsed}
           onToggle={handleToggle}
@@ -73,9 +74,15 @@ export default function MainLayout() {
           component="main"
           sx={{
             flexGrow: 1,
+            display: "flex",
+            flexDirection: isPosMenu ? "row" : "column",
+            boxSizing: "border-box",
+
+            // always sit under the AppBar
+            pt: `${APPBAR_HEIGHT}px`,
             px: isPosTight ? 0 : 3,
-            pt: isPosTight ? `${APPBAR_HEIGHT}px` : `${APPBAR_HEIGHT + 16}px`,
-            pb: isPosTight ? 0 : 3,   // now 0 for all /pos/* pages
+            pb: isPosTight ? 0 : 3,
+
             ml: {
               xs: 0,
               sm: isPosCharge
@@ -95,21 +102,17 @@ export default function MainLayout() {
           }}
         >
           {isPosMenu ? (
-            <Box
-              sx={{
-                display: "flex",
-                height: `calc(100vh - ${APPBAR_HEIGHT}px)`,
-                gap: 0,
-              }}
-            >
-              {/* Left: Menu content with its own padding */}
+            <>
+              {/* Left: Menu content */}
               <Box
                 sx={{
                   flex: 1,
                   minWidth: 0,
                   pt: 0,
                   px: 0,
-                  pb: 3, // keep a bit of space at the bottom; optional
+                  pb: 3,
+                  minHeight: 0,
+                  overflow: "hidden",
                 }}
               >
                 <Outlet />
@@ -125,9 +128,9 @@ export default function MainLayout() {
               >
                 <Cart />
               </Box>
-            </Box>
+            </>
           ) : (
-            // All other pages (including /pos/charge): normal single-column content
+            // All other pages: normal single-column content
             <Outlet />
           )}
         </Box>

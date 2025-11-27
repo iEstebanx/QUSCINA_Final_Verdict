@@ -72,9 +72,9 @@ const formatDateTime = (iso) => {
 
 // Quick Stats Component
 const QuickStats = ({ metrics }) => (
-  <Grid container spacing={2} sx={{ mb: 2 }}>
+  <Grid container spacing={2}>
     {/* Total Sales */}
-    <Grid item xs={6} sm={3}>
+    <Grid item xs={12} sm={4}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="primary">
@@ -88,7 +88,7 @@ const QuickStats = ({ metrics }) => (
     </Grid>
 
     {/* Total Orders */}
-    <Grid item xs={6} sm={3}>
+    <Grid item xs={12} sm={4}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="secondary">
@@ -102,7 +102,7 @@ const QuickStats = ({ metrics }) => (
     </Grid>
 
     {/* Total Accounts */}
-    <Grid item xs={6} sm={3}>
+    <Grid item xs={12} sm={4}>
       <Card sx={{ textAlign: "center", p: 1 }}>
         <CardContent>
           <Typography variant="h6" fontWeight="bold" color="info.main">
@@ -281,71 +281,91 @@ export default function DashboardPage() {
 
   return (
     <Box p={2}>
-      {/* Date Range Controls */}
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Stack
-          direction="row"
-          useFlexGap
-          alignItems="center"
-          flexWrap="wrap"
-          rowGap={1.5}
-          columnGap={2}
+      {/* Top row: Date Range (left) + Quick Stats (right) */}
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: { xs: "column", md: "row" },
+          gap: 2,
+          mb: 2,
+          alignItems: { xs: "stretch", md: "flex-start" },
+        }}
+      >
+        {/* Date Range Controls in its own Paper */}
+        <Paper
+          sx={{
+            p: 2,
+            flexShrink: 0,
+            minWidth: { xs: "100%", md: 420 },
+          }}
         >
-          <FormControl size="small" sx={{ minWidth: 160 }}>
-            <InputLabel id="range-label">Range</InputLabel>
-            <Select
-              labelId="range-label"
-              value={range}
-              label="Range"
+          <Stack
+            direction="row"
+            useFlexGap
+            alignItems="center"
+            flexWrap="wrap"
+            rowGap={1.5}
+            columnGap={2}
+          >
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel id="range-label">Range</InputLabel>
+              <Select
+                labelId="range-label"
+                value={range}
+                label="Range"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setRange(value);
+                  if (value !== "custom") {
+                    setCustomFrom("");
+                    setCustomTo("");
+                  }
+                }}
+              >
+                <MenuItem value="days">Day</MenuItem>
+                <MenuItem value="weeks">Week</MenuItem>
+                <MenuItem value="monthly">Monthly</MenuItem>
+                <MenuItem value="quarterly">Quarterly</MenuItem>
+                <MenuItem value="yearly">Yearly</MenuItem>
+                <MenuItem value="custom">Custom</MenuItem>
+              </Select>
+            </FormControl>
+
+            <TextField
+              size="small"
+              type="date"
+              label="From"
+              value={customFrom}
               onChange={(e) => {
                 const value = e.target.value;
-                setRange(value);
-                if (value !== "custom") {
-                  setCustomFrom("");
-                  setCustomTo("");
-                }
+                if (range !== "custom") setRange("custom");
+                setCustomFrom(value);
               }}
-            >
-              <MenuItem value="days">Day</MenuItem>
-              <MenuItem value="weeks">Week</MenuItem>
-              <MenuItem value="monthly">Monthly</MenuItem>
-              <MenuItem value="quarterly">Quarterly</MenuItem>
-              <MenuItem value="yearly">Yearly</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
-            </Select>
-          </FormControl>
+              InputLabelProps={{ shrink: true }}
+            />
 
-          <TextField
-            size="small"
-            type="date"
-            label="From"
-            value={customFrom}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (range !== "custom") setRange("custom");
-              setCustomFrom(value);
-            }}
-            InputLabelProps={{ shrink: true }}
-          />
+            <TextField
+              size="small"
+              type="date"
+              label="To"
+              value={customTo}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (range !== "custom") setRange("custom");
+                setCustomTo(value);
+              }}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Stack>
+        </Paper>
 
-          <TextField
-            size="small"
-            type="date"
-            label="To"
-            value={customTo}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (range !== "custom") setRange("custom");
-              setCustomTo(value);
-            }}
-            InputLabelProps={{ shrink: true }}
-          />
-        </Stack>
-      </Paper>
+        {/* Quick Stats on the right (not inside the Paper) */}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <QuickStats metrics={metricsWithAccounts} />
+        </Box>
+      </Box>
 
-      {/* Quick Stats */}
-      <QuickStats metrics={metricsWithAccounts} />
-
+      {/* ======= rest of dashboard cards ======= */}
       <Box
         sx={{
           display: "grid",
@@ -545,79 +565,90 @@ export default function DashboardPage() {
               </Typography>
             </Box>
 
-            <Box sx={cardContentSx}>
+            <Box
+              sx={{
+                ...cardContentSx,
+                // ⬇️ Cap the content height a bit so the card doesn’t keep growing forever
+                maxHeight: { xs: 260, sm: 280, md: 300 },
+              }}
+            >
               {lowStockErr && (
                 <Typography variant="body2" color="error" sx={{ mb: 1 }}>
                   {lowStockErr}
                 </Typography>
               )}
 
-              <List dense sx={{ flex: 1 }}>
-                {lowStockItems.slice(0, 8).map((item, i) => (
-                  <ListItem key={item.id ?? i} disableGutters sx={{ py: 1 }}>
-                    <Box
-                      sx={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        mr: 2,
-                        backgroundColor:
-                          item.alert === "critical"
-                            ? theme.palette.error.main
-                            : theme.palette.warning.main,
-                      }}
-                    />
-                    <ListItemText
-                      primary={
-                        <Typography
-                          variant="body2"
-                          fontWeight="medium"
-                          noWrap
-                        >
-                          {item.name}
-                        </Typography>
-                      }
-                      secondary={`Current: ${item.currentStock} | Min: ${item.lowStock}`}
-                      secondaryTypographyProps={{
-                        variant: "caption",
-                        color: "text.secondary",
-                        component: "span",
-                      }}
-                    />
-                    <Chip
-                      label={
-                        item.alert === "critical" ? "Critical" : "Warning"
-                      }
-                      color={
-                        item.alert === "critical" ? "error" : "warning"
-                      }
-                      size="small"
-                    />
-                  </ListItem>
-                ))}
+              {/* ⬇️ Scrollable area for the list */}
+              <Box
+                className="scroll-x"
+                sx={{
+                  flex: 1,
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  pr: 0.5,
+                }}
+              >
+                <List dense>
+                  {lowStockItems.map((item, i) => (
+                    <ListItem key={item.id ?? i} disableGutters sx={{ py: 1 }}>
+                      <Box
+                        sx={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          mr: 2,
+                          backgroundColor:
+                            item.alert === "critical"
+                              ? theme.palette.error.main
+                              : theme.palette.warning.main,
+                        }}
+                      />
+                      <ListItemText
+                        primary={
+                          <Typography variant="body2" fontWeight="medium" noWrap>
+                            {item.name}
+                          </Typography>
+                        }
+                        secondary={`Current: ${item.currentStock} | Min: ${item.lowStock}`}
+                        secondaryTypographyProps={{
+                          variant: "caption",
+                          color: "text.secondary",
+                          component: "span",
+                        }}
+                      />
+                      <Chip
+                        label={item.alert === "critical" ? "Critical" : "Warning"}
+                        color={item.alert === "critical" ? "error" : "warning"}
+                        size="small"
+                      />
+                    </ListItem>
+                  ))}
 
-                {!lowStockErr && lowStockItems.length === 0 && (
-                  <ListItem>
-                    <ListItemText
-                      primary={
-                        <Typography variant="body2" color="text.secondary">
-                          No items are currently below their low stock
-                          thresholds.
-                        </Typography>
-                      }
-                    />
-                  </ListItem>
-                )}
-              </List>
+                  {!lowStockErr && lowStockItems.length === 0 && (
+                    <ListItem>
+                      <ListItemText
+                        primary={
+                          <Typography variant="body2" color="text.secondary">
+                            No items are currently below their low stock
+                            thresholds.
+                          </Typography>
+                        }
+                      />
+                    </ListItem>
+                  )}
+                </List>
+              </Box>
 
               <Button
                 variant="outlined"
                 size="small"
                 fullWidth
                 sx={{ mt: 1 }}
-                onClick={() => navigate("/inventory?filter=low-stock")}
+                onClick={() =>
+                  navigate("/settings/inventory?tab=low-stock")
+                }
               >
-                View Low Stock Items
+                View Low Stock
               </Button>
             </Box>
           </Paper>

@@ -73,9 +73,9 @@ export default function POSLayout() {
           component="main"
           sx={{
             flexGrow: 1,
-            pt: `${APPBAR_HEIGHT}px`,
-            height: `calc(100vh - ${APPBAR_HEIGHT}px)`,
             display: "flex",
+            boxSizing: "border-box",
+            pt: `${APPBAR_HEIGHT}px`,
             ml: {
               xs: 0,
               sm: isFullScreenPos
