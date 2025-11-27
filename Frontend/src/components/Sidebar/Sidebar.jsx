@@ -19,7 +19,6 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import RestaurantMenuIcon from "@mui/icons-material/RestaurantMenu";
-// import ListAltIcon from "@mui/icons-material/ListAlt"; // ⬅️ no longer needed
 import CategoryIcon from "@mui/icons-material/Category";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
@@ -30,8 +29,13 @@ import BackupIcon from "@mui/icons-material/Backup";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import TimelineIcon from "@mui/icons-material/Timeline";
-import StoreIcon from "@mui/icons-material/Store";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
+import ArticleIcon from "@mui/icons-material/Article";
+
+// 🔹 NEW: POS + nicer “dish” icon for Items
+import PointOfSaleIcon from "@mui/icons-material/PointOfSale";
+import LunchDiningIcon from "@mui/icons-material/LunchDining";
+import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
 
 import { useAuth } from "@/context/AuthContext";
 import logo from "@/assets/LOGO.png";
@@ -227,7 +231,8 @@ function SidebarContent({ collapsed }) {
 
   const path = location.pathname;
 
-  // Menu no longer needs group active state
+  const isPosActive = useMemo(() => path.startsWith("/pos"), [path]);
+
   const isReportsActive = useMemo(
     () =>
       path.startsWith("/reports") ||
@@ -237,18 +242,21 @@ function SidebarContent({ collapsed }) {
 
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
+  const [openPos, setOpenPos] = useState(isPosActive);
   const [openReports, setOpenReports] = useState(isReportsActive);
   const [openSettings, setOpenSettings] = useState(isSettingsActive);
 
   useEffect(() => {
     if (!collapsed) {
+      setOpenPos(isPosActive);
       setOpenReports(isReportsActive);
       setOpenSettings(isSettingsActive);
     }
-  }, [collapsed, isReportsActive, isSettingsActive]);
+  }, [collapsed, isPosActive, isReportsActive, isSettingsActive]);
 
   useEffect(() => {
     if (collapsed) {
+      setOpenPos(false);
       setOpenReports(false);
       setOpenSettings(false);
     }
@@ -290,6 +298,29 @@ function SidebarContent({ collapsed }) {
           collapsed={collapsed}
         />
 
+        {/* 🔹 POS group: Menu + Orders */}
+        <NavGroup
+          label="POS"
+          icon={PointOfSaleIcon}
+          collapsed={collapsed}
+          open={openPos}
+          onToggle={() => setOpenPos((v) => !v)}
+          active={isPosActive}
+        >
+          <NavLeaf
+            to="/pos/menu"
+            label="Menu"
+            icon={RestaurantMenuIcon}
+            collapsed={collapsed}
+          />
+          <NavLeaf
+            to="/pos/orders"
+            label="Orders"
+            icon={ReceiptLongIcon}
+            collapsed={collapsed}
+          />
+        </NavGroup>
+
         {/* Inventory */}
         <NavLeaf
           to="/inventory"
@@ -298,11 +329,11 @@ function SidebarContent({ collapsed }) {
           collapsed={collapsed}
         />
 
-        {/* Menu as direct link to Item List */}
+        {/* Items (new dish icon) */}
         <NavLeaf
-          to="/menu/items"
-          label="Menu"
-          icon={RestaurantMenuIcon}
+          to="/items"
+          label="Items"
+          icon={LunchDiningIcon}
           collapsed={collapsed}
         />
 
@@ -346,14 +377,6 @@ function SidebarContent({ collapsed }) {
             icon={PeopleIcon}
             collapsed={collapsed}
           />
-
-          {/* 2. Store Settings */}
-          {/* <NavLeaf
-            to="/settings/store"
-            label="Store Settings"
-            icon={StoreIcon}
-            collapsed={collapsed}
-          /> */}
 
           {/* 3. Inventory Settings */}
           <NavLeaf
@@ -400,6 +423,14 @@ function SidebarContent({ collapsed }) {
             to="/settings/backup-restore"
             label="Backup & Restore"
             icon={BackupIcon}
+            collapsed={collapsed}
+          />
+
+          {/* 9. Quscina's Memo */}
+          <NavLeaf
+            to="/settings/quscinas-memo"
+            label="Quscina's Memo"
+            icon={ArticleIcon}
             collapsed={collapsed}
           />
         </NavGroup>

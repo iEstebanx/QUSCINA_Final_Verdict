@@ -412,8 +412,8 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   CONSTRAINT `chk_category_nonempty`
     CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
 
-  CONSTRAINT `chk_type_pack_only`
-    CHECK (`type` = 'pack')
+  CONSTRAINT `chk_type_pack_or_pcs`
+    CHECK (`type` IN ('pack', 'pcs'));
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
@@ -544,7 +544,6 @@ CREATE TABLE IF NOT EXISTS pos_cash_move_denoms (
     FOREIGN KEY (move_id) REFERENCES pos_cash_moves(move_id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 
 
 -- ============================================================

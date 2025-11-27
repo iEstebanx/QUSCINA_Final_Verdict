@@ -133,7 +133,8 @@ const INV_CATS_API = "/api/inventory/inv-categories";
 const DEFAULT_UNIT = "pack";
 
 const UNIT_OPTIONS = [
-  { value: DEFAULT_UNIT, label: "PACK" }, // fixed unit
+  { value: "pack", label: "PACK" },
+  { value: "pcs",  label: "PCS"  },
 ];
 
 const UNIT_LABEL_MAP = UNIT_OPTIONS.reduce((map, u) => {
@@ -556,7 +557,7 @@ export default function InventoryPage() {
   const handleAddIngredient = async () => {
     const name = normalize(newName);
     const category = normalize(newCat);
-    const unit = DEFAULT_UNIT;
+    const unit = newUnit || DEFAULT_UNIT;
 
     if (!category) { alert.error("Please select a category."); return; }
     if (!unit) { alert.error("Please select a unit."); return; }
@@ -1085,13 +1086,13 @@ export default function InventoryPage() {
           <TableContainer component={Paper} elevation={0} className="scroll-x" sx={{ width: "100%", maxWidth: "100%" }}>
             <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 700 }}>
               <colgroup>
-                <col style={{ width: 50 }} />   {/* checkbox */}
-                <col style={{ width: 200 }} />  {/* Ingredient Name */}
-                <col style={{ width: 170 }} />  {/* Categories */}
-                <col style={{ width: 110 }} />  {/* Unit */}
-                <col style={{ width: 140 }} />  {/* Current Stock */}
-                <col style={{ width: 150 }} />  {/* Per Price */}
-                <col style={{ width: 80 }} />   {/* Actions */}
+                <col style={{ width: 50 }} />
+                <col style={{ width: 200 }} />
+                <col style={{ width: 170 }} />
+                <col style={{ width: 110 }} />
+                <col style={{ width: 140 }} />
+                <col style={{ width: 150 }} />
+                <col style={{ width: 80 }} />
               </colgroup>
 
               <TableHead>
@@ -1117,7 +1118,7 @@ export default function InventoryPage() {
                     <Typography fontWeight={600}>Current Stock</Typography>
                   </TableCell>
                   <TableCell>
-                    <Typography fontWeight={600}>Per Price</Typography>
+                    <Typography fontWeight={600}>Price Per Unit</Typography>
                   </TableCell>
                   <TableCell>
                     <Typography fontWeight={600}>Actions</Typography>
@@ -1288,22 +1289,31 @@ export default function InventoryPage() {
             onInputCapture={markAddTouched}     // ✅ any keystroke
             onChangeCapture={markAddTouched}    // ✅ any select/switch/file change
           >
-          <Stack spacing={2} mt={1}>
-            <TextField
-              label="Name"
-              value={newName}
-              onChange={(e) => { setNewName(e.target.value); handleAddFormChange(); }}
-              autoFocus
-              fullWidth
-              error={newName.trim().length > 0 && !isValidName(normalize(newName))}
-              helperText={
-                newName
-                  ? `${normalize(newName).length}/${NAME_MAX}${!isValidName(normalize(newName)) ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /" : ""}`
-                  : `Max ${NAME_MAX} chars`
-              }
-            />
+        <Stack spacing={2} mt={1}>
+          <TextField
+            label="Name"
+            value={newName}
+            onChange={(e) => { setNewName(e.target.value); handleAddFormChange(); }}
+            autoFocus
+            fullWidth
+            error={newName.trim().length > 0 && !isValidName(normalize(newName))}
+            helperText={
+              newName
+                ? `${normalize(newName).length}/${NAME_MAX}${
+                    !isValidName(normalize(newName))
+                      ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
+                      : ""
+                  }`
+                : `Max ${NAME_MAX} chars`
+            }
+          />
 
-            <FormControl fullWidth required error={addFormChanged && !normalize(newCat)}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <FormControl
+              fullWidth
+              required
+              error={addFormChanged && !normalize(newCat)}
+            >
               <InputLabel id="cat-label">Categories</InputLabel>
               <Select
                 labelId="cat-label"
@@ -1320,7 +1330,32 @@ export default function InventoryPage() {
                 ))}
               </Select>
             </FormControl>
+
+            {/* 🔹 Unit dropdown on the right side */}
+            <FormControl
+              fullWidth
+              required
+              error={addFormChanged && !newUnit}
+            >
+              <InputLabel id="unit-add-label">Unit</InputLabel>
+              <Select
+                labelId="unit-add-label"
+                label="Unit"
+                value={newUnit}
+                onChange={(e) => {
+                  setNewUnit(e.target.value);
+                  handleAddFormChange();
+                }}
+              >
+                {UNIT_OPTIONS.map((u) => (
+                  <MenuItem key={u.value} value={u.value}>
+                    {u.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
           </Stack>
+        </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button variant="outlined" onClick={handleAddClose}>CANCEL</Button>
@@ -1330,7 +1365,8 @@ export default function InventoryPage() {
             disabled={
               !normalize(newName) ||
               !isValidName(normalize(newName)) ||
-              !normalize(newCat)
+              !normalize(newCat) ||
+              !newUnit
             }
           >
             ADD
@@ -1385,6 +1421,7 @@ export default function InventoryPage() {
               <ToggleButton value="OUT">Stock Out</ToggleButton>
             </ToggleButtonGroup>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              {/* Ingredient name */}
               <FormControl fullWidth>
                 <InputLabel id="name-label">Name</InputLabel>
                 <Select
@@ -1400,7 +1437,12 @@ export default function InventoryPage() {
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth required error={stockTouchedRef.current && !stockForm.cat}>
+              {/* Category */}
+              <FormControl
+                fullWidth
+                required
+                error={stockTouchedRef.current && !stockForm.cat}
+              >
                 <InputLabel id="cat2-label">Categories</InputLabel>
                 <Select
                   labelId="cat2-label"
@@ -1423,6 +1465,33 @@ export default function InventoryPage() {
                 {stockTouchedRef.current && !stockForm.cat && (
                   <FormHelperText>Category is required</FormHelperText>
                 )}
+              </FormControl>
+
+              {/* 🔹 Unit dropdown on the right side of Category */}
+              <FormControl
+                fullWidth
+                required
+                sx={{ minWidth: 140 }}
+              >
+                <InputLabel id="unit-stock-label">Unit</InputLabel>
+                <Select
+                  labelId="unit-stock-label"
+                  label="Unit"
+                  value={stockForm.type || DEFAULT_UNIT}
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    const newForm = { ...stockForm, type: newType };
+                    setStockForm(newForm);
+                    handleStockFormChange(newForm);
+                  }}
+                  disabled={!stockForm.ingId}
+                >
+                  {UNIT_OPTIONS.map((u) => (
+                    <MenuItem key={u.value} value={u.value}>
+                      {u.label}
+                    </MenuItem>
+                  ))}
+                </Select>
               </FormControl>
             </Stack>
             
@@ -1462,19 +1531,34 @@ export default function InventoryPage() {
                 value={stockForm.qty ?? ""}
                 onChange={(e) => {
                   let v = String(e.target.value ?? "");
-                  v = v.replace(/[^0-9.]/g, "");
-                  const parts = v.split(".");
-                  if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
+
+                  // 🔹 allow ONLY whole numbers (no decimals)
+                  v = v.replace(/\D/g, ""); // strip everything that is not 0–9
+
+                  // if user cleared the field, keep it empty
+                  if (v === "") {
+                    const newForm = { ...stockForm, qty: "" };
+                    setStockForm(newForm);
+                    handleStockFormChange(newForm);
+                    return;
+                  }
+
+                  // normalize leading zeros: "05" → "5"
+                  v = String(parseInt(v, 10));
+
                   const newForm = { ...stockForm, qty: v };
                   setStockForm(newForm);
                   handleStockFormChange(newForm);
                 }}
-                inputMode="decimal"
+                inputMode="numeric"
                 fullWidth
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <Typography variant="body2" color={stockForm.direction === "IN" ? "success.main" : "error.main"}>
+                      <Typography
+                        variant="body2"
+                        color={stockForm.direction === "IN" ? "success.main" : "error.main"}
+                      >
                         {stockForm.direction === "IN" ? "+" : "−"}
                       </Typography>
                     </InputAdornment>

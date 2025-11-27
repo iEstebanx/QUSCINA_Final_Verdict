@@ -2,6 +2,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import MainLayout from "../layouts/MainLayout";
 import EmptyLayout from "../layouts/EmptyLayout";
+import POSLayout from "../layouts/POSLayout";
 
 import RequireAdmin from "../components/Guards/RequireAdmin";
 
@@ -11,11 +12,16 @@ import NotFound from "@/pages/NotFound.jsx";
 import DashboardPage from "../pages/Dashboard/DashboardPage";
 
 import InventoryPage from "@/pages/Inventory/InventoryPage.jsx";
-
 import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
 
 import ReportsPage from "../pages/Reports/ReportsPage";
 import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
+
+// 🔹 NEW POS pages
+import POSMenuPage from "@/pages/POS/Menu.jsx";
+import POSOrdersPage from "@/pages/POS/Orders.jsx";
+import POSChargePage from "@/pages/POS/Charge.jsx";
+import POSRefundPage from "@/pages/POS/RefundPage.jsx";
 
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
@@ -25,7 +31,7 @@ import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
 import AuthorizationPinsPage from "@/pages/Settings/AuthorizationPins/AuthorizationPinsPage.jsx";
 import Categories from "@/pages/Settings/Categories/Categories.jsx";
 import BackupAndRestorePage from "@/pages/Settings/BackupAndRestore/BackupAndRestorePage.jsx";
-
+import QuscinasMemoPage from "@/pages/Settings/QuscinasMemo/QuscinasMemo.jsx";
 
 import AuditTrailPage from "@/pages/AuditTrail/AuditTrailPage.jsx";
 
@@ -39,42 +45,28 @@ export default function AppRoutes() {
 
       {/* Protected */}
       <Route element={<RequireAdmin />}>
+        {/* Backoffice main layout (with sidebar + AppHeader + breadcrumbs) */}
         <Route element={<MainLayout />}>
           {/* Core */}
           <Route path="/dashboard" element={<DashboardPage />} />
 
-          {/* Reports (group in sidebar: Reports + Inventory History) */}
+          {/* Reports */}
           <Route path="/reports" element={<ReportsPage />} />
           <Route
             path="/reports/inventory-history"
             element={<InventoryHistoryPage />}
           />
 
-          {/* Menu */}
-          <Route path="/menu/items" element={<ItemlistPage />} />
-          <Route
-            path="/settings/discounts"
-            element={<DiscountPage />}
-          />
-          {/* Old Menu Categories -> Settings Categories */}
-          <Route
-            path="/menu/categories"
-            element={<Navigate to="/settings/categories" replace />}
-          />
+          {/* Items */}
+          <Route path="/items" element={<ItemlistPage />} />
 
           {/* Inventory */}
           <Route path="/inventory" element={<InventoryPage />} />
-          {/* Old Inventory Categories -> Settings Inventory Categories */}
-          <Route
-            path="/inventory/categories"
-            element={<Navigate to="/settings/categories" replace />}
-          />
 
-          {/* Audit Trail (single page) */}
+          {/* Audit Trail */}
           <Route path="/audit-trail" element={<AuditTrailPage />} />
 
-          {/* Backwards-compat redirects from old/typo paths */}
-          {/* Old Inventory History locations -> new reports route */}
+          {/* Redirects & settings (unchanged) */}
           <Route
             path="/audit-trail/inventory-history"
             element={<Navigate to="/reports/inventory-history" replace />}
@@ -87,61 +79,50 @@ export default function AppRoutes() {
             path="/Inventory/inventoryhistorypage"
             element={<Navigate to="/reports/inventory-history" replace />}
           />
-
-          {/* Old User Management path -> Settings User Management */}
           <Route
             path="/users"
             element={<Navigate to="/settings/users" replace />}
           />
-
-          {/* Settings */}
-          {/* 1. User Management */}
-          <Route
-            path="/settings/users"
-            element={<UserManagementPage />}
-          />
-
-          {/* 2. Store Settings */}
-          <Route
-            path="/settings/store"
-            element={<StoreSettingsPage />}
-          />
-
-          {/* 3. Inventory Settings */}
+          <Route path="/settings/users" element={<UserManagementPage />} />
+          <Route path="/settings/store" element={<StoreSettingsPage />} />
           <Route
             path="/settings/inventory"
             element={<InventorySettingsPage />}
           />
-
-          {/* 4. Payment Types */}
           <Route
             path="/settings/payment-types"
             element={<PaymentTypePage />}
           />
-
-          {/* 5. Authorization Pins */}
           <Route
             path="/settings/authorization-pins"
             element={<AuthorizationPinsPage />}
           />
-
-          {/* 6. Categories (Menu + Inventory) */}
-          <Route
-            path="/settings/categories"
-            element={<Categories />}
-          />
-
-          {/* Backward-compat: old direct inventory-categories settings link */}
+          <Route path="/settings/categories" element={<Categories />} />
           <Route
             path="/settings/inventory-categories"
             element={<Navigate to="/settings/categories" replace />}
           />
-
-          {/* 8. Backup & Restore */}
           <Route
             path="/settings/backup-restore"
             element={<BackupAndRestorePage />}
           />
+          <Route
+            path="/settings/quscinas-memo"
+            element={<QuscinasMemoPage />}
+          />
+          <Route
+            path="/settings/discounts"
+            element={<DiscountPage />}
+          />
+        </Route>
+
+        {/* POS layout (NO sidebar, NO AppHeader/breadcrumbs) */}
+        <Route element={<POSLayout />}>
+          <Route path="/pos" element={<Navigate to="/pos/menu" replace />} />
+          <Route path="/pos/menu" element={<POSMenuPage />} />
+          <Route path="/pos/orders" element={<POSOrdersPage />} />
+          <Route path="/pos/refund" element={<POSRefundPage />} />
+          <Route path="/pos/charge" element={<POSChargePage />} />
         </Route>
       </Route>
 

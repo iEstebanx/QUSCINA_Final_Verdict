@@ -147,7 +147,7 @@ module.exports = ({ db } = {}) => {
 
   router.use(requireAuth);  
 
-  const UNIT_ALLOWED = new Set(["pack"]);
+  const UNIT_ALLOWED = new Set(["pack", "pcs"]);
   const SAMPLE_LIMIT = 6;
 
   // near the top

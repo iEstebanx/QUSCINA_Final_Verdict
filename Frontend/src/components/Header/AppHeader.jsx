@@ -1,7 +1,12 @@
 // Frontend/src/components/Header/AppHeader.jsx
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import PropTypes from "prop-types";
-import { useLocation, Link as RouterLink } from "react-router-dom";
+import {
+  useLocation,
+  Link as RouterLink,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import {
   AppBar,
   Toolbar,
@@ -10,18 +15,11 @@ import {
   Link,
   Typography,
   IconButton,
-  Badge,
-  Menu,
-  MenuItem,
-  ListItemText,
-  ListItemIcon,
-  Divider,
-  Tooltip,
-  Chip,
+  Button,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
-// export once and reuse everywhere
 export const APPBAR_HEIGHT = 64;
 
 export default function AppHeader({
@@ -31,8 +29,17 @@ export default function AppHeader({
   collapsedWidth = 72,
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
 
-  // Readable labels per path segment
+  const selectedOrderId = params.get("orderId");
+  const isPosOrdersPage = location.pathname === "/pos/orders";
+  const isPosChargePage = location.pathname === "/pos/charge";
+  const isPosRefundPage = location.pathname === "/pos/refund";
+
+  // Pages that should be "full width" and hide breadcrumbs
+  const isPosFocusedPage = isPosChargePage || isPosRefundPage;
+
   const labelMap = {
     "": "Home",
     dashboard: "Dashboard",
@@ -41,15 +48,15 @@ export default function AppHeader({
     menu: "Menu",
     inventory: "Inventory",
     settings: "Settings",
-    items: "Item List", // special case
+    items: "Item",
+    pos: "POS",
+    orders: "Orders",
+    refund: "Refund",
   };
 
-  // NEW: For any "group" segment, where should clicking the crumb go?
   const groupFirstChild = {
     menu: "items",
     settings: "users",
-    // inventory: "stock-adjustment",
-    // settings: "payment-types",
   };
 
   const segments = useMemo(
@@ -99,6 +106,13 @@ export default function AppHeader({
     sm: collapsed ? `${collapsedWidth}px` : `${width}px`,
   };
 
+  const handleRefundClick = () => {
+    if (!selectedOrderId) return;
+    navigate("/pos/refund", {
+      state: { orderId: Number(selectedOrderId) },
+    });
+  };
+
   return (
     <AppBar
       position="fixed"
@@ -108,11 +122,15 @@ export default function AppHeader({
         height: APPBAR_HEIGHT,
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: "background.paper",
-        left: leftOffset,
-        width: {
-          xs: "100%",
-          sm: `calc(100% - ${collapsed ? collapsedWidth : width}px)`,
-        },
+        left: isPosFocusedPage ? 0 : leftOffset,
+        width: isPosFocusedPage
+          ? "100%"
+          : {
+              xs: "100%",
+              sm: `calc(100% - ${
+                collapsed ? collapsedWidth : width
+              }px)`,
+            },
         transition: theme.transitions.create(["left", "width"], {
           easing: theme.transitions.easing.sharp,
           duration: theme.transitions.duration.shortest,
@@ -120,42 +138,74 @@ export default function AppHeader({
       })}
     >
       <Toolbar sx={{ minHeight: APPBAR_HEIGHT, gap: 2 }}>
-        {/* Hamburger */}
-        <IconButton
-          edge="start"
-          aria-label="Toggle sidebar"
-          onClick={onToggle}
-          sx={{ mr: 1 }}
-        >
-          <MenuIcon />
-        </IconButton>
-
-        {/* Breadcrumbs */}
-        <Breadcrumbs
-          aria-label="breadcrumb"
-          sx={{
-            flexShrink: 1,
-            minWidth: 0,
-            "& ol": {
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            },
-            display: { xs: "none", sm: "flex" },
-          }}
-        >
-          <Link
-            component={RouterLink}
-            underline="hover"
-            color="inherit"
-            to="/dashboard"
+        {/* Hamburger OR Back (Charge / Refund) */}
+        {isPosChargePage || isPosRefundPage ? (
+          <IconButton
+            edge="start"
+            aria-label="Back"
+            onClick={() =>
+              navigate(isPosRefundPage ? "/pos/orders" : "/pos/menu")
+            }
+            sx={{ mr: 1 }}
           >
-            Home
-          </Link>
-          {crumbs}
-        </Breadcrumbs>
+            <ArrowBackIcon />
+          </IconButton>
+        ) : (
+          <IconButton
+            edge="start"
+            aria-label="Toggle sidebar"
+            onClick={onToggle}
+            sx={{ mr: 1 }}
+          >
+            <MenuIcon />
+          </IconButton>
+        )}
+
+        {/* Breadcrumbs (hidden on Charge + Refund) */}
+        {!isPosFocusedPage && (
+          <Breadcrumbs
+            aria-label="breadcrumb"
+            sx={{
+              flexShrink: 1,
+              minWidth: 0,
+              "& ol": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+              display: { xs: "none", sm: "flex" },
+            }}
+          >
+            <Link
+              component={RouterLink}
+              underline="hover"
+              color="inherit"
+              to="/dashboard"
+            >
+              Home
+            </Link>
+            {crumbs}
+          </Breadcrumbs>
+        )}
 
         <Box sx={{ flexGrow: 1 }} />
+
+        {/* POS Orders → Refund button */}
+        {isPosOrdersPage && (
+          <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            disabled={!selectedOrderId}
+            onClick={handleRefundClick}
+            sx={{
+              textTransform: "none",
+              fontWeight: 600,
+            }}
+          >
+            Refund
+          </Button>
+        )}
       </Toolbar>
     </AppBar>
   );

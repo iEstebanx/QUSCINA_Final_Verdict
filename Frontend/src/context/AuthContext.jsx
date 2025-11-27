@@ -1,42 +1,10 @@
 // Frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
-import { API_BASE, joinApi } from "@/utils/apiBase";
+import { joinApi } from "@/utils/apiBase";
 
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
-
-/* =============================================================
-   API BASE LOGIC (NO ENV)
-   Local dev -> Vite proxy ("" so /api routes go through proxy)
-   Production (Vercel) -> Railway backend
-============================================================= */
-
-const RAILWAY_API_ORIGIN =
-  "https://quscinabackoffice-production.up.railway.app";
-
-function computeApiBase() {
-  if (typeof window === "undefined") return "";
-
-  const host = window.location.hostname;
-
-  // Local dev (Vite)
-  const isLocal =
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host.startsWith("192.168.") ||
-    host.startsWith("10.");
-
-  if (isLocal) return ""; // ← dev uses proxy (http://localhost:5173 → backend)
-
-  // Otherwise we're on Vercel production or preview
-  return RAILWAY_API_ORIGIN;
-}
-
-const API_BASE = computeApiBase();
-
-const join = (p = "") =>
-  `${API_BASE}`.replace(/\/+$/, "") + `/${String(p).replace(/^\/+/, "")}`;
 
 async function safeJson(res) {
   const text = await res.text();
@@ -87,8 +55,8 @@ export function AuthProvider({ children }) {
 
       // 3) Fallback: cookie session (soft)
       try {
-        console.log("[AuthContext] calling me:", join("/api/auth/me?soft=1"));
-        const res = await fetch(join("/api/auth/me?soft=1"), {
+        console.log("[AuthContext] calling me:", joinApi("/api/auth/me?soft=1"));
+        const res = await fetch(joinApi("/api/auth/me?soft=1"), {
           credentials: "include",
           cache: "no-store",
         });
@@ -115,7 +83,7 @@ export function AuthProvider({ children }) {
 
     let res;
     try {
-      res = await fetch(join("/api/auth/login"), {
+      res = await fetch(joinApi("/api/auth/login"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", "X-App": "backoffice" },
@@ -167,7 +135,7 @@ export function AuthProvider({ children }) {
     sessionStorage.removeItem("qd_user");
 
     try {
-      await fetch(join("/api/auth/logout"), {
+      await fetch(joinApi("/api/auth/logout"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },

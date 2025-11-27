@@ -117,7 +117,16 @@ export default function ReportsPage() {
   const [pdfError, setPdfError] = useState("");
   const [pdfLoading, setPdfLoading] = useState(false);
 
-  // 🔹 Text version of current filter range (used in dialog + PDF)
+  // 🔹 EXCEL dialog state (same behavior as PDF)
+  const [excelDialogOpen, setExcelDialogOpen] = useState(false);
+  const [excelMode, setExcelMode] = useState("current");
+  const [excelRange, setExcelRange] = useState("days");
+  const [excelFrom, setExcelFrom] = useState("");
+  const [excelTo, setExcelTo] = useState("");
+  const [excelError, setExcelError] = useState("");
+  const [excelLoading, setExcelLoading] = useState(false);
+
+  // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const currentRangeLabel = useMemo(() => {
     if (range === "custom") {
       if (customFrom && customTo) {
@@ -229,57 +238,64 @@ export default function ReportsPage() {
     setSelectedOrder(order);
   }
 
-  /* -------------------------- Excel Download Function -------------------------- */
-  const downloadExcel = () => {
-    const excelData = {
-      reportInfo: {
-        title: "Sales Report",
-        dateRange:
-          range === "custom" && customFrom && customTo
-            ? `${customFrom} to ${customTo}`
-            : range.charAt(0).toUpperCase() + range.slice(1),
-        generatedAt: new Date().toLocaleString(),
-      },
-      categoryTop5,
-      payments,
-      bestSeller,
-      orders: filteredOrders,
-      categorySeries,
+  /* ---------------------- Shared Excel / CSV builder ---------------------- */
+  const buildSalesExcelCsv = ({
+    rangeText,
+    categoryTop5Data,
+    categorySeriesData,
+    paymentsData,
+    bestSellerData,
+    staffPerformanceData,
+    ordersData,
+  }) => {
+    const reportInfo = {
+      title: "Sales Report",
+      dateRange: rangeText,
+      generatedAt: new Date().toLocaleString(),
     };
 
     const convertToCSV = (data, headers) => {
+      if (!data || data.length === 0) return "";
       const csvHeaders = headers.map((h) => `"${h.label}"`).join(",");
       const csvRows = data.map((row) =>
-        headers.map((h) => `"${row[h.key]}"`).join(",")
+        headers
+          .map((h) => {
+            const value = row[h.key] ?? "";
+            return `"${String(value).replace(/"/g, '""')}"`;
+          })
+          .join(",")
       );
       return [csvHeaders, ...csvRows].join("\n");
     };
 
-    const categoryCSV = [
-      '"Rank","Category","Net Sales"',
-      ...excelData.categoryTop5.map(
-        (row, idx) => `"${idx + 1}","${row.name}","${row.net}"`
-      ),
-    ].join("\n");
+    const categoryCSV = convertToCSV(
+      categoryTop5Data.map((row, idx) => ({
+        rank: idx + 1,
+        name: row.name,
+        net: row.net,
+      })),
+      [
+        { label: "Rank", key: "rank" },
+        { label: "Category", key: "name" },
+        { label: "Net Sales", key: "net" },
+      ]
+    );
 
-    const paymentsCSV = convertToCSV(excelData.payments, [
+    const paymentsCSV = convertToCSV(paymentsData, [
       { label: "Payment Type", key: "type" },
       { label: "Payment Transactions", key: "tx" },
-      { label: "Payment Amount", key: "payAmt" },
       { label: "Refund Transactions", key: "refundTx" },
-      { label: "Refund Amount", key: "refundAmt" },
       { label: "Net Amount", key: "net" },
     ]);
 
-    const bestSellerCSV = convertToCSV(excelData.bestSeller, [
+    const bestSellerCSV = convertToCSV(bestSellerData, [
       { label: "Rank", key: "rank" },
       { label: "Item Name", key: "name" },
       { label: "Total Orders", key: "orders" },
-      { label: "Quantity Sold", key: "qty" },
       { label: "Total Sales", key: "sales" },
     ]);
 
-    const ordersCSV = convertToCSV(excelData.orders, [
+    const ordersCSV = convertToCSV(ordersData, [
       { label: "Receipt No", key: "id" },
       { label: "Date", key: "date" },
       { label: "Employee", key: "employee" },
@@ -287,42 +303,141 @@ export default function ReportsPage() {
       { label: "Total", key: "total" },
     ]);
 
-    const fullCSV = `Sales Report - ${excelData.reportInfo.dateRange}
-Generated: ${excelData.reportInfo.generatedAt}
+    const staffCSV = convertToCSV(staffPerformanceData, [
+      { label: "Shift No.", key: "shiftNo" },
+      { label: "Staff Name", key: "staffName" },
+      { label: "Date", key: "date" },
+      { label: "Starting Cash", key: "startingCash" },
+      { label: "Cash In/Out", key: "cashInOut" },
+      { label: "Count Cash", key: "countCash" },
+      { label: "Actual Cash", key: "actualCash" },
+      { label: "Remarks", key: "remarks" },
+    ]);
+
+    const chartCSV =
+      categorySeriesData && categorySeriesData.length > 0
+        ? categorySeriesData.map((item) => `"${item.x}","${item.y}"`).join("\n")
+        : "";
+
+    const fullCSV = `Sales Report - ${reportInfo.dateRange}
+Generated: ${reportInfo.generatedAt}
 
 TOP 5 CATEGORIES
-${categoryCSV}
+${categoryCSV || "No data"}
 
 SALES BY PAYMENT TYPE
-${paymentsCSV}
+${paymentsCSV || "No data"}
 
 BEST SELLERS
-${bestSellerCSV}
+${bestSellerCSV || "No data"}
 
 ORDERS
-${ordersCSV}
+${ordersCSV || "No data"}
+
+STAFF PERFORMANCE
+${staffCSV || "No data"}
 
 SALES CHART DATA
 Date,Amount
-${excelData.categorySeries
-  .map((item) => `"${item.x}","${item.y}"`)
-  .join("\n")}`;
+${chartCSV || ""}`;
 
-    const blob = new Blob([fullCSV], { type: "text/csv;charset=utf-8;" });
+    return fullCSV;
+  };
+
+  const triggerExcelDownload = (csv, label) => {
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
     link.setAttribute(
       "download",
-      `sales-report-${excelData.reportInfo.dateRange.replace(
-        /\s+/g,
-        "-"
-      )}-${Date.now()}.csv`
+      `sales-report-${label.replace(/\s+/g, "-")}-${Date.now()}.csv`
     );
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  /* -------------------------- Excel Export (current) -------------------------- */
+  const handleExcelExportCurrent = () => {
+    const csv = buildSalesExcelCsv({
+      rangeText: currentRangeLabel,
+      categoryTop5Data: categoryTop5,
+      categorySeriesData: categorySeries,
+      paymentsData: payments,
+      bestSellerData: bestSeller,
+      staffPerformanceData: staffPerformance,
+      ordersData: filteredOrders,
+    });
+
+    triggerExcelDownload(csv, currentRangeLabel);
+  };
+
+  /* ---------------------- Excel Export (custom from dialog) ---------------------- */
+  const handleExcelExportRange = async () => {
+    if (excelRange === "custom" && (!excelFrom || !excelTo)) {
+      setExcelError("Please select both From and To dates.");
+      return;
+    }
+
+    setExcelError("");
+    setExcelLoading(true);
+
+    try {
+      const qs =
+        excelRange === "custom"
+          ? `range=custom&from=${excelFrom}&to=${excelTo}`
+          : `range=${excelRange}`;
+
+      const [c1, c2, p, b, o, sp] = await Promise.all([
+        fetch(`/api/reports/category-top5?${qs}`).then((r) => r.json()),
+        fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
+        fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
+        fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
+        fetch(`/api/reports/orders?${qs}`).then((r) => r.json()),
+        fetch(`/api/reports/staff-performance?${qs}`).then((r) => r.json()),
+      ]);
+
+      const categoryTop5Data = c1?.ok ? c1.data || [] : [];
+      const categorySeriesData = c2?.ok ? c2.data || [] : [];
+      const paymentsData = p?.ok ? p.data || [] : [];
+      const bestSellerData = b?.ok ? b.data || [] : [];
+      const ordersData = o?.ok ? o.data || [] : [];
+      const staffPerformanceData = sp?.ok ? sp.data || [] : [];
+
+      const label =
+        excelRange === "custom"
+          ? `${excelFrom} – ${excelTo}`
+          : formatRangePresetLabel(excelRange);
+
+      const csv = buildSalesExcelCsv({
+        rangeText: label,
+        categoryTop5Data,
+        categorySeriesData,
+        paymentsData,
+        bestSellerData,
+        staffPerformanceData,
+        ordersData,
+      });
+
+      triggerExcelDownload(csv, label);
+      setExcelDialogOpen(false);
+    } catch (err) {
+      console.error("[reports] custom excel failed", err);
+      setExcelError("Failed to generate Excel. Please try again.");
+    } finally {
+      setExcelLoading(false);
+    }
+  };
+
+  const handleExcelDialogConfirm = async () => {
+    if (excelMode === "current") {
+      setExcelDialogOpen(false);
+      handleExcelExportCurrent();
+    } else {
+      await handleExcelExportRange();
+    }
   };
 
   /* ------------------ Shared PDF builder (uses passed data) ------------------ */
@@ -466,8 +581,8 @@ ${excelData.categorySeries
 
     autoTable(doc, {
       startY: cursorY + 8,
-      head: [["Categories", "Quantity Sold", "Sales"]],
-      body: categoryTop5Data.map((c) => [c.name, "-", formatNumberMoney(c.net)]),
+      head: [["Category", "Sales"]],
+      body: categoryTop5Data.map((c) => [c.name, formatNumberMoney(c.net)]),
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 4 },
       headStyles: pdfHeadStyles,
@@ -481,22 +596,11 @@ ${excelData.categorySeries
 
     autoTable(doc, {
       startY: cursorY + 8,
-      head: [
-        [
-          "Payment Method",
-          "Orders",
-          "Payment Amount",
-          "Refund Orders",
-          "Refund Amount",
-          "Net Sales",
-        ],
-      ],
+      head: [["Payment Method", "Orders", "Refund Orders", "Net Sales"]],
       body: paymentsData.map((p) => [
         p.type,
         p.tx,
-        formatNumberMoney(p.payAmt),
         p.refundTx,
-        formatNumberMoney(p.refundAmt),
         formatNumberMoney(p.net),
       ]),
       theme: "grid",
@@ -512,12 +616,11 @@ ${excelData.categorySeries
 
     autoTable(doc, {
       startY: cursorY + 8,
-      head: [["Rank", "Item Name", "Total Orders", "Quantity Sold", "Total Sales"]],
+      head: [["Rank", "Item Name", "Total Orders", "Total Sales"]],
       body: bestSellerData.map((b) => [
         b.rank,
         b.name,
         b.orders,
-        b.qty,
         formatNumberMoney(b.sales),
       ]),
       theme: "grid",
@@ -725,7 +828,14 @@ ${excelData.categorySeries
               variant="contained"
               color="success"
               startIcon={<GridOnIcon />}
-              onClick={downloadExcel}
+              onClick={() => {
+                setExcelError("");
+                setExcelMode("current");
+                setExcelRange(range);
+                setExcelFrom("");
+                setExcelTo("");
+                setExcelDialogOpen(true);
+              }}
             >
               Excel
             </Button>
@@ -937,9 +1047,7 @@ ${excelData.categorySeries
                 <TableRow>
                   <TableCell>Payment Type</TableCell>
                   <TableCell>Payment Transactions</TableCell>
-                  <TableCell>Payment Amount</TableCell>
                   <TableCell>Refund Transactions</TableCell>
-                  <TableCell>Refund Amount</TableCell>
                   <TableCell>Net Amount</TableCell>
                 </TableRow>
               </TableHead>
@@ -948,15 +1056,13 @@ ${excelData.categorySeries
                   <TableRow key={r.type}>
                     <TableCell>{r.type}</TableCell>
                     <TableCell>{r.tx}</TableCell>
-                    <TableCell>{peso(r.payAmt)}</TableCell>
                     <TableCell>{r.refundTx}</TableCell>
-                    <TableCell>{peso(r.refundAmt)}</TableCell>
                     <TableCell>{peso(r.net)}</TableCell>
                   </TableRow>
                 ))}
                 {pagedPayments.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} align="center">
+                    <TableCell colSpan={4} align="center">
                       No results
                     </TableCell>
                   </TableRow>
@@ -1003,7 +1109,6 @@ ${excelData.categorySeries
                   <TableCell>Rank</TableCell>
                   <TableCell>Item Name</TableCell>
                   <TableCell>Total Orders</TableCell>
-                  <TableCell>Quantity Sold</TableCell>
                   <TableCell>Total Sales</TableCell>
                 </TableRow>
               </TableHead>
@@ -1023,13 +1128,12 @@ ${excelData.categorySeries
                       </Stack>
                     </TableCell>
                     <TableCell>{r.orders}</TableCell>
-                    <TableCell>{r.qty}</TableCell>
                     <TableCell>{peso(r.sales)}</TableCell>
                   </TableRow>
                 ))}
                 {bestSeller.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} align="center">
+                    <TableCell colSpan={4} align="center">
                       No data for this range
                     </TableCell>
                   </TableRow>
@@ -1303,6 +1407,128 @@ ${excelData.categorySeries
             disabled={pdfLoading}
           >
             {pdfLoading ? "Generating..." : "Download PDF"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ================= Excel Range Dialog ================= */}
+      <Dialog
+        open={excelDialogOpen}
+        onClose={() => !excelLoading && setExcelDialogOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Export Sales Report (Excel)</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" mb={1.5}>
+            Choose how you want to set the date range for the Excel file.
+          </Typography>
+
+          <RadioGroup
+            value={excelMode}
+            onChange={(e) => {
+              setExcelMode(e.target.value);
+              setExcelError("");
+            }}
+          >
+            <FormControlLabel
+              value="current"
+              control={<Radio />}
+              label={
+                <Box>
+                  <Typography variant="body2" fontWeight={600}>
+                    Use current report range
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {currentRangeLabel}
+                  </Typography>
+                </Box>
+              }
+            />
+
+            <FormControlLabel
+              value="customRange"
+              control={<Radio />}
+              label={
+                <Typography variant="body2" fontWeight={600}>
+                  Choose date range for Excel
+                </Typography>
+              }
+            />
+          </RadioGroup>
+
+          {excelMode === "customRange" && (
+            <>
+              <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
+                <InputLabel id="excel-range-label">Excel Range</InputLabel>
+                <Select
+                  labelId="excel-range-label"
+                  value={excelRange}
+                  label="Excel Range"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setExcelRange(val);
+                    setExcelError("");
+                    if (val !== "custom") {
+                      setExcelFrom("");
+                      setExcelTo("");
+                    }
+                  }}
+                >
+                  <MenuItem value="days">Today</MenuItem>
+                  <MenuItem value="weeks">This Week</MenuItem>
+                  <MenuItem value="monthly">This Month</MenuItem>
+                  <MenuItem value="quarterly">This Quarter</MenuItem>
+                  <MenuItem value="yearly">This Year</MenuItem>
+                  <MenuItem value="custom">Custom Date Range</MenuItem>
+                </Select>
+              </FormControl>
+
+              {excelRange === "custom" && (
+                <Stack direction="row" spacing={2} mt={1.5}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    label="From"
+                    value={excelFrom}
+                    onChange={(e) => setExcelFrom(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    label="To"
+                    value={excelTo}
+                    onChange={(e) => setExcelTo(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                </Stack>
+              )}
+            </>
+          )}
+
+          {excelError && (
+            <FormHelperText error sx={{ mt: 1 }}>
+              {excelError}
+            </FormHelperText>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => !excelLoading && setExcelDialogOpen(false)}
+            disabled={excelLoading}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="success"
+            onClick={handleExcelDialogConfirm}
+            disabled={excelLoading}
+          >
+            {excelLoading ? "Generating..." : "Download Excel"}
           </Button>
         </DialogActions>
       </Dialog>

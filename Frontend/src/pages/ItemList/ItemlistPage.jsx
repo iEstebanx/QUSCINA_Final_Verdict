@@ -304,8 +304,23 @@ export default function ItemlistPage() {
       if (r.id !== rowId) return r;
 
       let v = String(rawValue ?? "").replace(/[^0-9.]/g, "");
-      const parts = v.split(".");
-      if (parts.length > 2) v = parts[0] + "." + parts.slice(1).join("");
+      if (field === "qty") {
+        // 🔹 allow ONLY whole numbers (no decimals)
+        v = v.replace(/\D/g, ""); // strip everything that is not 0–9
+
+        // if user cleared the field, keep it empty
+        if (v === "") {
+          const newRow = {
+            ...r,
+            qty: "",
+            cost: 0,
+          };
+          return newRow;
+        }
+
+        // normalize leading zeros: "05" → "5"
+        v = String(parseInt(v, 10));
+      }
 
       const newRow = { ...r, [field]: v };
 
@@ -652,8 +667,8 @@ export default function ItemlistPage() {
   // compute paged rows
   const pagedRows =
     rowsPerPage > 0
-      ? rows.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-      : rows;
+      ? filteredRows.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+      : filteredRows;
 
   const handleChangePage = (_evt, newPage) => setPage(newPage);
   const handleChangeRowsPerPage = (evt) => {
@@ -1327,13 +1342,13 @@ export default function ItemlistPage() {
                               onRowChange(row.id, "qty", e.target.value)
                             }
                             inputMode="decimal"
-                            placeholder="0"
+                            placeholder={row.unit ? `0 ${formatUnit(row.unit)}` : "0"}
                             fullWidth
                             InputProps={{
                               endAdornment: (
-                              <InputAdornment position="end">
-                                {row.unit ? formatUnit(row.unit) : "PCS"}
-                              </InputAdornment>
+                                <InputAdornment position="end">
+                                  {row.unit ? formatUnit(row.unit) : "PCS"}
+                                </InputAdornment>
                               ),
                             }}
                           />
@@ -1769,7 +1784,7 @@ export default function ItemlistPage() {
                                 onRowChange(row.id, "qty", e.target.value)
                               }
                               inputMode="decimal"
-                              placeholder="0"
+                              placeholder={row.unit ? `0 ${formatUnit(row.unit)}` : "0"}
                               fullWidth
                               InputProps={{
                                 endAdornment: (

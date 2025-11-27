@@ -20,24 +20,39 @@ app.set("trust proxy", true);
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 
-/**
- * 🔓 CORS (Vercel ↔ Railway)
- * origin: true → reflects whatever Origin the browser sends
- * credentials: true → allows cookies / Authorization headers
- */
+// CORS: only allow Quscina Backoffice (Vercel) + local dev
+const allowedOrigins = [
+  "https://quscina-backoffice.vercel.app", // main prod domain
+  /^https:\/\/quscina-backoffice-[a-z0-9-]+\.vercel\.app$/, // previews
+
+  // local dev / LAN
+  /^http:\/\/localhost(?::\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,
+  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(?::\d+)?$/,
+  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,
+];
+
 const corsOptions = {
-  origin: true, // allows all your Vercel domains + localhost
+  origin(origin, callback) {
+    // Non-browser (curl, Postman) → no Origin header → allow
+    if (!origin) return callback(null, true);
+
+    const ok = allowedOrigins.some((entry) =>
+      entry instanceof RegExp ? entry.test(origin) : entry === origin
+    );
+
+    if (ok) return callback(null, true);
+
+    console.warn("[CORS] blocked origin:", origin);
+    // Deny CORS for this origin
+    return callback(null, false);
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "X-App",
-    "X-Requested-With",
-  ],
+  allowedHeaders: ["Content-Type", "Authorization", "X-App", "X-Requested-With"],
 };
 
-app.use(cors(corsOptions)); // ✅ THIS IS ENOUGH, NO app.options("*")
+app.use(cors(corsOptions));
 
 // 🔄 Health check (also verifies DB connectivity)
 app.get("/api/health", async (_req, res) => {

@@ -5,19 +5,22 @@ import { AuthProvider } from "./context/AuthContext";
 import { AlertProvider } from "./context/Snackbar/AlertContext";
 import { AdminProvider } from "./context/AdminContext";
 import { ConfirmProvider } from "./context/Cancel&ConfirmDialog/ConfirmContext";
+import { ShiftProvider } from "@/context/ShiftContext";
 
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AlertProvider>
-          <AdminProvider>
-            <ConfirmProvider>
-              <AppRoutes />
-            </ConfirmProvider>
-          </AdminProvider>
-        </AlertProvider>
-      </AuthProvider>
+      <ShiftProvider>
+        <AuthProvider>
+          <AlertProvider>
+            <AdminProvider>
+              <ConfirmProvider>
+                  <AppRoutes />
+              </ConfirmProvider>
+            </AdminProvider>
+          </AlertProvider>
+        </AuthProvider>
+      </ShiftProvider>
     </BrowserRouter>
   );
 }

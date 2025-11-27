@@ -9,11 +9,12 @@ function computeApiBase() {
   const isLocal =
     host === "localhost" ||
     host === "127.0.0.1" ||
+    host.endsWith(".devtunnels.ms") ||
     host.startsWith("192.168.") ||
     host.startsWith("10.");
 
-  if (isLocal) return "";           // dev → Vite proxy
-  return RAILWAY_API_ORIGIN;        // Vercel → Railway
+  if (isLocal) return "";
+  return RAILWAY_API_ORIGIN;
 }
 
 export const API_BASE = computeApiBase();

@@ -1,0 +1,393 @@
+/* QUSCINA_BACKOFFICE/Frontend/src/pages/POS/CSS/Menu.module.css */
+/* ====== AppBar / Filters ====== */
+.pageRoot {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0; /* Crucial: prevents overflow */
+}
+
+/* FIXED: Simplified top bar */
+.topBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: var(--paper);
+  border-bottom: 1px solid var(--divider);
+  flex-shrink: 0;
+  gap: 1rem;
+}
+
+.filterGroup {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.selectControl :global(.MuiSelect-select) {
+  background-color: var(--surface);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+.clearButton {
+  background-color: var(--surface) !important;
+  color: var(--primary) !important;
+  border: 1.5px solid var(--divider) !important;
+}
+
+/* Toggle buttons */
+.toggleGroup :global(.MuiToggleButton-root) {
+  color: var(--text);
+  border-color: var(--divider);
+  background-color: var(--surface);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.2px;
+}
+.toggleGroup :global(.Mui-selected) {
+  background-color: var(--primary) !important;
+  color: var(--on-primary) !important;
+}
+
+/* ====== Page wrapper ====== */
+.menuWrapper {
+  padding: 16px;
+  background-color: var(--bg);
+  color: var(--text);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.noItems {
+  text-align: center;
+  margin-top: 40px;
+  width: 100%;
+  opacity: 0.7;
+  font-size: 1rem;
+}
+
+/* ====== Grid ====== */
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-items: start;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  align-content: start; /* prevents rows from stretching = no huge gaps */
+}
+
+/* ====== IMAGE CARD ====== */
+.card {
+  height: 190px;
+  background-color: var(--surface);
+  cursor: pointer;
+  user-select: none;
+  border: 1.5px solid var(--divider);
+  transition: transform 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease, background-color 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 6px;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px var(--shadow);
+  border-color: var(--primary);
+  background-color: var(--surface-alt);
+}
+.cardUnavailable {
+  background-color: var(--surface-alt);
+  opacity: 0.6;
+}
+
+.cardContent {
+  text-align: center;
+  padding: 12px 10px !important;
+}
+.cardTitle {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.1px;
+}
+.cardContent :global(.MuiTypography-root + .MuiTypography-root) {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Image wrapper keeps 4:3 ratio */
+.cardImageWrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--surface);
+}
+@supports not (aspect-ratio: 1 / 1) {
+  .cardImageWrapper {
+    height: 0;
+    padding-top: 75%;
+  }
+}
+.cardImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.002);
+}
+
+/* Centered overlay */
+.overlayCenter {
+  position: absolute;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.overlayText {
+  color: var(--overlay-contrast);
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+/* ====== TEXT CARD ====== */
+.textCard {
+  position: relative;
+  height: 110px;
+  background-color: var(--surface);
+  border: 1.5px solid var(--divider);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease,
+    border-color 0.12s ease;
+  color: var(--text);
+}
+.textCard:hover {
+  transform: translateY(-2px);
+  background-color: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+.textCardUnavailable {
+  background-color: var(--surface-alt);
+}
+
+.textCardTitle {
+  color: inherit;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+}
+.textCardCategory {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.textCard:hover .textCardCategory {
+  color: var(--on-primary);
+  opacity: 0.85;
+}
+
+.textCardFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.textCardPrice {
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+/* Out of stock chip */
+.outChip {
+  border-color: var(--error) !important;
+  color: var(--error) !important;
+  background-color: var(--error-bg) !important;
+  font-size: 0.7rem !important;
+  font-weight: 700 !important;
+  height: 20px !important;
+  margin-left: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 0 6px !important;
+}
+
+/* ====== Dialog ====== */
+.dialogContent {
+  display: flex;
+  flex-direction: column;
+  padding: 0 !important;
+  background-color: var(--bg);
+}
+@media (min-width: 576px) {
+  .dialogContent {
+    flex-direction: row;
+  }
+}
+
+.dialogImageWrapper {
+  flex-shrink: 0;
+  width: 100%;
+  height: 250px;
+  background: var(--surface);
+}
+@media (min-width: 576px) {
+  .dialogImageWrapper {
+    width: 250px;
+    height: 250px;
+  }
+}
+.dialogImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dialogDetails {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 16px;
+  padding-bottom: 10px !important;
+}
+.dialogTitle {
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.2px;
+}
+.dialogDesc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 400;
+  font-style: italic;
+}
+
+.dialogPriceQty {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.priceText {
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+/* Quantity control */
+.qtyControl {
+  display: flex;
+  align-items: center;
+  background-color: var(--qty-bg);
+  border: 1px solid var(--qty-ring);
+  border-radius: 9999px;
+  overflow: hidden;
+  width: 140px;
+}
+
+.qtyText {
+  min-width: 70px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--qty-fg);
+}
+
+.qtyControl :global(.MuiIconButton-root) {
+  color: var(--qty-fg) !important;
+}
+
+.qtyControl :global(.MuiIconButton-root.Mui-disabled) {
+  color: var(--qty-fg-disabled) !important;
+}
+
+/* Dialog actions */
+.dialogActions {
+  display: flex;
+  gap: 8px;
+  margin-right: -10px;
+  margin-top: auto;
+  justify-content: flex-end;
+}
+.addToCartBtn {
+  background-color: var(--primary) !important;
+  color: var(--on-primary) !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.2px;
+}
+.cancelBtn {
+  color: var(--primary) !important;
+  font-weight: 600 !important;
+}
+.addToCartBtn:disabled {
+  background-color: var(--surface-alt) !important;
+  color: var(--muted) !important;
+  cursor: not-allowed !important;
+  opacity: 0.8;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* ====== Accessibility ====== */
+.card:focus-visible,
+.textCard:focus-visible,
+.toggleGroup :global(.MuiToggleButton-root:focus-visible),
+.clearButton:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Discounts row (kept for compatibility if used later) */
+.discountsRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.discountLabel {
+  margin-right: 0.5rem;
+}
+
+.discountChip {
+  cursor: pointer;
+}
