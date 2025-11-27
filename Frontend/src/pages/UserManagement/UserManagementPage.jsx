@@ -39,7 +39,7 @@ import {
 import { useAlert } from "@/context/Snackbar/AlertContext";
 import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext";
 
-const ROLE_OPTIONS = ["Admin", "Manager", "Chef", "Cashier"];
+const ROLE_OPTIONS = ["Admin", "Manager", "Cashier"];
 
 // Same catalog as backend/auth
 const SQ_CATALOG = {
@@ -160,8 +160,8 @@ export default function UserManagementPage() {
   const [errors, setErrors] = useState({});
 
   // 👉 Role-based requirements
-  const needsPassword = form.role !== "Cashier"; // Admin, Manager, Chef
-  const needsPin = form.role !== "Chef";         // Admin, Manager, Cashier
+  const needsPassword = form.role !== "Cashier"; // Admin, Manager, Cashier
+  const needsPin = true;
 
   useEffect(() => {
     setErrors((prev) => ({
@@ -1300,7 +1300,7 @@ export default function UserManagementPage() {
                 )}
               </Grid>
 
-              {/* PIN row (hidden for Chef) */}
+              {/* POS PIN row */}
               {needsPin && (
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Paper
