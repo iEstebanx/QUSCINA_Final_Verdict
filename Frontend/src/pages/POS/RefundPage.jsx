@@ -1,4 +1,3 @@
-// QUSCINA_BACKOFFICE/Frontend/src/pages/POS/RefundPage.jsx
 import { useEffect, useState, useRef } from "react";
 import {
   Box,
@@ -33,6 +32,20 @@ const ordersApi = (subPath = "") => {
   return `${base}/api/pos/orders${clean}`;
 };
 
+// helpers for PHP formatting
+const lineTotal = (item) =>
+  item ? `₱ ${(Number(item.qty || 0) * Number(item.price || 0)).toFixed(2)}` : "-";
+
+const listTotal = (items) =>
+  items && items.length
+    ? `₱ ${items
+        .reduce(
+          (sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0),
+          0
+        )
+        .toFixed(2)}`
+    : "-";
+
 export default function RefundPage() {
   const navigate = useNavigate();
   const { state } = useLocation(); // { orderId, order }
@@ -43,14 +56,15 @@ export default function RefundPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
 
-  // item state (for now single-line refund UI)
-  const [refundItem, setRefundItem] = useState(null);
-  const [cancelItem, setCancelItem] = useState(null);
+  // 🔹 NEW: handle ALL refundable items, not just first
+  const [refundItems, setRefundItems] = useState([]); // left card list
+  const [cancelItem, setCancelItem] = useState(null); // right card (single line)
 
   const [refundReason, setRefundReason] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [modalQty, setModalQty] = useState(1);
+  const [modalTargetIndex, setModalTargetIndex] = useState(null); // which item in refundItems
 
   // 🔐 PIN dialog state
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
@@ -97,64 +111,98 @@ export default function RefundPage() {
     };
   }, [orderId, order]);
 
-  // When order is available, initialize refundItem from first line
+  // 🔹 When order is available, initialize refundItems from ALL lines
   useEffect(() => {
     if (!order || !order.items || !order.items.length) return;
-    const it = order.items[0];
-    setRefundItem({
-      name: it.name,
-      qty: it.qty,
-      price: it.price,
-    });
+
+    const available = order.items
+      .map((it) => {
+        const qty = Number(it.remainingQty ?? it.qty ?? it.quantity ?? 1);
+        const price = Number(it.price ?? it.item_price ?? 0);
+        return {
+          name: it.name,
+          qty,
+          price,
+        };
+      })
+      .filter((it) => it.qty > 0);
+
+    setRefundItems(available);
     setCancelItem(null);
   }, [order]);
 
   const handleSave = () => {
-    if (!refundItem) return;
+    if (modalTargetIndex == null) return;
+    const source = refundItems[modalTargetIndex];
+    if (!source) return;
 
-    const newCancelItem = {
-      ...refundItem,
-      qty: modalQty,
+    const qtyToMove = modalQty;
+    if (qtyToMove <= 0) {
+      setModalOpen(false);
+      setModalTargetIndex(null);
+      return;
+    }
+
+    const remainingQty = source.qty - qtyToMove;
+    if (remainingQty < 0) {
+      // clamp
+      setModalOpen(false);
+      setModalTargetIndex(null);
+      return;
+    }
+
+    const moved = {
+      ...source,
+      qty: qtyToMove,
     };
 
-    const remainingQty = refundItem.qty - modalQty;
-    if (remainingQty > 0) {
-      setRefundItem({ ...refundItem, qty: remainingQty });
-    } else {
-      setRefundItem(null);
-    }
+    // update left list
+    setRefundItems((prev) => {
+      const next = [...prev];
+      if (remainingQty > 0) {
+        next[modalTargetIndex] = { ...source, qty: remainingQty };
+      } else {
+        next.splice(modalTargetIndex, 1);
+      }
+      return next;
+    });
 
-    if (cancelItem && cancelItem.name === refundItem.name) {
-      setCancelItem({
-        ...cancelItem,
-        qty: cancelItem.qty + modalQty,
-      });
-    } else {
-      setCancelItem(newCancelItem);
-    }
+    // merge into right card if same item
+    setCancelItem((prev) => {
+      if (prev && prev.name === moved.name && prev.price === moved.price) {
+        return {
+          ...prev,
+          qty: prev.qty + moved.qty,
+        };
+      }
+      return moved;
+    });
 
     setModalOpen(false);
+    setModalTargetIndex(null);
   };
 
   const handleRefundBack = () => {
     if (!cancelItem) return;
 
-    if (refundItem && refundItem.name === cancelItem.name) {
-      setRefundItem({
-        ...refundItem,
-        qty: refundItem.qty + cancelItem.qty,
-      });
-    } else {
-      setRefundItem(cancelItem);
-    }
+    setRefundItems((prev) => {
+      const idx = prev.findIndex(
+        (it) => it.name === cancelItem.name && it.price === cancelItem.price
+      );
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = {
+          ...next[idx],
+          qty: next[idx].qty + cancelItem.qty,
+        };
+        return next;
+      }
+      return [...prev, cancelItem];
+    });
 
     setCancelItem(null);
   };
 
-  const totalAmount = (item) =>
-    item ? `₱ ${(item.qty * item.price).toFixed(2)}` : "-";
-
-  // After refund API success
   const handleRefundSuccess = () => {
     navigate("/pos/orders");
   };
@@ -210,7 +258,8 @@ export default function RefundPage() {
         return;
       }
 
-      const amount = Number(cancelItem.qty) * Number(cancelItem.price || 0);
+      const amount =
+        Number(cancelItem.qty || 0) * Number(cancelItem.price || 0);
       if (!amount || amount <= 0) {
         setPinError("Invalid refund amount.");
         setIsPinChecking(false);
@@ -268,7 +317,7 @@ export default function RefundPage() {
 
   return (
     <Box sx={{ p: 4, display: "flex", gap: 4, justifyContent: "center" }}>
-      {/* Refund Panel */}
+      {/* Refund Panel (left) */}
       <Paper
         sx={(t) => ({
           p: 3,
@@ -292,9 +341,7 @@ export default function RefundPage() {
         )}
 
         <Box>
-          <Typography fontWeight="bold">
-            Receipt {receiptNo}
-          </Typography>
+          <Typography fontWeight="bold">Receipt {receiptNo}</Typography>
           <Divider
             sx={(t) => ({
               my: 1,
@@ -302,28 +349,32 @@ export default function RefundPage() {
             })}
           />
 
-          {refundItem ? (
-            <Box
-              onClick={() => {
-                setModalQty(1);
-                setModalOpen(true);
-              }}
-              sx={(t) => ({
-                display: "flex",
-                justifyContent: "space-between",
-                cursor: "pointer",
-                p: 1,
-                borderRadius: 1,
-                "&:hover": {
-                  bgcolor: alpha(t.palette.primary.main, 0.15),
-                },
-              })}
-            >
-              <span>
-                {refundItem.name} x {refundItem.qty}
-              </span>
-              <span>{totalAmount(refundItem)}</span>
-            </Box>
+          {refundItems.length ? (
+            refundItems.map((it, idx) => (
+              <Box
+                key={`${it.name}-${idx}`}
+                onClick={() => {
+                  setModalTargetIndex(idx);
+                  setModalQty(1);
+                  setModalOpen(true);
+                }}
+                sx={(t) => ({
+                  display: "flex",
+                  justifyContent: "space-between",
+                  cursor: "pointer",
+                  p: 1,
+                  borderRadius: 1,
+                  "&:hover": {
+                    bgcolor: alpha(t.palette.primary.main, 0.15),
+                  },
+                })}
+              >
+                <span>
+                  {it.name} x {it.qty}
+                </span>
+                <span>{lineTotal(it)}</span>
+              </Box>
+            ))
           ) : (
             <Typography color="text.secondary">No items</Typography>
           )}
@@ -351,7 +402,7 @@ export default function RefundPage() {
 
           <Box display="flex" justifyContent="space-between" fontWeight="bold">
             <span>Total</span>
-            <span>{totalAmount(refundItem)}</span>
+            <span>{listTotal(refundItems)}</span>
           </Box>
         </Box>
       </Paper>
@@ -365,7 +416,7 @@ export default function RefundPage() {
         &gt;
       </Typography>
 
-      {/* Cancel Panel */}
+      {/* Cancel Panel (right) */}
       <Paper
         sx={(t) => ({
           p: 3,
@@ -406,7 +457,7 @@ export default function RefundPage() {
               <span>
                 {cancelItem.name} x {cancelItem.qty}
               </span>
-              <span>{totalAmount(cancelItem)}</span>
+              <span>{lineTotal(cancelItem)}</span>
             </Box>
           ) : (
             <Box display="flex" justifyContent="center" gap={4} my={2}>
@@ -439,7 +490,7 @@ export default function RefundPage() {
 
           <Box display="flex" justifyContent="space-between" fontWeight="bold">
             <span>Total</span>
-            <span>{totalAmount(cancelItem)}</span>
+            <span>{lineTotal(cancelItem)}</span>
           </Box>
 
           <Box mt={2} display="flex" justifyContent="flex-end">
@@ -477,7 +528,11 @@ export default function RefundPage() {
             borderBottom: `1px solid ${alpha("#8b4a10", 0.3)}`,
           }}
         >
-          <span>{refundItem?.name || "Refund Item"}</span>
+          <span>
+            {modalTargetIndex != null && refundItems[modalTargetIndex]
+              ? refundItems[modalTargetIndex].name
+              : "Refund Item"}
+          </span>
           <IconButton
             size="small"
             onClick={() => setModalOpen(false)}
@@ -525,9 +580,14 @@ export default function RefundPage() {
 
             <IconButton
               onClick={() =>
-                setModalQty((q) =>
-                  refundItem ? Math.min(refundItem.qty, q + 1) : q + 1
-                )
+                setModalQty((q) => {
+                  const src =
+                    modalTargetIndex != null
+                      ? refundItems[modalTargetIndex]
+                      : null;
+                  const maxQty = src ? src.qty : q + 1;
+                  return Math.min(maxQty, q + 1);
+                })
               }
             >
               <AddIcon />

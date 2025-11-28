@@ -670,10 +670,13 @@ const terminalId = "TERMINAL-1";
   }, [isReflectingExisting, currentOrderId, openOrders, items, discounts]);
 
   const t = useTheme();
-  const sidebarBg = t.palette.secondary.main;
-  const sidebarContrast =
-    t.palette.secondary.contrastText ??
-    t.palette.getContrastText(t.palette.secondary.main);
+
+  // Cart uses same light paper background as the rest of the app
+  const sidebarBg = t.palette.background.paper;
+  const sidebarContrast = t.palette.text.primary;
+  const sidebarBorder = alpha(t.palette.grey[800], 0.14);
+  const softAccent = alpha(t.palette.grey[800], 0.06);
+  const softAccentStrong = alpha(t.palette.grey[800], 0.12);
 
   const handleQtyChange = (id, delta) => {
     const item = items.find((i) => i.id === id);
@@ -682,16 +685,28 @@ const terminalId = "TERMINAL-1";
     const qty = item.quantity ?? 1;
     const baseQty = lockedBaseQty[id] || 0;
 
+    // 🔼 Increase → always local
     if (delta > 0) {
       incrementItem(id);
       return;
     }
 
+    // 🔽 Decrease
     if (delta < 0) {
-      if (qty <= baseQty && baseQty > 0) {
+      // If reflecting an existing ticket:
+      //  - baseQty > 0 → the "base" part is locked
+      //  - only quantity ABOVE baseQty can be trimmed here
+      if (isReflectingExisting && baseQty > 0) {
+        if (qty > baseQty) {
+          // Just trimming extra items added after reflection
+          decrementItem(id);
+        }
+        // qty <= baseQty is locked → do nothing here
+        // use the dedicated "Void item" button instead
         return;
       }
 
+      // 🔹 Non-reflected cart (new order) → standard behavior
       const nextQty = qty - 1;
 
       if (nextQty <= 0 && baseQty === 0) {
@@ -706,6 +721,32 @@ const terminalId = "TERMINAL-1";
     }
   };
 
+  const handleVoidItemClick = (item) => {
+    if (!item) return;
+
+    const baseQty = lockedBaseQty[item.id] || 0;
+    const qty = item.quantity ?? 1;
+
+    // Only allow per-item void when:
+    //  - reflecting an existing pending order
+    //  - this item has a base qty from that ticket
+    //  - there's at least 1 qty remaining
+    if (!isReflectingExisting || baseQty <= 0 || qty <= 0) return;
+
+    const maxQty = Math.min(baseQty, qty); // can't void more than base or current qty
+
+    setPendingVoidItem({
+      itemId: item.id,
+      itemName: item.name,
+      unitPrice: item.price || 0,
+      qty: maxQty > 0 ? 1 : 0, // start at 1
+      maxQty,
+    });
+    setPinError("");
+    setPinDigits(Array(6).fill(""));
+    openSafely(setPinDialogOpen);
+  };
+
   const total = Math.max(0, subtotal - discountAmount); // no VAT, just net total
 
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
@@ -714,6 +755,9 @@ const terminalId = "TERMINAL-1";
   const [isPinChecking, setIsPinChecking] = useState(false);
   const pinRefs = useRef([]);
   const [pinVisible, setPinVisible] = useState(false);
+
+  // 🔹 When voiding a single item from a reflected ticket
+  const [pendingVoidItem, setPendingVoidItem] = useState(null);
 
   // --- Load available discount types (same as MenuPage) --------------------
   const [discountChoices, setDiscountChoices] = useState([]);
@@ -891,13 +935,7 @@ const terminalId = "TERMINAL-1";
   const onClickClearOrVoid = () => {
     closeMenu();
 
-    if (isReflectingExisting) {
-      setPinError("");
-      setPinDigits(Array(6).fill(""));
-      openSafely(setPinDialogOpen);
-      return;
-    }
-
+    // Only for NEW carts (menu is hidden for reflected orders)
     const nothingToClear = items.length === 0 && discounts.length === 0;
 
     if (nothingToClear) {
@@ -928,45 +966,16 @@ const terminalId = "TERMINAL-1";
     setDlgOpen(false);
     setEditingIndex(-1);
 
-    if (currentOrderId) {
-      try {
-        const res = await fetch(
-          ordersApi(`/${encodeURIComponent(currentOrderId)}/void`),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ employeeId }),
-          }
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data?.ok === false) {
-          throw new Error(data?.error || `Failed to void (${res.status})`);
-        }
-
-        setOpenOrders((prev) =>
-          prev.map((o) =>
-            o.id === currentOrderId
-              ? {
-                  ...o,
-                  status: "voided",
-                  voidedAt: new Date().toISOString(),
-                }
-              : o
-          )
-        );
-      } catch (err) {
-        console.error("[Cart] Failed to void order", err);
-        window.alert(err.message || "Failed to void order");
-      }
-    }
-
+    // Only clears local cart; no more order-level voids
     clearCart();
     clearDiscounts();
     setReflecting(null);
     setLockedBaseQty({});
     setConfirmOpen(false);
   };
+
+  const confirmTitle = "Clear Order";
+  const confirmBody = "Remove all items and discounts from the cart?";
 
   // --- Pending order dialog -----------------------------------------------
   const [pendingOpen, setPendingOpen] = useState(false);
@@ -1402,11 +1411,6 @@ const terminalId = "TERMINAL-1";
   const menuActionLabel = isReflectingExisting ? "Void Order" : "Clear Order";
   const MenuIcon = isReflectingExisting ? DeleteForever : DeleteOutline;
 
-  const confirmTitle = isReflectingExisting ? "Void Order" : "Clear Order";
-  const confirmBody = isReflectingExisting
-    ? "Mark this order as VOID and remove all items from the cart?"
-    : "Remove all items and discounts from the cart?";
-
   const firstDiscount = discounts[0];
   const discountSuffix = firstDiscount
     ? `(${firstDiscount.name ?? "Discount"} ${
@@ -1423,6 +1427,7 @@ const terminalId = "TERMINAL-1";
         color: sidebarContrast,
         display: "flex",
         flexDirection: "column",
+        borderLeft: `1px solid ${sidebarBorder}`,
       }}
     >
       {/* 🔹 Open Shift modal (shown when user clicks primary with no shift) */}
@@ -1458,77 +1463,83 @@ const terminalId = "TERMINAL-1";
             Orders
           </Typography>
 
-          <IconButton
-            size="medium"
-            sx={{ color: "inherit" }}
-            onClick={openMenu}
-            aria-label="More"
-          >
-            <MoreVert fontSize="medium" />
-          </IconButton>
+          {/* 🔹 Only show menu for NEW carts (no reflected ticket) */}
+          {!isReflectingExisting && (
+            <>
+              <IconButton
+                size="medium"
+                sx={{ color: "inherit" }}
+                onClick={openMenu}
+                aria-label="More"
+              >
+                <MoreVert fontSize="medium" />
+              </IconButton>
 
-          <Menu
-            anchorEl={menuAnchor}
-            open={Boolean(menuAnchor)}
-            onClose={closeMenu}
-            elevation={0}
-            PaperProps={{
-              sx: {
-                mt: 1,
-                minWidth: 200,
-                bgcolor: "#5e5047",
-                color: "#fff",
-                "& .MuiMenuItem-root": {
-                  gap: 1,
-                  py: 1,
-                  "&:hover": { bgcolor: "#766459" },
-                },
-                "& .MuiListItemIcon-root, & .MuiSvgIcon-root, & .MuiTypography-root":
-                  {
-                    color: "#fff",
+              <Menu
+                anchorEl={menuAnchor}
+                open={Boolean(menuAnchor)}
+                onClose={closeMenu}
+                elevation={0}
+                PaperProps={{
+                  sx: {
+                    mt: 1,
+                    minWidth: 200,
+                    bgcolor: t.palette.grey[800],
+                    color: t.palette.getContrastText(t.palette.grey[800]),
+                    "& .MuiMenuItem-root": {
+                      gap: 1,
+                      py: 1,
+                      "&:hover": {
+                        bgcolor: alpha(t.palette.common.white, 0.08),
+                      },
+                    },
+                    "& .MuiListItemIcon-root, & .MuiSvgIcon-root, & .MuiTypography-root": {
+                      color: "inherit",
+                    },
+                    border: `1px solid ${alpha(t.palette.common.black, 0.12)}`,
                   },
-                border: `1px solid rgba(255,255,255,0.15)`,
-              },
-            }}
-            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-            transformOrigin={{ vertical: "top", horizontal: "right" }}
-          >
-            <MenuItem onClick={onClickClearOrVoid} sx={{ color: "#fff" }}>
-              <ListItemIcon sx={{ color: "#fff", minWidth: 32 }}>
-                <MenuIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary={menuActionLabel}
-                primaryTypographyProps={{
-                  sx: { color: "#fff", fontWeight: 600 },
                 }}
-              />
-            </MenuItem>
-          </Menu>
+                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                transformOrigin={{ vertical: "top", horizontal: "right" }}
+              >
+                <MenuItem onClick={onClickClearOrVoid} sx={{ color: "#fff" }}>
+                  <ListItemIcon sx={{ color: "#fff", minWidth: 32 }}>
+                    <DeleteOutline fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary="Clear Order"
+                    primaryTypographyProps={{
+                      sx: { color: "#fff", fontWeight: 600 },
+                    }}
+                  />
+                </MenuItem>
+              </Menu>
+            </>
+          )}
         </Box>
 
         <Divider
           sx={{
-            borderColor: alpha(sidebarContrast, 0.25),
+            borderColor: alpha(t.palette.grey[800], 0.12),
             my: 1.5,
             mx: -2,
           }}
         />
-
+        
         <ToggleButtonGroup
           value={orderType}
           exclusive
           onChange={(_, v) => v && setOrderType(v)}
           fullWidth
           sx={{
-            backgroundColor: alpha(sidebarContrast, 0.1),
+            backgroundColor: softAccent,
             borderRadius: "20px",
             overflow: "hidden",
             mb: 2,
             "& .MuiToggleButton-root": {
               fontSize: "1rem",
               py: 1,
-              color: "inherit",
+              color: sidebarContrast,
             },
           }}
         >
@@ -1554,40 +1565,186 @@ const terminalId = "TERMINAL-1";
 
         {/* Items */}
         {viewMode === "image"
-          ? items.map((item) => (
-              <Box
-                key={item.id}
-                sx={{
-                  mb: 1.5,
-                  backgroundColor: alpha(sidebarContrast, 0.1),
-                  borderRadius: 2,
-                  display: "flex",
-                  height: 95,
-                  overflow: "hidden",
-                }}
-              >
-                {item.image && (
-                  <Box
-                    component="img"
-                    src={item.image}
-                    alt={item.name}
-                    sx={{
-                      width: 95,
-                      height: "100%",
-                      objectFit: "cover",
-                      flexShrink: 0,
-                    }}
-                  />
-                )}
+          ? items.map((item) => {
+              const baseQty = lockedBaseQty[item.id] || 0;
+              const canVoid =
+                isReflectingExisting && baseQty > 0 && (item.quantity ?? 1) > 0;
+
+              return (
                 <Box
+                  key={item.id}
                   sx={{
-                    flex: 1,
+                    mb: 1.5,
+                    backgroundColor: softAccent,
+                    borderRadius: 2,
                     display: "flex",
-                    flexDirection: "column",
-                    pt: 0.5,
-                    pb: 1,
-                    px: 1,
-                    minWidth: 0,
+                    height: 95,
+                    overflow: "hidden",
+                  }}
+                >
+                  {item.image && (
+                    <Box
+                      component="img"
+                      src={item.image}
+                      alt={item.name}
+                      sx={{
+                        width: 95,
+                        height: "100%",
+                        objectFit: "cover",
+                        flexShrink: 0,
+                      }}
+                    />
+                  )}
+                  <Box
+                    sx={{
+                      flex: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      pt: 0.5,
+                      pb: 1,
+                      px: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    <Typography
+                      variant="h6"
+                      sx={{
+                        fontWeight: 500,
+                        fontSize: "17px",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.name}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontWeight: 500,
+                        fontSize: "14px",
+                        mt: 0.25,
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {PHP((item.price || 0) * (item.quantity ?? 1))}{" "}
+                      <Typography
+                        component="span"
+                        sx={{
+                          color: alpha(sidebarContrast, 0.75),
+                          ml: 0.5,
+                          fontSize: "0.85rem",
+                        }}
+                      >
+                        ({item.quantity ?? 1}×{PHP(item.price || 0)})
+                      </Typography>
+                    </Typography>
+
+                    {/* Bottom row: Void button (left) + qty pill (right) */}
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "flex-end",
+                        mt: 1,
+                        gap: 1,
+                      }}
+                    >
+                      {false && (
+                        <Button
+                          size="small"
+                          color="error"
+                          variant="text"
+                          onClick={() => handleVoidItemClick(item)}
+                          sx={{
+                            px: 0,
+                            minWidth: 0,
+                            fontSize: 12,
+                            textTransform: "none",
+                          }}
+                        >
+                          Void item
+                        </Button>
+                      )}
+
+                      <Box
+                        sx={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          bgcolor: softAccentStrong,
+                          borderRadius: "20px",
+                          overflow: "hidden",
+                          ml: "auto",
+                        }}
+                      >
+                        {(() => {
+                          const qty = item.quantity ?? 1;
+                          const baseQtyInner = lockedBaseQty[item.id] || 0;
+                          const lockedForThisItem =
+                            qty <= baseQtyInner && baseQtyInner > 0;
+
+                          return (
+                            <IconButton
+                              onClick={() => handleQtyChange(item.id, -1)}
+                              size="small"
+                              disabled={lockedForThisItem}
+                              sx={{
+                                color: "inherit",
+                                px: 0.8,
+                                py: 0.5,
+                              }}
+                            >
+                              {lockedForThisItem ? (
+                                <LockOutlinedIcon fontSize="small" />
+                              ) : qty === 1 ? (
+                                <DeleteOutline fontSize="small" />
+                              ) : (
+                                <Remove fontSize="small" />
+                              )}
+                            </IconButton>
+                          );
+                        })()}
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            minWidth: 24,
+                            textAlign: "center",
+                            px: 1,
+                            fontWeight: 500,
+                          }}
+                        >
+                          {item.quantity ?? 1}
+                        </Typography>
+                        <IconButton
+                          onClick={() => handleQtyChange(item.id, +1)}
+                          size="small"
+                          sx={{
+                            color: "inherit",
+                            px: 0.8,
+                            py: 0.5,
+                          }}
+                        >
+                          <Add fontSize="small" />
+                        </IconButton>
+                      </Box>
+                    </Box>
+                  </Box>
+                </Box>
+              );
+            })
+          : items.map((item) => {
+              const baseQty = lockedBaseQty[item.id] || 0;
+              const canVoid =
+                isReflectingExisting &&
+                baseQty > 0 &&
+                (item.quantity ?? 1) > 0;
+
+              return (
+                <Box
+                  key={item.id}
+                  sx={{
+                    mb: 1.5,
+                    backgroundColor: softAccent,
+                    borderRadius: 2,
+                    p: 1,
                   }}
                 >
                   <Typography
@@ -1606,7 +1763,6 @@ const terminalId = "TERMINAL-1";
                     sx={{
                       fontWeight: 500,
                       fontSize: "14px",
-                      mt: 0.25,
                       lineHeight: 1.2,
                     }}
                   >
@@ -1622,184 +1778,107 @@ const terminalId = "TERMINAL-1";
                       ({item.quantity ?? 1}×{PHP(item.price || 0)})
                     </Typography>
                   </Typography>
+
+                  {/* Bottom row: Void button (left) + qty pill (right) */}
                   <Box
                     sx={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      bgcolor: alpha(sidebarContrast, 0.2),
-                      borderRadius: "20px",
-                      overflow: "hidden",
-                      ml: "auto",
+                      display: "flex",
+                      alignItems: "flex-end",
                       mt: 1,
+                      gap: 1,
                     }}
                   >
-                    {(() => {
-                      const qty = item.quantity ?? 1;
-                      const baseQty = lockedBaseQty[item.id] || 0;
-                      const lockedForThisItem =
-                        qty <= baseQty && baseQty > 0;
+                    {false && (
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="text"
+                        onClick={() => handleVoidItemClick(item)}
+                        sx={{
+                          px: 0,
+                          minWidth: 0,
+                          fontSize: 12,
+                          textTransform: "none",
+                        }}
+                      >
+                        Void item
+                      </Button>
+                    )}
 
-                      return (
-                        <IconButton
-                          onClick={() => handleQtyChange(item.id, -1)}
-                          size="small"
-                          disabled={lockedForThisItem}
-                          sx={{
-                            color: "inherit",
-                            px: 0.8,
-                            py: 0.5,
-                          }}
-                        >
-                          {lockedForThisItem ? (
-                            <LockOutlinedIcon fontSize="small" />
-                          ) : qty === 1 ? (
-                            <DeleteOutline fontSize="small" />
-                          ) : (
-                            <Remove fontSize="small" />
-                          )}
-                        </IconButton>
-                      );
-                    })()}
-                    <Typography
-                      variant="body2"
+                    <Box
                       sx={{
-                        minWidth: 24,
-                        textAlign: "center",
-                        px: 1,
-                        fontWeight: 500,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        bgcolor: softAccentStrong,
+                        borderRadius: "20px",
+                        overflow: "hidden",
+                        ml: "auto",
                       }}
                     >
-                      {item.quantity ?? 1}
-                    </Typography>
-                    <IconButton
-                      onClick={() => handleQtyChange(item.id, +1)}
-                      size="small"
-                      sx={{
-                        color: "inherit",
-                        px: 0.8,
-                        py: 0.5,
-                      }}
-                    >
-                      <Add fontSize="small" />
-                    </IconButton>
+                      {(() => {
+                        const qty = item.quantity ?? 1;
+                        const baseQtyInner = lockedBaseQty[item.id] || 0;
+                        const lockedForThisItem =
+                          qty <= baseQtyInner && baseQtyInner > 0;
+
+                        return (
+                          <IconButton
+                            onClick={() => handleQtyChange(item.id, -1)}
+                            size="small"
+                            disabled={lockedForThisItem}
+                            sx={{
+                              color: "inherit",
+                              px: 0.8,
+                              py: 0.5,
+                            }}
+                          >
+                            {lockedForThisItem ? (
+                              <LockOutlinedIcon fontSize="small" />
+                            ) : qty === 1 ? (
+                              <DeleteOutline fontSize="small" />
+                            ) : (
+                              <Remove fontSize="small" />
+                            )}
+                          </IconButton>
+                        );
+                      })()}
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          minWidth: 24,
+                          textAlign: "center",
+                          px: 1,
+                          fontWeight: 500,
+                        }}
+                      >
+                        {item.quantity ?? 1}
+                      </Typography>
+                      <IconButton
+                        onClick={() => handleQtyChange(item.id, +1)}
+                        size="small"
+                        sx={{
+                          color: "inherit",
+                          px: 0.8,
+                          py: 0.5,
+                        }}
+                      >
+                        <Add fontSize="small" />
+                      </IconButton>
+                    </Box>
                   </Box>
                 </Box>
-              </Box>
-            ))
-          : items.map((item) => (
-              <Box
-                key={item.id}
-                sx={{
-                  mb: 1.5,
-                  backgroundColor: alpha(sidebarContrast, 0.1),
-                  borderRadius: 2,
-                  p: 1,
-                }}
-              >
-                <Typography
-                  variant="h6"
-                  sx={{
-                    fontWeight: 500,
-                    fontSize: "17px",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {item.name}
-                </Typography>
-                <Typography
-                  sx={{
-                    fontWeight: 500,
-                    fontSize: "14px",
-                    lineHeight: 1.2,
-                  }}
-                >
-                  {PHP((item.price || 0) * (item.quantity ?? 1))}{" "}
-                  <Typography
-                    component="span"
-                    sx={{
-                      color: alpha(sidebarContrast, 0.75),
-                      ml: 0.5,
-                      fontSize: "0.85rem",
-                    }}
-                  >
-                    ({item.quantity ?? 1}×{PHP(item.price || 0)})
-                  </Typography>
-                </Typography>
-                <Box
-                  sx={{
-                    display: "flex",
-                    justifyContent: "flex-end",
-                    mt: 1,
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      bgcolor: alpha(sidebarContrast, 0.2),
-                      borderRadius: "20px",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {(() => {
-                      const qty = item.quantity ?? 1;
-                      const baseQty = lockedBaseQty[item.id] || 0;
-                      const lockedForThisItem =
-                        qty <= baseQty && baseQty > 0;
-
-                      return (
-                        <IconButton
-                          onClick={() => handleQtyChange(item.id, -1)}
-                          size="small"
-                          disabled={lockedForThisItem}
-                          sx={{
-                            color: "inherit",
-                            px: 0.8,
-                            py: 0.5,
-                          }}
-                        >
-                          {lockedForThisItem ? (
-                            <LockOutlinedIcon fontSize="small" />
-                          ) : qty === 1 ? (
-                            <DeleteOutline fontSize="small" />
-                          ) : (
-                            <Remove fontSize="small" />
-                          )}
-                        </IconButton>
-                      );
-                    })()}
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        minWidth: 24,
-                        textAlign: "center",
-                        px: 1,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {item.quantity ?? 1}
-                    </Typography>
-                    <IconButton
-                      onClick={() => handleQtyChange(item.id, +1)}
-                      size="small"
-                      sx={{
-                        color: "inherit",
-                        px: 0.8,
-                        py: 0.5,
-                      }}
-                    >
-                      <Add fontSize="small" />
-                    </IconButton>
-                  </Box>
-                </Box>
-              </Box>
-            ))}
+              );
+            })}
       </Box>
 
       {/* Summary */}
-      <Box sx={{ bgcolor: alpha(sidebarContrast, 0.1), p: 1.5 }}>
+      <Box
+        sx={{
+          bgcolor: alpha(t.palette.grey[50] || "#fff", 0.9),
+          p: 1.5,
+          borderTop: `1px solid ${alpha(t.palette.grey[800], 0.12)}`,
+        }}
+      >
         <Row label="Sub Total" value={PHP(subtotal)} />
         {/* Interactive Discount Card (no border, no icon) */}
         <Box
@@ -1820,7 +1899,7 @@ const terminalId = "TERMINAL-1";
             "&:hover":
               discountChoices.length && !discountLoadError
                 ? {
-                    backgroundColor: alpha(sidebarContrast, 0.15),
+                    backgroundColor: softAccentStrong,
                     transform: "translateY(-1px)",
                     boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
                   }
@@ -2622,6 +2701,7 @@ const terminalId = "TERMINAL-1";
           setPinDigits(Array(6).fill(""));
           setPinError("");
           setPinVisible(false);
+          setPendingVoidItem(null);
         }}
         PaperProps={{ sx: { minWidth: 360 } }}
       >
@@ -2629,10 +2709,7 @@ const terminalId = "TERMINAL-1";
           <Typography variant="h6" component="span">
             Approval Required
           </Typography>
-          <Typography
-            variant="body2"
-            sx={{ opacity: 0.7 }}
-          >
+          <Typography variant="body2" sx={{ opacity: 0.7 }}>
             Enter 6-digit PIN to continue
           </Typography>
         </DialogTitle>
@@ -2647,11 +2724,8 @@ const terminalId = "TERMINAL-1";
               mt: 0.5,
             }}
           >
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-            >
+            {/* PIN row */}
+            <Stack direction="row" spacing={1} alignItems="center">
               <LockOutlinedIcon fontSize="small" />
 
               {/* 6-digit PIN boxes */}
@@ -2663,12 +2737,9 @@ const terminalId = "TERMINAL-1";
                     inputRef={(el) => {
                       pinRefs.current[idx] = el;
                     }}
-                    value={
-                      pinVisible ? digit : digit ? "•" : ""
-                    }
+                    value={pinVisible ? digit : digit ? "•" : ""}
                     onChange={(e) => {
-                      const raw =
-                        e.target.value.replace(/\D/g, "");
+                      const raw = e.target.value.replace(/\D/g, "");
                       const val = raw ? raw[raw.length - 1] : "";
 
                       setPinError("");
@@ -2699,9 +2770,7 @@ const terminalId = "TERMINAL-1";
                         textAlign: "center",
                         width: 28,
                       },
-                      "aria-label": `PIN digit ${
-                        idx + 1
-                      }`,
+                      "aria-label": `PIN digit ${idx + 1}`,
                     }}
                     sx={{
                       "& .MuiInputBase-input": {
@@ -2716,9 +2785,7 @@ const terminalId = "TERMINAL-1";
               {/* show / hide toggle */}
               <IconButton
                 size="small"
-                onClick={() =>
-                  setPinVisible((prev) => !prev)
-                }
+                onClick={() => setPinVisible((prev) => !prev)}
               >
                 {pinVisible ? (
                   <VisibilityOutlinedIcon />
@@ -2728,12 +2795,93 @@ const terminalId = "TERMINAL-1";
               </IconButton>
             </Stack>
 
-            <Typography
-              variant="caption"
-              sx={{ opacity: 0.7 }}
-            >
+            <Typography variant="caption" sx={{ opacity: 0.7 }}>
               Use a 6-digit numeric PIN.
             </Typography>
+
+            {/* 🔹 NEW: Quantity selector for per-item void */}
+            {pendingVoidItem && pendingVoidItem.maxQty > 0 && (
+              <Box
+                sx={{
+                  mt: 1.5,
+                  width: "100%",
+                  maxWidth: 260,
+                  textAlign: "center",
+                }}
+              >
+                <Typography
+                  variant="subtitle2"
+                  sx={{ mb: 0.5, fontWeight: 600 }}
+                >
+                  Void quantity for {pendingVoidItem.itemName}
+                </Typography>
+
+                <Stack
+                  direction="row"
+                  alignItems="center"
+                  justifyContent="center"
+                  spacing={1}
+                >
+                  <IconButton
+                    size="small"
+                    onClick={() =>
+                      setPendingVoidItem((prev) =>
+                        !prev
+                          ? prev
+                          : {
+                              ...prev,
+                              qty: Math.max(1, (prev.qty || 1) - 1),
+                            }
+                      )
+                    }
+                    disabled={(pendingVoidItem.qty || 1) <= 1}
+                  >
+                    <Remove fontSize="small" />
+                  </IconButton>
+
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      minWidth: 40,
+                      textAlign: "center",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {pendingVoidItem.qty || 1}
+                  </Typography>
+
+                  <IconButton
+                    size="small"
+                    onClick={() =>
+                      setPendingVoidItem((prev) =>
+                        !prev
+                          ? prev
+                          : {
+                              ...prev,
+                              qty: Math.min(
+                                prev.maxQty || 1,
+                                (prev.qty || 1) + 1
+                              ),
+                            }
+                      )
+                    }
+                    disabled={
+                      (pendingVoidItem.qty || 1) >=
+                      (pendingVoidItem.maxQty || 1)
+                    }
+                  >
+                    <Add fontSize="small" />
+                  </IconButton>
+                </Stack>
+
+                <Typography
+                  variant="caption"
+                  sx={{ mt: 0.5, opacity: 0.7, display: "block" }}
+                >
+                  Max {pendingVoidItem.maxQty} can be voided
+                </Typography>
+              </Box>
+            )}
 
             {pinError && (
               <Typography
@@ -2754,6 +2902,7 @@ const terminalId = "TERMINAL-1";
               setPinDigits(Array(6).fill(""));
               setPinError("");
               setPinVisible(false);
+              setPendingVoidItem(null);
             }}
           >
             Cancel
@@ -2761,9 +2910,7 @@ const terminalId = "TERMINAL-1";
 
           <Button
             variant="contained"
-            disabled={
-              pinDigits.some((d) => !d) || isPinChecking
-            }
+            disabled={pinDigits.some((d) => !d) || isPinChecking}
             onClick={async () => {
               const pin = pinDigits.join("");
               if (pin.length !== 6) return;
@@ -2772,12 +2919,13 @@ const terminalId = "TERMINAL-1";
               setPinError("");
 
               try {
+                // 1) Verify PIN (same endpoint as before)
                 const base = API_BASE || "";
-                const url = base
+                const verifyUrl = base
                   ? `${base}/menu/cart/verify-pin`
                   : "/api/menu/cart/verify-pin";
 
-                const res = await fetch(url, {
+                const res = await fetch(verifyUrl, {
                   method: "POST",
                   headers: {
                     "Content-Type": "application/json",
@@ -2794,13 +2942,108 @@ const terminalId = "TERMINAL-1";
                   return;
                 }
 
-                // SUCCESS → open normal confirm dialog
-                setIsPinChecking(false);
-                setPinDialogOpen(false);
-                setPinDigits(Array(6).fill(""));
-                setPinVisible(false);
-                openSafely(setConfirmOpen);
+                // 2) PIN OK → if we have a pendingVoidItem + currentOrderId, call /void-item
+                if (pendingVoidItem && currentOrderId) {
+                  const { itemId, qty = 1, unitPrice } = pendingVoidItem;
+
+                  try {
+                    const voidUrl = ordersApi(
+                      `/${encodeURIComponent(currentOrderId)}/void-item`
+                    );
+
+                    const res2 = await fetch(voidUrl, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      credentials: "include",
+                      body: JSON.stringify({
+                        itemId,
+                        qty,
+                        reason: null,
+                        employeeId,
+                      }),
+                    });
+
+                    const data2 = await res2.json().catch(() => ({}));
+
+                    if (!res2.ok || data2.ok === false) {
+                      throw new Error(
+                        data2.error || `Failed to void item (${res2.status})`
+                      );
+                    }
+
+                    const newStatus = data2.status || "";
+
+                    // 🔹 Update lockedBaseQty then decrement local qty
+                    setLockedBaseQty((prev) => {
+                      const next = { ...prev };
+                      const current = Number(next[itemId] || 0);
+                      next[itemId] = Math.max(0, current - qty);
+                      return next;
+                    });
+
+                    // Decrement from cart items
+                    decrementItem(itemId);
+
+                    // Update openOrders snapshot
+                    setOpenOrders((prev) =>
+                      prev.map((o) => {
+                        if (o.id !== currentOrderId) return o;
+                        const nextItems = (o.items || []).map((it) =>
+                          it.id === itemId
+                            ? {
+                                ...it,
+                                qty: Math.max(0, (it.qty ?? 1) - qty),
+                              }
+                            : it
+                        );
+                        const voidAmount = (unitPrice || 0) * qty;
+                        const nextAmount = Math.max(
+                          0,
+                          (o.amount || 0) - voidAmount
+                        );
+
+                        return {
+                          ...o,
+                          status: newStatus || o.status,
+                          items: nextItems,
+                          amount: nextAmount,
+                        };
+                      })
+                    );
+
+                    // If backend says entire order is now voided → clear cart & reflection
+                    if (newStatus.toLowerCase() === "voided") {
+                      clearCart();
+                      clearDiscounts();
+                      setReflecting(null);
+                      setLockedBaseQty({ });
+                      setCurrentOrderId(null);
+                    }
+
+                    // Close PIN dialog
+                    setIsPinChecking(false);
+                    setPinDialogOpen(false);
+                    setPinDigits(Array(6).fill(""));
+                    setPinVisible(false);
+                    setPendingVoidItem(null);
+                    setPinError("");
+                  } catch (err2) {
+                    console.error("[Cart] void-item failed", err2);
+                    setIsPinChecking(false);
+                    setPinError(err2.message || "Failed to void item");
+                    return;
+                  }
+                } else {
+                  // No pending item: just close PIN dialog
+                  setIsPinChecking(false);
+                  setPinDialogOpen(false);
+                  setPinDigits(Array(6).fill(""));
+                  setPinVisible(false);
+                  setPendingVoidItem(null);
+                  setPinError("");
+                }
               } catch (err) {
+                console.error("[Cart] PIN check failed", err);
                 setIsPinChecking(false);
                 setPinError("Server error");
               }

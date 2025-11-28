@@ -142,6 +142,7 @@ module.exports = ({ db } = {}) => {
           e.role, e.status, e.username, e.email,
           e.login_employee_id, e.login_username, e.login_email,
           e.password_last_changed, e.photo_url, e.created_at, e.updated_at,
+          (e.pin_hash IS NOT NULL) AS has_pin,
 
           -- legacy/global counters (kept for back-compat)
           e.failed_login_count, e.lock_until, e.permanent_lock,
@@ -201,6 +202,7 @@ module.exports = ({ db } = {}) => {
           loginVia: dbLoginViaToObj(r),
           passwordLastChanged: r.password_last_changed,
           photoUrl: r.photo_url,
+          hasPin: !!r.has_pin,
           securityQuestions: sqIdsToDisplay(sqIds),
           createdAt: r.created_at,
           updatedAt: r.updated_at,
@@ -869,6 +871,16 @@ module.exports = ({ db } = {}) => {
       res.json({ ok: true });
     } catch (e) {
       console.error("[DELETE /api/users/:employeeId] fail:", e);
+
+      // MySQL FK constraint: row is referenced in another table (e.g. pos_shifts)
+      if (e?.code === "ER_ROW_IS_REFERENCED_2" || e?.errno === 1451) {
+        return res.status(400).json({
+          error:
+            "This user cannot be deleted because they are already used in POS shifts or other records. " +
+            "Please set the user status to Inactive instead of deleting.",
+        });
+      }
+
       res.status(500).json({ error: e?.message ?? "Failed to delete user" });
     }
   });

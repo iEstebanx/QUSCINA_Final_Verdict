@@ -476,6 +476,12 @@ export default function UserManagementPage() {
 
   // ===== Password dialog helpers =====
   const isEditingExisting = rows.some((r) => String(r.employeeId) === String(form.employeeId));
+  const editingRow = rows.find((r) => String(r.employeeId) === String(form.employeeId));
+  const hasStagedPin = Array.isArray(form.pinDigits) && form.pinDigits.some((d) => d);
+  const hasExistingPin = !!editingRow?.hasPin;
+  const hasExistingSq =
+    Array.isArray(form.securityQuestions) && form.securityQuestions.length > 0;
+
   const pwScore = scorePassword(pwFields.next);
   const pwRules = ruleChecks(pwFields.next);
 
@@ -1324,45 +1330,38 @@ export default function UserManagementPage() {
               )}
 
               {/* Security Questions row – unchanged, still available for everyone */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Paper
-                  variant="outlined"
-                  onClick={openSqDialog}
-                  sx={{
-                    p: 1,
-                    cursor: "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    minHeight: 46,
-                  }}
-                >
-                  <Stack direction="row" spacing={1.25} alignItems="center">
-                    <HelpOutlineOutlinedIcon fontSize="small" />
-                    <Box>
-                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                        {Array.isArray(form.securityQuestions) && form.securityQuestions.length > 0
-                          ? "1 configured"
-                          : "None configured"}
-                      </Typography>
-                      <Typography variant="body2" sx={{ mt: 0.25 }}>
-                        Security Questions
-                      </Typography>
-                    </Box>
-                  </Stack>
-                  <ChevronRightOutlinedIcon fontSize="small" />
-                </Paper>
-                {!!sqError && (
-                  <Typography
-                    variant="caption"
-                    color="error"
-                    sx={{ mt: 0.5, display: "block" }}
+              {form.role !== "Cashier" && (
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Paper
+                    variant="outlined"
+                    onClick={openSqDialog}
+                    sx={{
+                      p: 1,
+                      cursor: "pointer",
+                      "&:hover": { bgcolor: "action.hover" },
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      minHeight: 46,
+                    }}
                   >
-                    {sqError}
-                  </Typography>
-                )}
-              </Grid>
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <HelpOutlineOutlinedIcon fontSize="small" />
+                      <Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                          {hasExistingSq
+                            ? "Question and Answer configured"
+                            : "None configured"}
+                        </Typography>
+                        <Typography variant="body2" sx={{ mt: 0.25 }}>
+                          Security Questions
+                        </Typography>
+                      </Box>
+                    </Stack>
+                    <ChevronRightOutlinedIcon fontSize="small" />
+                  </Paper>
+                </Grid>
+              )}
 
               {/* POS PIN row */}
               {needsPin && (
@@ -1384,10 +1383,14 @@ export default function UserManagementPage() {
                       <LockOutlinedIcon fontSize="small" />
                       <Box>
                         <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                          {form.pinDigits && form.pinDigits.some((d) => d)
-                            ? "PIN configured — tap to change"
+                          {hasStagedPin
+                            ? (isEditingExisting
+                                ? "New PIN staged — will be saved when you click Save"
+                                : "PIN set — will be saved when you create this user")
                             : isEditingExisting
-                            ? "No PIN configured yet — tap to set"
+                            ? (hasExistingPin
+                                ? "PIN configured — tap to change"
+                                : "No PIN configured yet — tap to set")
                             : "Required before saving this user"}
                         </Typography>
                         <Typography variant="body2" sx={{ mt: 0.25 }}>

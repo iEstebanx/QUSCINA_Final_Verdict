@@ -734,7 +734,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         // just the employee id, no "Employee "
         const employeeName = o.created_by || "—";
 
-        // ---- build paymentSummary from payments ----
+        // ---- build paymentSummary from NON-refund payments ----
         const positive = payments.filter(
           (p) => !p.isRefund && p.amount > 0
         );
@@ -757,6 +757,11 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           paymentSummary = "Refund only";
         }
 
+        // 🔹 NEW: total refunded amount for this order
+        const refundAmount = payments
+          .filter((p) => p.isRefund && p.amount > 0)
+          .reduce((sum, p) => sum + p.amount, 0);
+
         return {
           id: o.order_id,
           shiftId: o.shift_id,
@@ -768,6 +773,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           closedAt: o.closed_at,
           items,
           paymentSummary,
+          refundAmount,        // 🔹 NEW FIELD
         };
       });
 
@@ -1374,419 +1380,421 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
     }
   });
   
-  /* ==================================================
-     4) CHARGE / FINALIZE ORDER  → /pos/orders/charge
-     (supports single & split, same idea as Cashier)
-     ================================================== */
-  router.post("/charge", async (req, res) => {
-    const conn = db;
-    const app = APP;
+/* ==================================================
+   4) CHARGE / FINALIZE ORDER  → /pos/orders/charge
+   (supports single & split, same idea as Cashier)
+   ================================================== */
+router.post("/charge", async (req, res) => {
+  const conn = db;
+  const app = APP;
 
-    try {
-      const {
-        shiftId,
-        terminalId,
-        employeeId,
-        mode = "single",
-        orderId,
-        orderType = "Dine-in",
-        customerName,
-        tableNo,
-        items = [],
-        discounts = [],
-        payments = [],
-        isFinalPayment = true,
-        totalPaidSoFar,
-      } = req.body || {};
+  try {
+    const {
+      shiftId,
+      terminalId,
+      employeeId,
+      mode = "single",
+      orderId,
+      orderType = "Dine-in",
+      customerName,
+      tableNo,
+      items = [],
+      discounts = [],
+      payments = [],
+      isFinalPayment = true,
+      totalPaidSoFar,
+    } = req.body || {};
 
-      const isSplit = mode === "split";
+    const isSplit = mode === "split";
 
-      if (!shiftId || !terminalId || !employeeId) {
-        await logOrderAudit({
-          app,
-          action: "Charge Order",
-          success: false,
-          reason: "validation_error",
-          employeeId,
-          shiftId,
-          orderId,
-          extra: { terminalId, mode },
-          req,
-        });
-
-        return res.status(400).json({
-          ok: false,
-          error: "Missing shiftId / terminalId / employeeId",
-        });
-      }
-
-      if (!Array.isArray(items) || items.length === 0) {
-        await logOrderAudit({
-          app,
-          action: "Charge Order",
-          success: false,
-          reason: "no_items",
-          employeeId,
-          shiftId,
-          orderId,
-          extra: { terminalId, mode },
-          req,
-        });
-
-        return res
-          .status(400)
-          .json({ ok: false, error: "No items to charge" });
-      }
-
-      if (!Array.isArray(payments) || payments.length === 0) {
-        await logOrderAudit({
-          app,
-          action: "Charge Order",
-          success: false,
-          reason: "no_payments",
-          employeeId,
-          shiftId,
-          orderId,
-          extra: { terminalId, mode },
-          req,
-        });
-
-        return res
-          .status(400)
-          .json({ ok: false, error: "No payments provided" });
-      }
-
-      await ensureOpenShift(shiftId);
-
-      const totals = computeTotals(items, discounts);
-
-      // This request only
-      const paidTotal = payments.reduce(
-        (sum, p) => sum + safeNumber(p.amount, 0),
-        0
-      );
-
-      // Combine with previous payments for split
-      let combinedPaid;
-      if (typeof totalPaidSoFar === "number") {
-        combinedPaid = safeNumber(totalPaidSoFar, 0) + paidTotal;
-      } else {
-        combinedPaid = paidTotal;
-
-        if (isSplit && orderId) {
-          const [rows] = await conn.query(
-            `
-            SELECT IFNULL(SUM(amount), 0) AS paid_so_far
-            FROM pos_order_payments
-            WHERE order_id = ?
-            `,
-            [orderId]
-          );
-          const prev =
-            rows && rows[0]
-              ? safeNumber(rows[0].paid_so_far, 0)
-              : 0;
-          combinedPaid += prev;
-        }
-      }
-
-      // Single: always must cover net
-      // Split: last payment must cover net
-      const mustCoverNet = !isSplit || isFinalPayment;
-
-      if (mustCoverNet && combinedPaid + 0.0001 < totals.net_amount) {
-        await logOrderAudit({
-          app,
-          action: "Charge Order",
-          success: false,
-          reason: "payments_less_than_net",
-          employeeId,
-          shiftId,
-          orderId,
-          extra: {
-            terminalId,
-            mode,
-            isFinalPayment,
-            netAmount: totals.net_amount,
-            paidTotal,
-            combinedPaid,
-          },
-          req,
-        });
-
-        return res.status(400).json({
-          ok: false,
-          error: "Total payments are less than net amount",
-        });
-      }
-
-      let finalOrderId = orderId || null;
-
-      if (!finalOrderId) {
-        // New order directly from Charge (no pending ticket)
-        const statusForInsert =
-          !isSplit || isFinalPayment ? "paid" : "open";
-        const closedExpr =
-          !isSplit || isFinalPayment ? "NOW()" : "NULL";
-
-        const [insert] = await conn.query(
-          `
-          INSERT INTO pos_orders
-            (shift_id, terminal_id, status, order_type, source,
-             customer_name, table_no,
-             gross_amount, discount_amount, net_amount, tax_amount,
-             opened_at, closed_at,
-             created_by)
-          VALUES
-            (?, ?, ?, ?, 'Backoffice POS',
-             ?, ?,
-             ?, ?, ?, 0.00,
-             NOW(), ${closedExpr},
-             ?)
-          `,
-          [
-            shiftId,
-            terminalId,
-            statusForInsert,
-            orderType,
-            customerName || "Walk-in",
-            tableNo || null,
-            totals.gross_amount,
-            totals.discount_amount,
-            totals.net_amount,
-            employeeId,
-          ]
-        );
-        finalOrderId = insert.insertId;
-      } else {
-        // Existing pending / open ticket
-        const statusForUpdate =
-          !isSplit || isFinalPayment ? "paid" : "open";
-        const closedSet =
-          !isSplit || isFinalPayment
-            ? "closed_at = NOW(),"
-            : "closed_at = closed_at,";
-
-        await conn.query(
-          `
-          UPDATE pos_orders
-          SET status = ?,
-              order_type = ?,
-              customer_name = ?,
-              table_no = ?,
-              gross_amount = ?,
-              discount_amount = ?,
-              net_amount = ?,
-              tax_amount = 0.00,
-              ${closedSet}
-              updated_at = NOW()
-          WHERE order_id = ?
-          `,
-          [
-            statusForUpdate,
-            orderType,
-            customerName || "Walk-in",
-            tableNo || null,
-            totals.gross_amount,
-            totals.discount_amount,
-            totals.net_amount,
-            finalOrderId,
-          ]
-        );
-
-        // For final payment we overwrite items/discounts
-        if (!isSplit || isFinalPayment) {
-          await conn.query(
-            "DELETE FROM pos_order_items WHERE order_id = ?",
-            [finalOrderId]
-          );
-          await conn.query(
-            "DELETE FROM pos_order_discounts WHERE order_id = ?",
-            [finalOrderId]
-          );
-        }
-      }
-
-      // Items + discounts only for single / final split
-      if (!isSplit || isFinalPayment) {
-        for (const it of items) {
-          const qty = safeNumber(it.qty ?? it.quantity, 1);
-          const price = safeNumber(it.price, 0);
-          const lineTotal = qty * price;
-
-          await conn.query(
-            `
-            INSERT INTO pos_order_items
-              (order_id, item_id, item_name, item_price, qty, line_total)
-            VALUES (?, ?, ?, ?, ?, ?)
-            `,
-            [
-              finalOrderId,
-              it.id || null,
-              it.name || "",
-              price,
-              qty,
-              lineTotal,
-            ]
-          );
-        }
-
-        for (const d of discounts) {
-          const pct = safeNumber(d.percent, 0);
-          if (!pct) continue;
-          const amount = (totals.gross_amount * pct) / 100;
-
-          await conn.query(
-            `
-            INSERT INTO pos_order_discounts
-              (order_id, name, percent, amount)
-            VALUES (?, ?, ?, ?)
-            `,
-            [finalOrderId, d.name || "Discount", pct, amount]
-          );
-        }
-      }
-
-      // Payments (always)
-      let addCash = 0;
-      let addCard = 0;
-      let addOnline = 0;
-
-      for (const p of payments) {
-        const slot = safeNumber(p.slot || 1, 1);
-        const amt = safeNumber(p.amount, 0);
-        if (!amt) continue;
-
-        const methodName = String(p.methodName || "Unknown");
-        const lower = methodName.toLowerCase();
-
-        if (lower.includes("cash")) {
-          addCash += amt;
-        } else if (
-          lower.includes("gcash") ||
-          lower.includes("maya") ||
-          lower.includes("online")
-        ) {
-          addOnline += amt;
-        } else {
-          addCard += amt;
-        }
-
-        await conn.query(
-          `
-          INSERT INTO pos_order_payments
-            (order_id, shift_id, slot_no, method_name, amount, is_refund, gcash_last4)
-          VALUES (?, ?, ?, ?, ?, 0, ?)
-          `,
-          [
-            finalOrderId,
-            shiftId,
-            slot,
-            methodName,
-            amt,
-            p.gcashLast4 || null,
-          ]
-        );
-      }
-
-      // Shift totals + inventory only on final
-      if (!isSplit || isFinalPayment) {
-        await conn.query(
-          `
-          UPDATE pos_shifts
-          SET total_gross_sales     = total_gross_sales     + ?,
-              total_discounts       = total_discounts       + ?,
-              total_cash_payments   = total_cash_payments   + ?,
-              total_card_payments   = total_card_payments   + ?,
-              total_online_payments = total_online_payments + ?
-          WHERE shift_id = ?
-          `,
-          [
-            totals.gross_amount,
-            totals.discount_amount,
-            addCash,
-            addCard,
-            addOnline,
-            shiftId,
-          ]
-        );
-
-        try {
-          await applyInventoryFromOrder(finalOrderId, "out");
-        } catch (invErr) {
-          console.error(
-            "[Backoffice POS orders/charge] inventory update failed:",
-            invErr
-          );
-          // don't fail sale on inventory error
-        }
-      }
-
+    if (!shiftId || !terminalId || !employeeId) {
       await logOrderAudit({
         app,
         action: "Charge Order",
-        success: true,
-        reason: "ok",
+        success: false,
+        reason: "validation_error",
         employeeId,
         shiftId,
-        orderId: finalOrderId,
-        extra: {
-          terminalId,
-          mode,
-          orderType,
-          netAmount: totals.net_amount,
-          discountAmount: totals.discount_amount,
-          grossAmount: totals.gross_amount,
-          paidTotal,
-          isFinalPayment,
-          combinedPaid,
-          payments: payments.map((p) => ({
-            methodName: p.methodName,
-            amount: safeNumber(p.amount, 0),
-          })),
-        },
+        orderId,
+        extra: { terminalId, mode },
         req,
       });
 
-      return res.json({
-        ok: true,
-        orderId: finalOrderId,
-        totals,
+      return res.status(400).json({
+        ok: false,
+        error: "Missing shiftId / terminalId / employeeId",
       });
-    } catch (e) {
-      console.error("[Backoffice POS orders/charge] failed:", e);
+    }
 
-      const {
-        shiftId,
-        terminalId,
-        employeeId,
-        mode = "single",
-        orderId,
-      } = req.body || {};
-
+    if (!Array.isArray(items) || items.length === 0) {
       await logOrderAudit({
-        app: APP,
+        app,
         action: "Charge Order",
         success: false,
-        reason: "server_error",
+        reason: "no_items",
         employeeId,
         shiftId,
         orderId,
-        extra: {
-          terminalId,
-          mode,
-          errorMessage: e.message || String(e),
-        },
+        extra: { terminalId, mode },
         req,
       });
 
       return res
-        .status(500)
-        .json({ ok: false, error: e.message || "Failed to charge order" });
+        .status(400)
+        .json({ ok: false, error: "No items to charge" });
     }
-  });
 
-    // ==================================================
+    if (!Array.isArray(payments) || payments.length === 0) {
+      await logOrderAudit({
+        app,
+        action: "Charge Order",
+        success: false,
+        reason: "no_payments",
+        employeeId,
+        shiftId,
+        orderId,
+        extra: { terminalId, mode },
+        req,
+      });
+
+      return res
+        .status(400)
+        .json({ ok: false, error: "No payments provided" });
+    }
+
+    await ensureOpenShift(shiftId);
+
+    const totals = computeTotals(items, discounts);
+
+    // This request only
+    const paidTotal = payments.reduce(
+      (sum, p) => sum + safeNumber(p.amount, 0),
+      0
+    );
+
+    // Combine with previous payments for split
+    let combinedPaid = paidTotal;
+
+    if (typeof totalPaidSoFar === "number") {
+      combinedPaid += safeNumber(totalPaidSoFar, 0);
+    } else if (isSplit && orderId) {
+      const rows = asArray(
+        await conn.query(
+          `
+          SELECT IFNULL(SUM(amount), 0) AS paid_so_far
+          FROM pos_order_payments
+          WHERE order_id = ?
+          `,
+          [orderId]
+        )
+      );
+      const prev = rows[0]
+        ? safeNumber(rows[0].paid_so_far, 0)
+        : 0;
+      combinedPaid += prev;
+    }
+
+    // Single: always must cover net
+    // Split: last payment must cover net
+    const mustCoverNet = !isSplit || isFinalPayment;
+
+    if (mustCoverNet && combinedPaid + 0.0001 < totals.net_amount) {
+      await logOrderAudit({
+        app,
+        action: "Charge Order",
+        success: false,
+        reason: "payments_less_than_net",
+        employeeId,
+        shiftId,
+        orderId,
+        extra: {
+          terminalId,
+          mode,
+          isFinalPayment,
+          netAmount: totals.net_amount,
+          paidTotal,
+          combinedPaid,
+        },
+        req,
+      });
+
+      return res.status(400).json({
+        ok: false,
+        error: "Total payments are less than net amount",
+      });
+    }
+
+    let finalOrderId = orderId || null;
+
+    if (!finalOrderId) {
+      // New order directly from Charge (no pending ticket)
+      const statusForInsert =
+        !isSplit || isFinalPayment ? "paid" : "open";
+      const closedExpr =
+        !isSplit || isFinalPayment ? "NOW()" : "NULL";
+
+      const insertResult = await conn.query(
+        `
+        INSERT INTO pos_orders
+          (shift_id, terminal_id, status, order_type, source,
+           customer_name, table_no,
+           gross_amount, discount_amount, net_amount, tax_amount,
+           opened_at, closed_at,
+           created_by)
+        VALUES
+          (?, ?, ?, ?, 'Backoffice POS',
+           ?, ?,
+           ?, ?, ?, 0.00,
+           NOW(), ${closedExpr},
+           ?)
+        `,
+        [
+          shiftId,
+          terminalId,
+          statusForInsert,
+          orderType,
+          customerName || "Walk-in",
+          tableNo || null,
+          totals.gross_amount,
+          totals.discount_amount,
+          totals.net_amount,
+          employeeId,
+        ]
+      );
+
+      const insertPacket = Array.isArray(insertResult)
+        ? insertResult[0]
+        : insertResult;
+      finalOrderId = insertPacket.insertId;
+    } else {
+      // Existing pending / open ticket
+      const statusForUpdate =
+        !isSplit || isFinalPayment ? "paid" : "open";
+      const closedSet =
+        !isSplit || isFinalPayment
+          ? "closed_at = NOW(),"
+          : "closed_at = closed_at,";
+
+      await conn.query(
+        `
+        UPDATE pos_orders
+        SET status = ?,
+            order_type = ?,
+            customer_name = ?,
+            table_no = ?,
+            gross_amount = ?,
+            discount_amount = ?,
+            net_amount = ?,
+            tax_amount = 0.00,
+            ${closedSet}
+            updated_at = NOW()
+        WHERE order_id = ?
+        `,
+        [
+          statusForUpdate,
+          orderType,
+          customerName || "Walk-in",
+          tableNo || null,
+          totals.gross_amount,
+          totals.discount_amount,
+          totals.net_amount,
+          finalOrderId,
+        ]
+      );
+
+      // For final payment we overwrite items/discounts
+      if (!isSplit || isFinalPayment) {
+        await conn.query(
+          "DELETE FROM pos_order_items WHERE order_id = ?",
+          [finalOrderId]
+        );
+        await conn.query(
+          "DELETE FROM pos_order_discounts WHERE order_id = ?",
+          [finalOrderId]
+        );
+      }
+    }
+
+    // Items + discounts only for single / final split
+    if (!isSplit || isFinalPayment) {
+      for (const it of items) {
+        const qty = safeNumber(it.qty ?? it.quantity, 1);
+        const price = safeNumber(it.price, 0);
+        const lineTotal = qty * price;
+
+        await conn.query(
+          `
+          INSERT INTO pos_order_items
+            (order_id, item_id, item_name, item_price, qty, line_total)
+          VALUES (?, ?, ?, ?, ?, ?)
+          `,
+          [
+            finalOrderId,
+            it.id || null,
+            it.name || "",
+            price,
+            qty,
+            lineTotal,
+          ]
+        );
+      }
+
+      for (const d of discounts) {
+        const pct = safeNumber(d.percent, 0);
+        if (!pct) continue;
+        const amount = (totals.gross_amount * pct) / 100;
+
+        await conn.query(
+          `
+          INSERT INTO pos_order_discounts
+            (order_id, name, percent, amount)
+          VALUES (?, ?, ?, ?)
+          `,
+          [finalOrderId, d.name || "Discount", pct, amount]
+        );
+      }
+    }
+
+    // Payments (always)
+    let addCash = 0;
+    let addCard = 0;
+    let addOnline = 0;
+
+    for (const p of payments) {
+      const slot = safeNumber(p.slot || 1, 1);
+      const amt = safeNumber(p.amount, 0);
+      if (!amt) continue;
+
+      const methodName = String(p.methodName || "Unknown");
+      const lower = methodName.toLowerCase();
+
+      if (lower.includes("cash")) {
+        addCash += amt;
+      } else if (
+        lower.includes("gcash") ||
+        lower.includes("maya") ||
+        lower.includes("online")
+      ) {
+        addOnline += amt;
+      } else {
+        addCard += amt;
+      }
+
+      await conn.query(
+        `
+        INSERT INTO pos_order_payments
+          (order_id, shift_id, slot_no, method_name, amount, is_refund, gcash_last4)
+        VALUES (?, ?, ?, ?, ?, 0, ?)
+        `,
+        [
+          finalOrderId,
+          shiftId,
+          slot,
+          methodName,
+          amt,
+          p.gcashLast4 || null,
+        ]
+      );
+    }
+
+    // Shift totals + inventory only on final
+    if (!isSplit || isFinalPayment) {
+      await conn.query(
+        `
+        UPDATE pos_shifts
+        SET total_gross_sales     = total_gross_sales     + ?,
+            total_discounts       = total_discounts       + ?,
+            total_cash_payments   = total_cash_payments   + ?,
+            total_card_payments   = total_card_payments   + ?,
+            total_online_payments = total_online_payments + ?
+        WHERE shift_id = ?
+        `,
+        [
+          totals.gross_amount,
+          totals.discount_amount,
+          addCash,
+          addCard,
+          addOnline,
+          shiftId,
+        ]
+      );
+
+      try {
+        await applyInventoryFromOrder(finalOrderId, "out");
+      } catch (invErr) {
+        console.error(
+          "[Backoffice POS orders/charge] inventory update failed:",
+          invErr
+        );
+        // don't fail sale on inventory error
+      }
+    }
+
+    await logOrderAudit({
+      app,
+      action: "Charge Order",
+      success: true,
+      reason: "ok",
+      employeeId,
+      shiftId,
+      orderId: finalOrderId,
+      extra: {
+        terminalId,
+        mode,
+        orderType,
+        netAmount: totals.net_amount,
+        discountAmount: totals.discount_amount,
+        grossAmount: totals.gross_amount,
+        paidTotal,
+        isFinalPayment,
+        combinedPaid,
+        payments: payments.map((p) => ({
+          methodName: p.methodName,
+          amount: safeNumber(p.amount, 0),
+        })),
+      },
+      req,
+    });
+
+    return res.json({
+      ok: true,
+      orderId: finalOrderId,
+      totals,
+    });
+  } catch (e) {
+    console.error("[Backoffice POS orders/charge] failed:", e);
+
+    const {
+      shiftId,
+      terminalId,
+      employeeId,
+      mode = "single",
+      orderId,
+    } = req.body || {};
+
+    await logOrderAudit({
+      app: APP,
+      action: "Charge Order",
+      success: false,
+      reason: "server_error",
+      employeeId,
+      shiftId,
+      orderId,
+      extra: {
+        terminalId,
+        mode,
+        errorMessage: e.message || String(e),
+      },
+      req,
+    });
+
+    return res
+      .status(500)
+      .json({ ok: false, error: e.message || "Failed to charge order" });
+  }
+});
+
+  // ==================================================
   // SINGLE ORDER DETAIL + PAYMENTS (for Backoffice Charge)
   // GET /api/pos/orders/detail?orderId=123
   // ==================================================

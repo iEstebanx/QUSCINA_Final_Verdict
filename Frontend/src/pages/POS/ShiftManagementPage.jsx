@@ -16,6 +16,8 @@ import {
 } from "@mui/material";
 
 import { useShift } from "@/context/ShiftContext";
+import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
+import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 
 const PHP = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
@@ -181,37 +183,59 @@ export default function ShiftManagementPage() {
               justifyContent: "center",
             }}
           >
+            {/* Cash In/Out button */}
             <Button
               fullWidth
+              variant="contained"
+              startIcon={<PaidOutlinedIcon />}
               onClick={handleCashInOut}
               disabled={!hasShift}
               sx={{
                 textTransform: "none",
                 fontWeight: 700,
                 borderRadius: 999,
-                py: 1.2,
-                bgcolor: hasShift ? "#c7a17a" : "grey.500",
+                py: 1.3,
+                boxShadow: hasShift ? "0 4px 12px rgba(0,0,0,0.18)" : "none",
+                // 🔹 SAME COLORS AS END SHIFT
+                bgcolor: hasShift ? "#8b5a2b" : "grey.400",
                 color: "common.white",
+                border: "2px solid rgba(0,0,0,0.06)",
                 "&:hover": {
-                  bgcolor: hasShift ? "#b18d65" : "grey.600",
+                  bgcolor: hasShift ? "#754821" : "grey.500",
+                },
+                "&.Mui-disabled": {
+                  bgcolor: "grey.400",
+                  color: "rgba(255,255,255,0.7)",
+                  boxShadow: "none",
                 },
               }}
             >
-              Cash In/Out
+              Cash In / Out
             </Button>
+
+            {/* End Shift button */}
             <Button
               fullWidth
+              variant="contained"
+              startIcon={<LogoutOutlinedIcon />}
               onClick={handleOpenEndDialog}
               disabled={!hasShift}
               sx={{
                 textTransform: "none",
                 fontWeight: 700,
                 borderRadius: 999,
-                py: 1.2,
-                bgcolor: hasShift ? "#8b5a2b" : "grey.500",
+                py: 1.3,
+                boxShadow: hasShift ? "0 4px 12px rgba(0,0,0,0.18)" : "none",
+                bgcolor: hasShift ? "#8b5a2b" : "grey.400",
                 color: "common.white",
+                border: "2px solid rgba(0,0,0,0.06)",
                 "&:hover": {
-                  bgcolor: hasShift ? "#754821" : "grey.600",
+                  bgcolor: hasShift ? "#754821" : "grey.500",
+                },
+                "&.Mui-disabled": {
+                  bgcolor: "grey.400",
+                  color: "rgba(255,255,255,0.7)",
+                  boxShadow: "none",
                 },
               }}
             >
@@ -294,7 +318,7 @@ export default function ShiftManagementPage() {
             </>
           ) : (
             <Typography variant="body2" color="text.secondary">
-              There is currently no open shift for this terminal / user.
+              There is currently no open shift for this terminal.
             </Typography>
           )}
         </Paper>
