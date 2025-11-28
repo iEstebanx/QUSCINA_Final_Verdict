@@ -400,7 +400,6 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   `type` VARCHAR(30) NOT NULL DEFAULT 'pack',
   `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
-  `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
   `createdAt` DATETIME NOT NULL,
   `updatedAt` DATETIME NOT NULL,
   PRIMARY KEY (`id`),
@@ -413,7 +412,7 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
     CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
 
   CONSTRAINT `chk_type_pack_or_pcs`
-    CHECK (`type` IN ('pack', 'pcs'));
+    CHECK (`type` IN ('pack', 'pcs'))
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
@@ -428,7 +427,6 @@ CREATE TABLE IF NOT EXISTS `inventory_activity` (
   `reason` VARCHAR(255) NULL,
   `io` ENUM('In','Out') NOT NULL DEFAULT 'In',
   `qty` DECIMAL(12,3) NOT NULL DEFAULT 0,
-  `price` DECIMAL(12,2) NOT NULL DEFAULT 0,
   `ingredientId` INT UNSIGNED NULL,
   `ingredientName` VARCHAR(60) NULL,
   `createdAt` DATETIME NOT NULL,

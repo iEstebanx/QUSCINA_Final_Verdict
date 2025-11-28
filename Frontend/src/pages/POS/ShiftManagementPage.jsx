@@ -1,479 +1,397 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/ShiftManagementPage.jsx
-import { useEffect, useMemo, useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import CloseIcon from "@mui/icons-material/Close";
-import { useShift } from "@/context/ShiftContext";
-
+import { useState } from "react";
 import {
   Box,
+  Paper,
   Typography,
   Button,
-  Divider,
   Stack,
-  Paper,
+  Divider,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  IconButton,
   TextField,
+  CircularProgress,
 } from "@mui/material";
 
-const peso = (value) => `₱${Number(value || 0).toFixed(2)}`;
+const PHP = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
-// 🔹 This page is for Backoffice POS Shift Management of TERMINAL-2
-const TERMINAL_ID = "TERMINAL-2";
+export default function ShiftManagementPage() {
+  const [activeTab, setActiveTab] = useState("cash"); // "cash" | "end"
 
-/* ------------------------------------------------------------------ */
-/* Inlined FloatingCloseShiftModal (uses useShift → /api/pos/shift)   */
-/* ------------------------------------------------------------------ */
-const FloatingCloseShiftModal = ({ onClose }) => {
-  const { getSummary, remitShift } = useShift();
-  const [loading, setLoading] = useState(true);
-  const [expectedAmount, setExpectedAmount] = useState(0);
-  const [declared, setDeclared] = useState("");
+  // 🔹 End-shift dialog state
+  const [endDialogOpen, setEndDialogOpen] = useState(false);
+  const [declaredCash, setDeclaredCash] = useState("");
   const [note, setNote] = useState("");
+  const [ending, setEnding] = useState(false);
 
-  const initialRef = useRef({ declared: "", note: "" });
-  const touchedRef = useRef(false);
+  // For now this is static; later you can wire this to your shift summary API
+  const shift = {
+    number: 61,
+    openedBy: "202500002",
+    openedAt: "11/29/2025, 12:40:18 AM",
+    startingCash: 7000,
+    cashPayments: 0,
+    gcashPayments: 0,
+    cashRefunds: 0,
+    cashIn: 0,
+    cashOut: 0,
+    expectedCash: 7000,
+    grossSales: 0,
+    refunds: 0,
+    discounts: 0,
+  };
 
-  const [discardOpen, setDiscardOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const isCashTab = activeTab === "cash";
 
-  useEffect(() => {
-    let on = true;
-    (async () => {
-      try {
-        setLoading(true);
-        const sum = await getSummary().catch(() => null);
-        if (!on || !sum) return;
+  const handleOpenEndDialog = () => {
+    // prefill with expected cash like your reference screenshot
+    setDeclaredCash(String(shift.expectedCash ?? ""));
+    setEndDialogOpen(true);
+  };
 
-        const exp = Number(sum?.cash_drawer?.expected_cash || 0);
-        setExpectedAmount(exp);
+  const handleCloseEndDialog = () => {
+    if (ending) return;
+    setEndDialogOpen(false);
+  };
 
-        const prefill = String(exp.toFixed(2));
-        setDeclared(prefill);
-        setNote("");
+  const handleConfirmEndShift = async () => {
+    try {
+      setEnding(true);
 
-        initialRef.current = { declared: prefill, note: "" };
-        touchedRef.current = false;
-      } finally {
-        if (on) setLoading(false);
+      const payload = {
+        declared_cash: declaredCash ? Number(declaredCash) : undefined,
+        note: note || undefined,
+      };
+
+      const resp = await fetch("/api/pos/shift/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok || !data.ok) {
+        throw new Error(data.error || "Failed to end shift");
       }
-    })();
-    return () => {
-      on = false;
-    };
-  }, [getSummary]);
 
-  const declaredNum = useMemo(() => Number(declared || 0), [declared]);
-  const difference = useMemo(
-    () => Number((declaredNum - expectedAmount).toFixed(2)),
-    [declaredNum, expectedAmount]
-  );
-
-  const handleDeclaredChange = (e) => {
-    touchedRef.current = true;
-    setDeclared(e.target.value);
-  };
-
-  const handleNoteChange = (e) => {
-    touchedRef.current = true;
-    setNote(e.target.value);
-  };
-
-  const snapshotNow = () => ({
-    declared: String(declared ?? "").trim(),
-    note: String(note ?? "").trim(),
-  });
-
-  const deepEqual = (a, b) => {
-    try {
-      return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-      return false;
-    }
-  };
-
-  const isDirty = () => {
-    if (!touchedRef.current) return false;
-    return !deepEqual(snapshotNow(), initialRef.current);
-  };
-
-  const hardClose = () => {
-    setDiscardOpen(false);
-    touchedRef.current = false;
-    onClose();
-  };
-
-  const handleCloseAttempt = () => {
-    if (isDirty()) {
-      setDiscardOpen(true);
-    } else {
-      hardClose();
-    }
-  };
-
-  const handleConfirmClick = () => {
-    setConfirmOpen(true);
-  };
-
-  const handleConfirmProceed = async () => {
-    setLoading(true);
-    try {
-      await remitShift({ declared_cash: declaredNum, closing_note: note });
-      touchedRef.current = false;
-      setConfirmOpen(false);
-      onClose();
+      window.alert("Shift ended successfully.");
+      setEndDialogOpen(false);
+      // TODO: refresh data or redirect if you want
+    } catch (err) {
+      console.error("[ShiftManagementPage] end shift failed:", err);
+      window.alert(err.message || "Failed to end shift");
     } finally {
-      setLoading(false);
+      setEnding(false);
     }
   };
 
-  const handleConfirmCancel = () => {
-    setConfirmOpen(false);
-  };
+  const expectedCash = Number(shift.expectedCash || 0);
+  const declaredNum =
+    declaredCash === "" ? expectedCash : Number(declaredCash || 0);
+  const diff = declaredNum - expectedCash;
+  const diffDisplay = PHP(Math.abs(diff));
 
   return (
     <>
-      <Dialog open onClose={handleCloseAttempt} maxWidth="xs" fullWidth>
-        <DialogTitle
-          sx={(t) => ({
-            bgcolor: t.palette.secondary.main,
-            color:
-              t.palette.secondary.contrastText ??
-              t.palette.getContrastText(t.palette.secondary.main),
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          })}
+      <Box
+        sx={{
+          p: { xs: 2, sm: 3 },
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "flex-start",
+        }}
+      >
+        <Paper
+          elevation={3}
+          sx={{
+            width: "100%",
+            maxWidth: 720,
+            borderRadius: 4,
+            p: 3,
+            bgcolor: "#fdf1df", // soft beige like your screenshot
+            boxShadow: "0 8px 20px rgba(0,0,0,0.08)",
+          }}
         >
-          <Typography fontWeight="bold" sx={{ color: "inherit" }}>
-            Close Shift
-          </Typography>
-          <IconButton onClick={handleCloseAttempt} sx={{ color: "inherit" }}>
-            <CloseIcon />
-          </IconButton>
+          {/* Top toggle buttons */}
+          <Stack
+            direction="row"
+            spacing={2}
+            sx={{
+              mb: 3,
+              justifyContent: "center",
+            }}
+          >
+            <Button
+              fullWidth
+              onClick={() => setActiveTab("cash")}
+              sx={{
+                textTransform: "none",
+                fontWeight: 700,
+                borderRadius: 999,
+                py: 1.2,
+                bgcolor: isCashTab ? "#8b5a2b" : "#c7a17a",
+                color: "common.white",
+                "&:hover": {
+                  bgcolor: isCashTab ? "#754821" : "#b18d65",
+                },
+              }}
+            >
+              Cash In/Out
+            </Button>
+            <Button
+              fullWidth
+              onClick={() => setActiveTab("end")}
+              sx={{
+                textTransform: "none",
+                fontWeight: 700,
+                borderRadius: 999,
+                py: 1.2,
+                bgcolor: !isCashTab ? "#8b5a2b" : "#c7a17a",
+                color: "common.white",
+                "&:hover": {
+                  bgcolor: !isCashTab ? "#754821" : "#b18d65",
+                },
+              }}
+            >
+              End Shift
+            </Button>
+          </Stack>
+
+          {/* Header row: shift number + opened by + date */}
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="flex-start"
+            spacing={2}
+            sx={{ mb: 2 }}
+          >
+            <Box>
+              <Typography variant="body1" fontWeight={600}>
+                Shift Number {shift.number}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Shift Opened By {shift.openedBy}
+              </Typography>
+            </Box>
+            <Typography variant="body2" color="text.secondary">
+              {shift.openedAt}
+            </Typography>
+          </Stack>
+
+          <Divider sx={{ mb: 2 }} />
+
+          {/* CONTENT */}
+          {isCashTab ? (
+            <>
+              {/* Cash Drawer section */}
+              <Typography
+                variant="subtitle1"
+                fontWeight={700}
+                sx={{ color: "#2e7d32", mb: 1 }}
+              >
+                Cash Drawer
+              </Typography>
+
+              <Stack spacing={0.5} sx={{ mb: 2 }}>
+                <Row label="Starting Cash" value={PHP(shift.startingCash)} />
+                <Row label="Cash Payments" value={PHP(shift.cashPayments)} />
+                <Row label="Gcash Payments" value={PHP(shift.gcashPayments)} />
+                <Row label="Cash Refunds" value={PHP(shift.cashRefunds)} />
+                <Row label="Cash in" value={PHP(shift.cashIn)} />
+                <Row label="Cash out" value={PHP(shift.cashOut)} />
+                <Row
+                  label="Expected cash amount"
+                  value={PHP(shift.expectedCash)}
+                  bold
+                />
+              </Stack>
+
+              {/* Sales Summary section */}
+              <Typography
+                variant="subtitle1"
+                fontWeight={700}
+                sx={{ color: "#2e7d32", mb: 1 }}
+              >
+                Sales Summary
+              </Typography>
+
+              <Stack spacing={0.5}>
+                <Row label="Gross Sales" value={PHP(shift.grossSales)} />
+                <Row label="Refunds" value={PHP(shift.refunds)} />
+                <Row label="Discounts" value={PHP(shift.discounts)} />
+              </Stack>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Row
+                label="Net Sales"
+                value={PHP(
+                  shift.grossSales - shift.refunds - shift.discounts
+                )}
+                bold
+              />
+            </>
+          ) : (
+            <>
+              {/* End Shift tab content: just button now */}
+              <Box sx={{ mt: 3, textAlign: "right" }}>
+                <Button
+                  variant="contained"
+                  onClick={handleOpenEndDialog}
+                  sx={{
+                    textTransform: "none",
+                    fontWeight: 700,
+                    borderRadius: 999,
+                    px: 4,
+                    py: 1.1,
+                    bgcolor: "#8b5a2b",
+                    "&:hover": { bgcolor: "#754821" },
+                  }}
+                >
+                  End Shift
+                </Button>
+              </Box>
+            </>
+          )}
+        </Paper>
+      </Box>
+
+      {/* 🔹 Close / End Shift Dialog */}
+      <Dialog open={endDialogOpen} onClose={handleCloseEndDialog} fullWidth>
+        <DialogTitle
+          sx={{
+            bgcolor: "#8b5a2b",
+            color: "common.white",
+            fontWeight: 700,
+          }}
+        >
+          Close Shift
         </DialogTitle>
-
-        <DialogContent dividers>
-          <Box display="flex" justifyContent="space-between" mb={1}>
-            <Typography>Expected cash amount</Typography>
-            <Typography fontWeight="medium">{peso(expectedAmount)}</Typography>
-          </Box>
-
-          <Box
-            display="flex"
+        <DialogContent
+          dividers
+          sx={{
+            bgcolor: "#fdf1df",
+          }}
+        >
+          {/* Expected cash amount (display only) */}
+          <Stack
+            direction="row"
             justifyContent="space-between"
             alignItems="center"
-            mb={1}
+            sx={{ mb: 2 }}
           >
-            <Typography>Actual cash amount</Typography>
+            <Typography variant="body2">Expected cash amount</Typography>
+            <Typography variant="body2" fontWeight={600}>
+              {PHP(expectedCash)}
+            </Typography>
+          </Stack>
+
+          {/* Actual cash amount (input) */}
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            sx={{ mb: 2 }}
+            spacing={2}
+          >
+            <Typography variant="body2">Actual cash amount</Typography>
             <TextField
               type="number"
-              size="small"
               variant="standard"
-              value={declared}
-              onChange={handleDeclaredChange}
-              slotProps={{
-                input: {
-                  style: { textAlign: "right" },
-                  step: "0.01",
-                },
-              }}
+              value={declaredCash}
+              onChange={(e) => setDeclaredCash(e.target.value)}
               sx={{
                 maxWidth: 140,
-                "& .MuiInputBase-input": {
-                  textAlign: "right",
-                },
+                "& input": { textAlign: "right" },
               }}
             />
-          </Box>
+          </Stack>
 
-          <Box display="flex" justifyContent="space-between" mb={2}>
-            <Typography>Difference</Typography>
-            <Typography fontWeight="medium">{peso(difference)}</Typography>
-          </Box>
+          {/* Difference */}
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            sx={{ mb: 3 }}
+          >
+            <Typography variant="body2">Difference</Typography>
+            <Typography variant="body2" fontWeight={600}>
+              {diffDisplay}
+            </Typography>
+          </Stack>
 
+          {/* Note */}
           <TextField
             label="Closing note (optional)"
             fullWidth
             multiline
-            minRows={2}
+            minRows={3}
             value={note}
-            onChange={handleNoteChange}
+            onChange={(e) => setNote(e.target.value)}
           />
         </DialogContent>
-
-        <DialogActions sx={{ p: 2, gap: 1 }}>
-          <Button onClick={handleCloseAttempt} disabled={loading} sx={{ flex: 1 }}>
+        <DialogActions
+          sx={{
+            bgcolor: "#fdf1df",
+            px: 3,
+            py: 2,
+            display: "flex",
+            justifyContent: "space-between",
+          }}
+        >
+          <Button onClick={handleCloseEndDialog} disabled={ending}>
             Cancel
           </Button>
           <Button
-            fullWidth
             variant="contained"
-            color="primary"
-            disabled={loading}
-            onClick={handleConfirmClick}
-            sx={{ flex: 1, fontWeight: "bold" }}
+            onClick={handleConfirmEndShift}
+            disabled={ending}
+            sx={{
+              textTransform: "none",
+              fontWeight: 700,
+              borderRadius: 999,
+              px: 4,
+              bgcolor: "#8b5a2b",
+              "&:hover": { bgcolor: "#754821" },
+            }}
           >
-            {loading ? "Closing…" : "Close & Remit"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={discardOpen}
-        onClose={() => setDiscardOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Discard changes?</DialogTitle>
-        <DialogContent>
-          <Typography>Are you sure you want to discard unsaved changes?</Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDiscardOpen(false)}>Cancel</Button>
-          <Button color="error" variant="contained" onClick={hardClose}>
-            Discard
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={confirmOpen}
-        onClose={handleConfirmCancel}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>
-          {difference !== 0 ? "Cash Difference Detected" : "Confirm Close Shift"}
-        </DialogTitle>
-        <DialogContent>
-          <Typography>
-            {difference !== 0
-              ? `There is a discrepancy of ${peso(
-                  difference
-                )}. Proceed with closing?`
-              : "Are you sure you want to close and remit this shift?"}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleConfirmCancel} disabled={loading}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            onClick={handleConfirmProceed}
-            disabled={loading}
-          >
-            {loading ? "Closing…" : "Confirm"}
+            {ending ? (
+              <CircularProgress size={20} sx={{ color: "common.white" }} />
+            ) : (
+              "End Shift"
+            )}
           </Button>
         </DialogActions>
       </Dialog>
     </>
   );
-};
+}
 
-/* ------------------------------------------------------------------ */
-/* Shift Management Page – TERMINAL-2                                 */
-/* ------------------------------------------------------------------ */
-const ShiftManagementPage = () => {
-  const navigate = useNavigate();
-  const { shift, getSummary } = useShift();
-
-  const [showCloseModal, setShowCloseModal] = useState(false);
-  const [summary, setSummary] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let on = true;
-    (async () => {
-      try {
-        setLoading(true);
-        const s = await getSummary().catch(() => null);
-        if (on) setSummary(s);
-      } finally {
-        if (on) setLoading(false);
-      }
-    })();
-    return () => {
-      on = false;
-    };
-  }, [getSummary]);
-
-  const renderRow = (label, value, bold = false, key) => (
-    <Box
-      key={key}
-      display="flex"
-      justifyContent="space-between"
-      py={0.5}
-      fontWeight={bold ? "bold" : "normal"}
-    >
-      <Typography>{label}</Typography>
-      <Typography>{value}</Typography>
-    </Box>
-  );
-
-  const effectiveShift = summary?.shift || shift || null;
-
-  const shiftNo = effectiveShift?.shift_id ?? "—";
-  const openedAt = effectiveShift?.opened_at || "";
-  const openedDisplay = openedAt ? new Date(openedAt).toLocaleString() : "—";
-  const cashier = effectiveShift?.employee_id || "—";
-  const terminalLabel = effectiveShift?.terminal_id || TERMINAL_ID;
-
-  const paymentSummary = summary?.payment_summary || [];
-
-  const isOpen =
-    effectiveShift &&
-    String(effectiveShift.status || "").toLowerCase() === "open";
-
+/** Simple row component: label left, value right */
+function Row({ label, value, bold = false }) {
   return (
-    <Box p={4}>
-      <Paper
-        elevation={2}
-        sx={(t) => ({
-          bgcolor: t.palette.background.paper,
-          p: 3,
-          maxWidth: 700,
-          mx: "auto",
-          borderRadius: 3,
-        })}
+    <Stack
+      direction="row"
+      justifyContent="space-between"
+      alignItems="center"
+      spacing={2}
+    >
+      <Typography
+        variant="body2"
+        sx={{ fontWeight: bold ? 600 : 400 }}
       >
-        <Stack direction="row" spacing={2} mb={3}>
-          <Button
-            fullWidth
-            variant="contained"
-            onClick={() => navigate("/shift/management/cash")}
-          >
-            Cash Management
-          </Button>
-          <Button
-            fullWidth
-            variant="contained"
-            onClick={() => setShowCloseModal(true)}
-            disabled={!isOpen}
-          >
-            End Shift
-          </Button>
-        </Stack>
-
-        {/* Header info – includes TERMINAL-2 */}
-        <Box display="flex" justifyContent="space-between" mb={2}>
-          <Box>
-            <Typography fontWeight={500}>
-              Shift Number{" "}
-              <Typography component="span" fontWeight={600}>
-                {shiftNo}
-              </Typography>
-            </Typography>
-
-            <Typography fontWeight={500}>
-              Shift Opened By{" "}
-              <Typography component="span" fontWeight={600}>
-                {cashier}
-              </Typography>
-            </Typography>
-
-            <Typography fontWeight={500}>
-              Terminal{" "}
-              <Typography component="span" fontWeight={600}>
-                {terminalLabel}
-              </Typography>
-            </Typography>
-          </Box>
-
-          <Typography fontWeight={600}>{openedDisplay}</Typography>
-        </Box>
-
-        <Divider sx={{ my: 1 }} />
-
-        <Typography fontWeight="bold" color="success.main" mt={2} mb={1}>
-          Cash Drawer
-        </Typography>
-
-        {renderRow(
-          "Starting Cash",
-          peso(summary?.cash_drawer?.opening_float || 0),
-          false,
-          "starting-cash"
-        )}
-
-        {paymentSummary.map((p, idx) =>
-          renderRow(
-            `${p.method_name} Payments`,
-            peso(p.net_amount ?? p.total_sales ?? 0),
-            false,
-            `${p.method_name}-${idx}`
-          )
-        )}
-
-        {renderRow(
-          "Cash Refunds",
-          peso(summary?.cash_drawer?.cash_refunds || 0),
-          false,
-          "cash-refunds"
-        )}
-        {renderRow(
-          "Cash in",
-          peso(summary?.cash_drawer?.cash_in || 0),
-          false,
-          "cash-in"
-        )}
-        {renderRow(
-          "Cash out",
-          peso(summary?.cash_drawer?.cash_out || 0),
-          false,
-          "cash-out"
-        )}
-
-        {renderRow(
-          "Expected cash amount",
-          peso(summary?.cash_drawer?.expected_cash || 0),
-          true,
-          "expected-cash"
-        )}
-
-        <Typography fontWeight="bold" color="success.main" mt={3} mb={1}>
-          Sales Summary
-        </Typography>
-
-        {renderRow(
-          "Gross Sales",
-          peso(summary?.sales_summary?.gross_sales || 0),
-          true,
-          "gross-sales"
-        )}
-        {renderRow(
-          "Refunds",
-          peso(summary?.sales_summary?.refunds || 0),
-          false,
-          "refunds"
-        )}
-        {renderRow(
-          "Discounts",
-          peso(summary?.sales_summary?.discounts || 0),
-          false,
-          "discounts"
-        )}
-
-        <Divider sx={{ my: 1 }} />
-
-        {renderRow(
-          "Net Sales",
-          peso(summary?.sales_summary?.net_sales || 0),
-          true,
-          "net-sales"
-        )}
-      </Paper>
-
-      {showCloseModal && (
-        <FloatingCloseShiftModal onClose={() => setShowCloseModal(false)} />
-      )}
-    </Box>
+        {label}
+      </Typography>
+      <Typography
+        variant="body2"
+        sx={{ fontWeight: bold ? 600 : 400 }}
+      >
+        {value}
+      </Typography>
+    </Stack>
   );
-};
-
-export default ShiftManagementPage;
+}

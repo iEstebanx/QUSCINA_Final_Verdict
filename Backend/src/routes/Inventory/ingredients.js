@@ -46,7 +46,6 @@ function mapIngredientItem(row) {
     type: row.type,
     currentStock: Number(row.currentStock || 0),
     lowStock: Number(row.lowStock || 0),
-    price: Number(row.price || 0),
   };
 }
 
@@ -226,7 +225,7 @@ module.exports = ({ db } = {}) => {
   router.get("/", async (_req, res) => {
     try {
       const rows = await db.query(
-        `SELECT id, name, category, type, currentStock, lowStock, price, createdAt, updatedAt
+        `SELECT id, name, category, type, currentStock, lowStock, createdAt, updatedAt
            FROM inventory_ingredients
           ORDER BY updatedAt DESC, createdAt DESC, name ASC`
       );
@@ -238,7 +237,6 @@ module.exports = ({ db } = {}) => {
         type: r.type || "",
         currentStock: Number(r.currentStock || 0),
         lowStock: Number(r.lowStock || 0),
-        price: Number(r.price || 0),
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       }));
@@ -316,11 +314,13 @@ module.exports = ({ db } = {}) => {
           .json({ ok: false, error: "Unit is not allowed." });
       }
 
-      const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" }));
+      const now = new Date(
+        new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" })
+      );
       const result = await db.query(
         `INSERT INTO inventory_ingredients
-          (name, category, type, currentStock, lowStock, price, createdAt, updatedAt)
-         VALUES (?, ?, ?, 0, 0, 0, ?, ?)`,
+          (name, category, type, currentStock, lowStock, createdAt, updatedAt)
+         VALUES (?, ?, ?, 0, 0, ?, ?)`,
         [name, category, type, now, now]
       );
 
@@ -461,18 +461,6 @@ module.exports = ({ db } = {}) => {
         u.lowStock = n;
       }
 
-      // price
-      if (req.body?.price !== undefined) {
-        const n = Number(req.body.price);
-        if (!Number.isFinite(n) || n < 0) {
-          return res.status(400).json({
-            ok: false,
-            error: "price must be a non-negative number",
-          });
-        }
-        u.price = n;
-      }
-
       // SCALE LOGIC: convert currentStock if unit changed, but user did NOT override stock
       if (incomingType !== undefined && !userSentCurrentStock) {
         u.currentStock = convertStockOnUnitChange(
@@ -511,7 +499,6 @@ module.exports = ({ db } = {}) => {
         "type",
         "currentStock",
         "lowStock",
-        "price",
       ];
       const changes = {};
       for (const field of fieldsToCompare) {
@@ -536,7 +523,7 @@ module.exports = ({ db } = {}) => {
         META_FIELDS.includes(k)
       );
 
-      // If only stock/price changed → skip audit log to avoid duplicates.
+      // If only stock changed → skip audit log to avoid duplicates.
       if (!metaChangedKeys.length) {
         return res.json({ ok: true, message: "Ingredient updated successfully" });
       }

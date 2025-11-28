@@ -22,6 +22,7 @@ import POSMenuPage from "@/pages/POS/Menu.jsx";
 import POSOrdersPage from "@/pages/POS/Orders.jsx";
 import POSChargePage from "@/pages/POS/Charge.jsx";
 import POSRefundPage from "@/pages/POS/RefundPage.jsx";
+import ShiftManagementPage from "@/pages/POS/ShiftManagementPage.jsx";
 
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
@@ -53,7 +54,7 @@ export default function AppRoutes() {
           {/* Reports */}
           <Route path="/reports" element={<ReportsPage />} />
           <Route
-            path="/reports/inventory-history"
+            path="/reports/inventory-reports"
             element={<InventoryHistoryPage />}
           />
 
@@ -68,16 +69,16 @@ export default function AppRoutes() {
 
           {/* Redirects & settings (unchanged) */}
           <Route
-            path="/audit-trail/inventory-history"
-            element={<Navigate to="/reports/inventory-history" replace />}
+            path="/audit-trail/inventory-reports"
+            element={<Navigate to="/reports/inventory-reports" replace />}
           />
           <Route
             path="/inventory/history"
-            element={<Navigate to="/reports/inventory-history" replace />}
+            element={<Navigate to="/reports/inventory-reports" replace />}
           />
           <Route
             path="/Inventory/inventoryhistorypage"
-            element={<Navigate to="/reports/inventory-history" replace />}
+            element={<Navigate to="/reports/inventory-reports" replace />}
           />
           <Route
             path="/users"
@@ -121,6 +122,7 @@ export default function AppRoutes() {
           <Route path="/pos" element={<Navigate to="/pos/menu" replace />} />
           <Route path="/pos/menu" element={<POSMenuPage />} />
           <Route path="/pos/orders" element={<POSOrdersPage />} />
+          <Route path="/pos/shift-management" element={<ShiftManagementPage />} />
           <Route path="/pos/refund" element={<POSRefundPage />} />
           <Route path="/pos/charge" element={<POSChargePage />} />
         </Route>

@@ -52,6 +52,7 @@ export default function AppHeader({
     pos: "POS",
     orders: "Orders",
     refund: "Refund",
+    "shift-management": "Shift Management",
   };
 
   const groupFirstChild = {

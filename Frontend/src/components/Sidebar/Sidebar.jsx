@@ -236,7 +236,7 @@ function SidebarContent({ collapsed }) {
   const isReportsActive = useMemo(
     () =>
       path.startsWith("/reports") ||
-      path.startsWith("/audit-trail/inventory-history"),
+      path.startsWith("/audit-trail/inventory-reports"),
     [path]
   );
 
@@ -326,6 +326,12 @@ function SidebarContent({ collapsed }) {
             icon={ReceiptLongIcon}
             collapsed={collapsed}
           />
+          <NavLeaf
+            to="/pos/shift-management"
+            label="Shift Management"
+            icon={HistoryIcon}
+            collapsed={collapsed}
+          />
         </NavGroup>
 
         {/* Inventory */}
@@ -361,7 +367,7 @@ function SidebarContent({ collapsed }) {
             end
           />
           <NavLeaf
-            to="/reports/inventory-history"
+            to="/reports/inventory-reports"
             label="Inventory Reports"
             icon={HistoryIcon}
             collapsed={collapsed}

@@ -88,6 +88,62 @@ function formatLastChanged(val) {
   }
 }
 
+function sanitizePhotoUrl(url) {
+  if (!url) return "";
+  // Don't ever trust blob:/file: URLs from backend; they are origin-bound and transient
+  if (url.startsWith("blob:") || url.startsWith("file:")) return "";
+  return url;
+}
+
+function isLockedForDisplay(row) {
+  if (!row) return false;
+
+  const now = Date.now();
+  const LOCK_THRESHOLD = 3;
+
+  const isLockedState = (s) => {
+    if (!s) return false;
+    const perm = !!s.permanentLock;
+    const temp = s.lockUntil ? new Date(s.lockUntil).getTime() > now : false;
+    const fail = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
+    return perm || temp || fail;
+  };
+
+  const role = row.role;
+  const states = row.lockStates || {};
+
+  // Helper for legacy/global lock when no per-app state exists
+  const legacyLocked = (() => {
+    const legacyTemp = row.lockUntil
+      ? new Date(row.lockUntil).getTime() > now
+      : false;
+    const legacyPerm = !!row.permanentLock;
+    const legacyFail = Number(row.failedLoginCount || 0) >= LOCK_THRESHOLD;
+    return legacyTemp || legacyPerm || legacyFail;
+  })();
+
+  // Admin / Manager = Backoffice lock
+  if (role === "Admin" || role === "Manager") {
+    if (states.backoffice) {
+      return isLockedState(states.backoffice);
+    }
+    // fallback to legacy if no per-app record
+    return legacyLocked;
+  }
+
+  // Cashier = Cashier-POS lock
+  if (role === "Cashier") {
+    if (states.pos) {
+      return isLockedState(states.pos);
+    }
+    // fallback to legacy if no per-app record
+    return legacyLocked;
+  }
+
+  // Other roles (if any) – no lock-based override
+  return false;
+}
+
 export default function UserManagementPage() {
   const alert = useAlert();
   const confirm = useConfirm();
@@ -343,16 +399,25 @@ export default function UserManagementPage() {
       if (taken) e.username = "Username already in use";
     }
     const email = form.email.trim();
-    if (email) {
-      if (!emailRe.test(email)) e.email = "Invalid email";
-      const taken = rows.some(
-        (r) => (r.email || "").toLowerCase() === email.toLowerCase() && String(r.employeeId) !== String(form.employeeId)
-      );
-      if (taken) e.email = "Email already in use";
+    if (!email) {
+      e.email = "Required";
+    } else {
+      if (!emailRe.test(email)) {
+        e.email = "Invalid email";
+      } else {
+        const taken = rows.some(
+          (r) =>
+            (r.email || "").toLowerCase() === email.toLowerCase() &&
+            String(r.employeeId) !== String(form.employeeId)
+        );
+        if (taken) e.email = "Email already in use";
+      }
     }
     const lv = form.loginVia;
-    if (!lv.employeeId && !lv.username && !lv.email)
-      e.loginVia = "At least one login method must be enabled";
+    // Policy: at least ONE login ID (Employee ID or Username) must be enabled
+    if (!lv.employeeId && !lv.username) {
+      e.loginVia = "At least one login ID (Employee ID or Username) must be enabled";
+    }
 
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -871,15 +936,27 @@ export default function UserManagementPage() {
                       <TableCell>{r.firstName}</TableCell>
                       <TableCell>{r.lastName}</TableCell>
                       <TableCell>{r.phone}</TableCell>
-                      <TableCell>{r.role}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={r.status}
-                          color={r.status === "Active" ? "success" : "default"}
-                          variant={r.status === "Active" ? "filled" : "outlined"}
-                        />
-                      </TableCell>
+                        <TableCell>{r.role}</TableCell>
+                        <TableCell>
+                          {(() => {
+                            const locked = isLockedForDisplay(r);
+
+                            // If they are locked for their app, force them to show as Inactive.
+                            // Only show "Active" when DB status is Active AND they are not locked.
+                            const effectiveStatus =
+                              r.status === "Active" && !locked ? "Active" : "Inactive";
+
+                            return (
+                              <Chip
+                                size="small"
+                                label={effectiveStatus}
+                                color={effectiveStatus === "Active" ? "success" : "error"}
+                                variant="filled"
+                                sx={{ minWidth: 72, justifyContent: "center" }} // optional: consistent width
+                              />
+                            );
+                          })()}
+                        </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -1007,19 +1084,19 @@ export default function UserManagementPage() {
                               <BadgeOutlinedIcon fontSize="small" />
                             </InputAdornment>
                           ),
-                          endAdornment: (
+                          endAdornment: isEditingExisting ? (
                             <InputAdornment position="end">
                               <Switch
                                 size="small"
                                 checked={form.loginVia.employeeId}
                                 onChange={(_, c) => {
                                   const next = { ...form.loginVia, employeeId: c };
-                                  if (!next.employeeId && !next.username && !next.email) return;
+                                  if (!next.employeeId && !next.username) return;
                                   setForm((f) => ({ ...f, loginVia: next }));
                                 }}
                               />
                             </InputAdornment>
-                          ),
+                          ) : null,
                         },
                       }}
                     />
@@ -1033,9 +1110,9 @@ export default function UserManagementPage() {
                       label="Username"
                       value={form.username}
                       error={!!errors.username}
-                      helperText={errors.username || "Optional — unique (lowercased)"}
+                      helperText={errors.username || "Optional — must be unique"}
                       onChange={(e) =>
-                        setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))
+                        setForm((f) => ({ ...f, username: e.target.value }))
                       }
                       slotProps={{
                         htmlInput: {
@@ -1050,19 +1127,19 @@ export default function UserManagementPage() {
                               <AccountCircleOutlinedIcon fontSize="small" />
                             </InputAdornment>
                           ),
-                          endAdornment: (
+                          endAdornment: isEditingExisting ? (
                             <InputAdornment position="end">
                               <Switch
                                 size="small"
                                 checked={form.loginVia.username}
                                 onChange={(_, c) => {
                                   const next = { ...form.loginVia, username: c };
-                                  if (!next.employeeId && !next.username && !next.email) return; // keep at least one
+                                  if (!next.employeeId && !next.username) return;
                                   setForm((f) => ({ ...f, loginVia: next }));
                                 }}
                               />
                             </InputAdornment>
-                          ),
+                          ) : null,
                           sx: !form.loginVia.username
                             ? { bgcolor: "action.disabledBackground" }
                             : undefined,
@@ -1076,15 +1153,18 @@ export default function UserManagementPage() {
                     <TextField
                       sx={{ width: 300 }}
                       size="small"
-                      label="Email"
+                      label={
+                        <>
+                          Email<span style={{ color: "#d32f2f" }}> *</span>
+                        </>
+                      }
                       type="email"
                       value={form.email}
                       error={!!errors.email}
-                      helperText={errors.email || "Optional — unique, valid email format"}
+                      helperText={errors.email || "Required — unique, valid email format"}
                       onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                       slotProps={{
                         htmlInput: {
-                          readOnly: !form.loginVia.email,
                           autoComplete: "email",
                           inputMode: "email",
                           "aria-label": "Email",
@@ -1095,22 +1175,6 @@ export default function UserManagementPage() {
                               <MailOutlineIcon fontSize="small" />
                             </InputAdornment>
                           ),
-                          endAdornment: (
-                            <InputAdornment position="end">
-                              <Switch
-                                size="small"
-                                checked={form.loginVia.email}
-                                onChange={(_, c) => {
-                                  const next = { ...form.loginVia, email: c };
-                                  if (!next.employeeId && !next.username && !next.email) return; // keep at least one method
-                                  setForm((f) => ({ ...f, loginVia: next }));
-                                }}
-                              />
-                            </InputAdornment>
-                          ),
-                          sx: !form.loginVia.email
-                            ? { bgcolor: "action.disabledBackground" }
-                            : undefined,
                         },
                       }}
                     />
@@ -1348,239 +1412,346 @@ export default function UserManagementPage() {
             </Grid>
 
             {/* ===== Security & Lock ===== */}
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Security & Lock</Typography>
+            {isEditingExisting && (
+              <>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                  Security & Lock
+                </Typography>
 
-            <Grid container spacing={2} alignItems="flex-start">
-              <Grid size={{ xs: 12, md: 8 }}>
-                {(() => {
-                  const row = rows.find(r => String(r.employeeId) === String(form.employeeId));
-                  if (!row) {
-                    return <Typography variant="body2" color="text.secondary">No lock info.</Typography>;
-                  }
-
-                  // --- helpers
-                  const now = Date.now();
-                  const LOCK_THRESHOLD = 3;
-
-                  const isLockedState = (s) => {
-                    if (!s) return false;
-                    const perm = !!s.permanentLock;
-                    const temp = s.lockUntil ? new Date(s.lockUntil).getTime() > now : false;
-                    const fail = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
-                    return perm || temp || fail;
-                  };
-
-                  // Legacy/global (migration-only)
-                  const legacyTemp = row.lockUntil ? new Date(row.lockUntil).getTime() > now : false;
-                  const legacyPerm = !!row.permanentLock;
-                  const legacyFail = Number(row.failedLoginCount || 0) >= LOCK_THRESHOLD;
-                  const legacyLocked = legacyTemp || legacyPerm || legacyFail;
-
-                  // Per-app states = source of truth
-                  const entries = Object.entries(row.lockStates || {});
-                  const lockedApps = entries.filter(([_, s]) => isLockedState(s)).map(([k]) => k);
-
-                  // Show legacy row ONLY if we have no per-app states AND it’s locked
-                  const showLegacy = entries.length === 0 && legacyLocked;
-
-                  // Primary action
-                  let primaryLabel = "All systems unlocked";
-                  let primaryDisabled = true;
-                  let primaryOnClick = null;
-
-                  if (lockedApps.length === 1) {
-                    const target = lockedApps[0];
-                    primaryLabel = "Unlock";
-                    primaryDisabled = false;
-                    primaryOnClick = async () => {
-                      const ok = await confirm({
-                        title: "Unlock system?",
-                        content: `This clears ${target === "pos" ? "Cashier-POS" : target === "backoffice" ? "Backoffice" : target} lock and failed attempts.`,
-                        confirmLabel: "Unlock",
-                      });
-                      if (!ok) return;
-
-                      try {
-                        await unlockUser(form.employeeId, { app: target });
-                        setRows(prev => prev.map(r =>
-                          String(r.employeeId) === String(form.employeeId)
-                            ? {
-                                ...r,
-                                failedLoginCount: 0,
-                                lockUntil: null,
-                                permanentLock: false,
-                                lockStates: {
-                                  ...(r.lockStates || {}),
-                                  [target]: { failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null },
-                                },
-                              }
-                            : r
-                        ));
-                        alert.success("Unlock successful.");
-                      } catch (e) {
-                        alert.error(e?.message || "Failed to unlock.");
+                <Grid container spacing={2} alignItems="flex-start">
+                  <Grid size={{ xs: 12, md: 8 }}>
+                    {(() => {
+                      const row = rows.find(
+                        (r) => String(r.employeeId) === String(form.employeeId)
+                      );
+                      if (!row) {
+                        return (
+                          <Typography variant="body2" color="text.secondary">
+                            No lock info.
+                          </Typography>
+                        );
                       }
-                    };
-                  } else if (lockedApps.length >= 2) {
-                    primaryLabel = "Unlock All";
-                    primaryDisabled = false;
-                    primaryOnClick = async () => {
-                      const ok = await confirm({
-                        title: "Unlock ALL systems?",
-                        content: "This clears locks and failed attempts for every system.",
-                        confirmLabel: "Unlock All",
-                      });
-                      if (!ok) return;
 
-                      try {
-                        await unlockUser(form.employeeId, { scope: "all" });
-                        setRows(prev => prev.map(r =>
-                          String(r.employeeId) === String(form.employeeId)
-                            ? {
-                                ...r,
-                                failedLoginCount: 0,
-                                lockUntil: null,
-                                permanentLock: false,
-                                lockStates: Object.fromEntries(
-                                  Object.keys(r.lockStates || {}).map(k => [
-                                    k,
-                                    { failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null },
-                                  ])
-                                ),
-                              }
-                            : r
-                        ));
-                        alert.success("All systems unlocked.");
-                      } catch (e) {
-                        alert.error(e?.message || "Failed to unlock all.");
+                      // --- helpers
+                      const now = Date.now();
+                      const LOCK_THRESHOLD = 3;
+
+                      const isLockedState = (s) => {
+                        if (!s) return false;
+                        const perm = !!s.permanentLock;
+                        const temp = s.lockUntil
+                          ? new Date(s.lockUntil).getTime() > now
+                          : false;
+                        const fail = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                        return perm || temp || fail;
+                      };
+
+                      // Legacy/global (migration-only)
+                      const legacyTemp = row.lockUntil
+                        ? new Date(row.lockUntil).getTime() > now
+                        : false;
+                      const legacyPerm = !!row.permanentLock;
+                      const legacyFail = Number(row.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                      const legacyLocked = legacyTemp || legacyPerm || legacyFail;
+
+                      // ── Per-app states = source of truth (role-aware)
+                      const userRole = form.role;
+
+                      const shouldShowApp = (appKey) => {
+                        // Cashier: hide Backoffice
+                        if (userRole === "Cashier") {
+                          return appKey !== "backoffice";
+                        }
+                        // Admin / Manager: hide Cashier POS (pos)
+                        if (userRole === "Admin" || userRole === "Manager") {
+                          return appKey !== "pos";
+                        }
+                        // Fallback: show everything
+                        return true;
+                      };
+
+                      const rawEntries = Object.entries(row.lockStates || {});
+                      const entries = rawEntries.filter(([appKey]) => shouldShowApp(appKey));
+
+                      // Which *visible* apps are locked?
+                      const lockedApps = entries
+                        .filter(([_, s]) => isLockedState(s))
+                        .map(([k]) => k);
+
+                      // Show legacy row ONLY if we have no per-app states from backend AND it’s locked
+                      const showLegacy = rawEntries.length === 0 && legacyLocked;
+
+                      // Primary action
+                      let primaryLabel = "All systems unlocked";
+                      let primaryDisabled = true;
+                      let primaryOnClick = null;
+
+                      if (lockedApps.length === 1) {
+                        const target = lockedApps[0];
+                        primaryLabel = "Unlock";
+                        primaryDisabled = false;
+                        primaryOnClick = async () => {
+                          const ok = await confirm({
+                            title: "Unlock system?",
+                            content: `This clears ${
+                              target === "pos"
+                                ? "Cashier-POS"
+                                : target === "backoffice"
+                                ? "Backoffice"
+                                : target
+                            } lock and failed attempts.`,
+                            confirmLabel: "Unlock",
+                          });
+                          if (!ok) return;
+
+                          try {
+                            await unlockUser(form.employeeId, { app: target });
+                            setRows((prev) =>
+                              prev.map((r) =>
+                                String(r.employeeId) === String(form.employeeId)
+                                  ? {
+                                      ...r,
+                                      failedLoginCount: 0,
+                                      lockUntil: null,
+                                      permanentLock: false,
+                                      lockStates: {
+                                        ...(r.lockStates || {}),
+                                        [target]: {
+                                          failedLoginCount: 0,
+                                          lockUntil: null,
+                                          permanentLock: 0,
+                                          lastFailedLogin: null,
+                                        },
+                                      },
+                                    }
+                                  : r
+                              )
+                            );
+                            alert.success("Unlock successful.");
+                          } catch (e) {
+                            alert.error(e?.message || "Failed to unlock.");
+                          }
+                        };
+                      } else if (lockedApps.length >= 2) {
+                        primaryLabel = "Unlock All";
+                        primaryDisabled = false;
+                        primaryOnClick = async () => {
+                          const ok = await confirm({
+                            title: "Unlock ALL systems?",
+                            content:
+                              "This clears locks and failed attempts for every system.",
+                            confirmLabel: "Unlock All",
+                          });
+                          if (!ok) return;
+
+                          try {
+                            await unlockUser(form.employeeId, { scope: "all" });
+                            setRows((prev) =>
+                              prev.map((r) =>
+                                String(r.employeeId) === String(form.employeeId)
+                                  ? {
+                                      ...r,
+                                      failedLoginCount: 0,
+                                      lockUntil: null,
+                                      permanentLock: false,
+                                      lockStates: Object.fromEntries(
+                                        Object.keys(r.lockStates || {}).map((k) => [
+                                          k,
+                                          {
+                                            failedLoginCount: 0,
+                                            lockUntil: null,
+                                            permanentLock: 0,
+                                            lastFailedLogin: null,
+                                          },
+                                        ])
+                                      ),
+                                    }
+                                  : r
+                              )
+                            );
+                            alert.success("All systems unlocked.");
+                          } catch (e) {
+                            alert.error(e?.message || "Failed to unlock all.");
+                          }
+                        };
+                      } else if (showLegacy) {
+                        primaryLabel = "Unlock";
+                        primaryDisabled = false;
+                        primaryOnClick = async () => {
+                          const ok = await confirm({
+                            title: "Unlock (legacy)?",
+                            content: "This clears legacy/global locks and failed attempts.",
+                            confirmLabel: "Unlock",
+                          });
+                          if (!ok) return;
+
+                          try {
+                            await unlockUser(form.employeeId, {}); // backend clears legacy without app/scope
+                            setRows((prev) =>
+                              prev.map((r) =>
+                                String(r.employeeId) === String(form.employeeId)
+                                  ? {
+                                      ...r,
+                                      failedLoginCount: 0,
+                                      lockUntil: null,
+                                      permanentLock: false,
+                                    }
+                                  : r
+                              )
+                            );
+                            alert.success("Unlock successful.");
+                          } catch (e) {
+                            alert.error(e?.message || "Failed to unlock.");
+                          }
+                        };
                       }
-                    };
-                  } else if (showLegacy) {
-                    primaryLabel = "Unlock";
-                    primaryDisabled = false;
-                    primaryOnClick = async () => {
-                      const ok = await confirm({
-                        title: "Unlock (legacy)?",
-                        content: "This clears legacy/global locks and failed attempts.",
-                        confirmLabel: "Unlock",
-                      });
-                      if (!ok) return;
 
-                      try {
-                        await unlockUser(form.employeeId, {}); // backend clears legacy without app/scope
-                        setRows(prev => prev.map(r =>
-                          String(r.employeeId) === String(form.employeeId)
-                            ? { ...r, failedLoginCount: 0, lockUntil: null, permanentLock: false }
-                            : r
-                        ));
-                        alert.success("Unlock successful.");
-                      } catch (e) {
-                        alert.error(e?.message || "Failed to unlock.");
-                      }
-                    };
-                  }
+                      const labelFor = (key) => {
+                        if (key === "pos") return "Cashier-POS";
+                        if (key === "backoffice") return "Backoffice";
+                        return key
+                          .replace(/[-_]/g, " ")
+                          .replace(/\b\w/g, (c) => c.toUpperCase());
+                      };
 
-                  const labelFor = (key) => {
-                    if (key === "pos") return "Cashier-POS";
-                    if (key === "backoffice") return "Backoffice";
-                    return key.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-                  };
-
-                  return (
-                    <>
-                      {/* Smart primary action */}
-                      <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
-                        <Button
-                          variant="contained"
-                          color={primaryDisabled ? "inherit" : "warning"}
-                          size="small"
-                          disabled={primaryDisabled}
-                          onClick={primaryOnClick}
-                        >
-                          {primaryLabel}
-                        </Button>
-                      </Stack>
-
-                      {/* Per-system rows (compact, 2-up per row) */}
-                      {entries.length ? (
-                        <Paper variant="outlined" sx={{ p: 1, mb: 1 }}>
-                          <Grid container spacing={1} alignItems="stretch">
-                            {entries.map(([appKey, s]) => {
-                              const untilMs = s.lockUntil ? new Date(s.lockUntil).getTime() : 0;
-                              const tempLocked = untilMs > now;
-                              const permLocked = !!s.permanentLock;
-                              const failLocked = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
-                              const locked = permLocked || tempLocked || failLocked;
-
-                              return (
-                                <Grid key={appKey} size={{ xs: 12, sm: 6 }}>
-                                  <Box
-                                    sx={{
-                                      p: 1,
-                                      height: '100%',
-                                      borderRadius: 1,
-                                      border: '1px solid',
-                                      borderColor: 'divider',
-                                    }}
-                                  >
-                                    <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                                      <Typography variant="body2" sx={{ fontWeight: 600, mr: 1 }}>
-                                        {labelFor(appKey)}
-                                      </Typography>
-
-                                      <Chip
-                                        size="small"
-                                        label={
-                                          permLocked ? "PERMANENT LOCK"
-                                          : tempLocked ? "TEMP LOCKED"
-                                          : failLocked ? "FAILED LOCK"
-                                          : "UNLOCKED"
-                                        }
-                                        color={locked ? "error" : "success"}
-                                        variant={locked ? "filled" : "outlined"}
-                                      />
-                                      <Chip size="small" variant="outlined" label={`Failed: ${s.failedLoginCount ?? 0}`} />
-
-                                      {tempLocked && (
-                                        <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                                          until {new Date(untilMs).toLocaleString()}
-                                        </Typography>
-                                      )}
-
-                                      <Box sx={{ flex: 1 }} />
-                                    </Stack>
-                                  </Box>
-                                </Grid>
-                              );
-                            })}
-                          </Grid>
-                        </Paper>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">
-                          No per-system lock states found.
-                        </Typography>
-                      )}
-
-                      {/* Legacy row only in migration edge-case (and only when locked) */}
-                      {showLegacy && (
-                        <Paper variant="outlined" sx={{ p: 1, mt: 1 }}>
-                          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                            <Typography variant="body2" sx={{ fontWeight: 600, mr: 1 }}>Legacy/Global</Typography>
-                            <Chip size="small" label="LOCKED" color="error" variant="filled" />
-                            {legacyTemp && (
-                              <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                                until {new Date(row.lockUntil).toLocaleString()}
-                              </Typography>
-                            )}
+                      return (
+                        <>
+                          {/* Smart primary action */}
+                          <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+                            <Button
+                              variant="contained"
+                              color={primaryDisabled ? "inherit" : "warning"}
+                              size="small"
+                              disabled={primaryDisabled}
+                              onClick={primaryOnClick}
+                            >
+                              {primaryLabel}
+                            </Button>
                           </Stack>
-                        </Paper>
-                      )}
-                    </>
-                  );
-                })()}
-              </Grid>
-            </Grid>
+
+                          {/* Per-system rows (compact, 2-up per row) */}
+                          {entries.length ? (
+                            <Paper variant="outlined" sx={{ p: 1, mb: 1 }}>
+                              <Grid container spacing={1} alignItems="stretch">
+                                {entries.map(([appKey, s]) => {
+                                  const untilMs = s.lockUntil
+                                    ? new Date(s.lockUntil).getTime()
+                                    : 0;
+                                  const tempLocked = untilMs > now;
+                                  const permLocked = !!s.permanentLock;
+                                  const failLocked =
+                                    Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                                  const locked = permLocked || tempLocked || failLocked;
+
+                                  return (
+                                    <Grid key={appKey} size={{ xs: 12, sm: 6 }}>
+                                      <Box
+                                        sx={{
+                                          p: 1,
+                                          height: "100%",
+                                          borderRadius: 1,
+                                          border: "1px solid",
+                                          borderColor: "divider",
+                                        }}
+                                      >
+                                        <Stack
+                                          direction="row"
+                                          alignItems="center"
+                                          spacing={1}
+                                          flexWrap="wrap"
+                                        >
+                                          <Typography
+                                            variant="body2"
+                                            sx={{ fontWeight: 600, mr: 1 }}
+                                          >
+                                            {labelFor(appKey)}
+                                          </Typography>
+
+                                          <Chip
+                                            size="small"
+                                            label={
+                                              permLocked
+                                                ? "PERMANENT LOCK"
+                                                : tempLocked
+                                                ? "TEMP LOCKED"
+                                                : failLocked
+                                                ? "FAILED LOCK"
+                                                : "UNLOCKED"
+                                            }
+                                            color={locked ? "error" : "success"}
+                                            variant={locked ? "filled" : "outlined"}
+                                          />
+                                          <Chip
+                                            size="small"
+                                            variant="outlined"
+                                            label={`Failed: ${s.failedLoginCount ?? 0}`}
+                                          />
+
+                                          {tempLocked && (
+                                            <Typography
+                                              variant="body2"
+                                              color="text.secondary"
+                                              sx={{ ml: 1 }}
+                                            >
+                                              until {new Date(untilMs).toLocaleString()}
+                                            </Typography>
+                                          )}
+
+                                          <Box sx={{ flex: 1 }} />
+                                        </Stack>
+                                      </Box>
+                                    </Grid>
+                                  );
+                                })}
+                              </Grid>
+                            </Paper>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              No per-system lock states found.
+                            </Typography>
+                          )}
+
+                          {/* Legacy row only in migration edge-case (and only when locked) */}
+                          {showLegacy && (
+                            <Paper variant="outlined" sx={{ p: 1, mt: 1 }}>
+                              <Stack
+                                direction="row"
+                                alignItems="center"
+                                spacing={1}
+                                flexWrap="wrap"
+                              >
+                                <Typography
+                                  variant="body2"
+                                  sx={{ fontWeight: 600, mr: 1 }}
+                                >
+                                  Legacy/Global
+                                </Typography>
+                                <Chip
+                                  size="small"
+                                  label="LOCKED"
+                                  color="error"
+                                  variant="filled"
+                                />
+                                {legacyTemp && (
+                                  <Typography
+                                    variant="body2"
+                                    color="text.secondary"
+                                    sx={{ ml: 1 }}
+                                  >
+                                    until {new Date(row.lockUntil).toLocaleString()}
+                                  </Typography>
+                                )}
+                              </Stack>
+                            </Paper>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </Grid>
+                </Grid>
+              </>
+            )}
 
             {errors.loginVia && (
               <Typography variant="caption" color="error" sx={{ mt: 0.5 }}>

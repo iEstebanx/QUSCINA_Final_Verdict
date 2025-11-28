@@ -22,12 +22,13 @@ export default function POSLayout() {
   const isPosCharge = location.pathname.startsWith("/pos/charge");
   const isPosOrders = location.pathname.startsWith("/pos/orders");
   const isPosRefund = location.pathname.startsWith("/pos/refund");
+  const isPosShiftManagement = location.pathname.startsWith("/pos/shift-management");
 
   // 👇 “full-screen” POS pages (no sidebar space)
   const isFullScreenPos = isPosCharge || isPosRefund;
 
   // Hide cart on charge + orders + refund
-  const hideCart = isPosCharge || isPosOrders || isPosRefund;
+  const hideCart = isPosCharge || isPosOrders || isPosRefund || isPosShiftManagement;
 
   // Sidebar width values to pass into header
   const effectiveWidth = isFullScreenPos ? 0 : SIDEBAR_WIDTH;

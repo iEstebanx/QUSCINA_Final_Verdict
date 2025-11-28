@@ -352,8 +352,7 @@ export default function InventoryHistoryPage() {
           "Current Stock",
           "Adjustment",
           "New Stock",
-          "Unit",
-          "Total Value",
+          "Unit"
         ],
       ],
       body: rows,
@@ -433,7 +432,6 @@ export default function InventoryHistoryPage() {
                   <TableCell>Stock Adjustment</TableCell>
                   <TableCell>New Stock</TableCell>
                   <TableCell>Unit</TableCell>
-                  <TableCell>Total Value</TableCell>
                 </TableRow>
               </TableHead>
 
@@ -459,7 +457,6 @@ export default function InventoryHistoryPage() {
 
                     <TableCell>{formatNumber(row.endStock)}</TableCell>
                     <TableCell>{row.unit}</TableCell>
-                    <TableCell>{formatPhp(row.totalValue)}</TableCell>
                   </TableRow>
                 ))}
 

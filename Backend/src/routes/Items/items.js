@@ -28,14 +28,13 @@ const ITEM_FIELD_LABELS = {
   categoryId: "category",
   categoryName: "category",
   price: "price",
-  costOverall: "cost",
-  profit: "profit",
+  // 🔸 costOverall / profit removed from labels (no more costing in audit)
 };
 
 /**
  * Turn raw changed keys into a nice comma-separated list:
- *   ['description','categoryId','categoryName','price','profit']
- * → 'description, category, price, profit'
+ *   ['description','categoryId','categoryName','price']
+ * → 'description, category, price'
  */
 function summarizeItemChangedFields(changedKeys = []) {
   // Map → friendly labels, de-duplicate (categoryId + categoryName → category)
@@ -74,6 +73,8 @@ function cleanMoney(x) {
   return Number(String(x).replace(/[^0-9.]/g, "")) || 0;
 }
 
+// 🔸 Costing helper kept but no longer used for inventory costing.
+//     (Safe to remove later if you want totally clean.)
 function computeCostOverall(ingredients) {
   if (!Array.isArray(ingredients)) return 0;
   return ingredients.reduce((s, it) => {
@@ -129,8 +130,7 @@ function mapItemForAudit(row) {
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     price: Number(row.price || 0),
-    costOverall: Number(row.costOverall || 0),
-    profit: Number(row.profit || 0),
+    // 🔸 costOverall / profit removed from audit payload
     ingredientsCount,
   };
 }
@@ -267,6 +267,7 @@ module.exports = ({ db } = {}) => {
           typeof x.ingredients === "string"
             ? JSON.parse(x.ingredients || "[]")
             : x.ingredients || [],
+        // 🔸 Still returned, but now always 0 unless old data exists
         costOverall: Number(x.costOverall || 0),
         profit: Number(x.profit || 0),
       }));
@@ -314,7 +315,7 @@ module.exports = ({ db } = {}) => {
       const description = String(b.description || "").trim().slice(0, 300);
       const price = cleanMoney(b.price);
 
-      // ingredients + cost
+      // ingredients (composition only, no more cost-based calculations)
       let ingredients = [];
       if (typeof b.ingredients === "string" && b.ingredients.trim()) {
         try {
@@ -324,8 +325,10 @@ module.exports = ({ db } = {}) => {
       } else if (Array.isArray(b.ingredients)) {
         ingredients = b.ingredients;
       }
-      const costOverall = computeCostOverall(ingredients);
-      const profit = Number((price - costOverall).toFixed(2));
+
+      // 🔸 Inventory costing disabled: store zeros for costOverall/profit
+      const costOverall = 0;
+      const profit = 0;
       const now = new Date();
 
       const result = await db.query(
@@ -392,8 +395,7 @@ module.exports = ({ db } = {}) => {
                 categoryId: created.categoryId,
                 categoryName: created.categoryName,
                 price: created.price,
-                costOverall: created.costOverall,
-                profit: created.profit,
+                // 🔸 costOverall / profit removed from actionDetails
               }
             : { itemId: String(id) },
         },
@@ -460,7 +462,10 @@ module.exports = ({ db } = {}) => {
       }
 
       // If either categoryId or categoryName is present, require BOTH and validate
-      const touchingCatId = Object.prototype.hasOwnProperty.call(b, "categoryId");
+      const touchingCatId = Object.prototype.hasOwnProperty.call(
+        b,
+        "categoryId"
+      );
       const touchingCatName = Object.prototype.hasOwnProperty.call(
         b,
         "categoryName"
@@ -498,23 +503,18 @@ module.exports = ({ db } = {}) => {
         patchForAudit.price = price;
       }
 
-      // ingredients + cost/profit
+      // 🔸 Ingredients can still be updated (composition),
+      //     but we no longer recompute costOverall/profit from them.
       let ingredients = null;
-      let costOverall = null;
-
       if (typeof b.ingredients === "string") {
         try {
           const parsed = JSON.parse(b.ingredients);
           if (Array.isArray(parsed)) {
             ingredients = parsed;
-            costOverall = computeCostOverall(parsed);
           }
         } catch {}
       } else if (Array.isArray(b.ingredients)) {
         ingredients = b.ingredients;
-        costOverall = computeCostOverall(b.ingredients);
-      } else if (typeof b.costOverall !== "undefined") {
-        costOverall = cleanMoney(b.costOverall);
       }
 
       if (ingredients) {
@@ -522,21 +522,8 @@ module.exports = ({ db } = {}) => {
         params.push(JSON.stringify(ingredients));
         patchForAudit.ingredients = ingredients;
       }
-      if (costOverall != null) {
-        sets.push("costOverall = ?");
-        params.push(costOverall);
-        patchForAudit.costOverall = costOverall;
-      }
 
-      if (
-        sets.some((s) => s.startsWith("price =")) ||
-        sets.some((s) => s.startsWith("costOverall ="))
-      ) {
-        sets.push(
-          "profit = (COALESCE(price,0) - COALESCE(costOverall,0))"
-        );
-        // profit is computed by SQL, no param
-      }
+      // 🔸 No more profit / costOverall recompute on PATCH
 
       if (req.file && req.file.buffer && req.file.mimetype) {
         const raw = req.file.buffer;
@@ -590,8 +577,7 @@ module.exports = ({ db } = {}) => {
         "categoryId",
         "categoryName",
         "price",
-        "costOverall",
-        "profit",
+        // 🔸 costOverall / profit removed from change summary
       ];
       const changes = {};
       for (const field of fieldsToCompare) {
@@ -612,7 +598,6 @@ module.exports = ({ db } = {}) => {
         ? `Item "${targetName}" updated (${friendlyFields}).`
         : `Item "${targetName}" updated.`;
 
-      // ✅ actually USE statusMessage → no more TS warning
       await logItemsAuditSafe(db, req, {
         action: "Item Updated",
         actionType: "update",

@@ -464,11 +464,57 @@ module.exports = function authRouterFactory({ db } = {}) {
           });
       }
 
+      if (!user.password_hash) {
+        const roleLower = String(user.role || "").toLowerCase();
+
+        // If this is a non-admin role, just say they're not allowed here
+        if (!["admin", "manager"].includes(roleLower)) {
+          return res
+            .status(403)
+            .json({ error: "Not authorized for Admin Dashboard" });
+        }
+
+        // For Admin/Manager with no password, keep the old message
+        await db.query(
+          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
+          VALUES (?, ?, ?, 0, 'bad_password', ?, ?)`,
+          [user.employee_id, app, identLower, ip, ua]
+        );
+
+        await logAuditLogin({
+          employeeName: prettyEmployeeName(user),
+          role: user.role,
+          action: "Auth - Login Failed (No Password Set)",
+          detail: {
+            statusMessage: "Account has no password set.",
+            actionDetails: {
+              actionType: "login",
+              app,
+              loginType: type,
+              identifier: identLower,
+              result: "no_password_hash",
+            },
+            affectedData: {
+              statusChange: AUTH_STATUS.LOGIN_BAD_PASSWORD,
+              items: [],
+            },
+            meta: { ip, userAgent: ua },
+          },
+        });
+
+        return res.status(400).json({
+          error: "This account has no password set. Please ask an Admin to set one.",
+          code: "NO_PASSWORD_SET",
+        });
+      }
+      // ------------------------------------------------------------
+
       // Password check
       const ok = await bcrypt.compare(
         String(password),
         user.password_hash
       );
+
       if (!ok) {
         // ❌ Wrong password → bump per-app counters and set locks in employee_lock_state
         await db.query(

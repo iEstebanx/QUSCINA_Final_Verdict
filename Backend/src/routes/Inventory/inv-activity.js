@@ -9,7 +9,7 @@ try {
 } catch {}
 
 /* ============================================================
-   SHARED AUDIT HELPERS (copied from ingredients.js)
+   SHARED AUDIT HELPERS (copied from ingredients.js, no pricing)
    ============================================================ */
 
 function getAuditUserFromReq(req) {
@@ -40,7 +40,7 @@ function mapIngredientItem(row) {
     type: row.type,
     currentStock: Number(row.currentStock || 0),
     lowStock: Number(row.lowStock || 0),
-    price: Number(row.price || 0),
+    // 🔴 price removed – inventory is now quantity-only
   };
 }
 
@@ -140,8 +140,9 @@ module.exports = ({ db } = {}) => {
       );
 
       const rows = await db.query(
-        `SELECT id, ts, employee, reason, io, qty, price, ingredientId, ingredientName, createdAt, updatedAt
-          FROM inventory_activity
+        `SELECT id, ts, employee, reason, io, qty,
+                ingredientId, ingredientName, createdAt, updatedAt
+           FROM inventory_activity
           ORDER BY COALESCE(ts, createdAt) DESC
           LIMIT ${limit}`
       );
@@ -156,10 +157,10 @@ module.exports = ({ db } = {}) => {
           ? new Date(r.createdAt).toISOString()
           : new Date().toISOString(),
         employee: r.employee,
-        reason: r.reason,      // ✔ correct field
+        reason: r.reason,
         io: r.io,
         qty: Number(r.qty || 0),
-        price: Number(r.price || 0),
+        // 🔴 price removed from API response
         ingredientId: r.ingredientId ? String(r.ingredientId) : "",
         ingredientName: r.ingredientName || "",
       }));
@@ -173,16 +174,15 @@ module.exports = ({ db } = {}) => {
 
   /**
    * POST /api/inventory/inv-activity
-   * body: { ts?, employee?, reason?, io: 'In'|'Out', qty, price, ingredientId, ingredientName }
+   * body: { ts?, employee?, reason?, io: 'In'|'Out', qty, ingredientId, ingredientName }
    *
-   * ➜ Now ALSO writes a single audit_trail row:
-   *    "Inventory - Ingredient Updated (Stock In/Out)"
+   * ➜ Writes both inventory_activity row AND an audit_trail row
+   *    "Inventory - Ingredient Updated (Stock In/Out)" – quantity-only.
    */
   router.post("/", async (req, res) => {
     try {
       const io = String(req.body?.io || "In") === "Out" ? "Out" : "In";
       const qty = Number(req.body?.qty || 0);
-      const price = Number(req.body?.price || 0);
       const ingredientId = req.body?.ingredientId
         ? String(req.body.ingredientId)
         : "";
@@ -201,8 +201,7 @@ module.exports = ({ db } = {}) => {
       const employee =
         employeeFromAuth || String(req.body?.employee || "Inventory User");
 
-      // ✅ prefer body.reason; you *can* drop the fallback if you don't care about old clients
-      const reason = String(req.body?.reason || "");
+      const reason = String(req.body?.reason || "").trim();
 
       const tsRaw = req.body?.ts;
       const tsVal =
@@ -212,21 +211,20 @@ module.exports = ({ db } = {}) => {
         new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" })
       );
 
-      const id = await db.tx(async (conn) => {
-        // 1) insert activity row (column is now `reason`)
+      const insertedId = await db.tx(async (conn) => {
+        // 1) insert activity row (no price column anymore)
         const insert = await conn.execute(
           `INSERT INTO inventory_activity
-            (ts, employee, reason, io, qty, price, ingredientId, ingredientName, createdAt, updatedAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             now,
             employee,
             reason,
             io,
             qty,
-            price,
-            ingredientId,
-            ingredientName,
+            ingredientId || null,
+            ingredientName || "",
             now,
             now,
           ]
@@ -240,31 +238,94 @@ module.exports = ({ db } = {}) => {
           await conn.execute(
             `UPDATE inventory_ingredients
                 SET currentStock = GREATEST(0, COALESCE(currentStock,0) + ?),
-                    price = ?,
                     updatedAt = ?
               WHERE id = ?`,
-            [delta, price, new Date(), Number(ingredientId)]
+            [delta, new Date(), Number(ingredientId)]
           );
         }
 
         return newId;
       });
 
+      const rowTs = tsVal ? tsVal.toISOString() : now.toISOString();
+
       const row = {
-        id: String(id),
-        ts: tsVal ? tsVal.toISOString() : now.toISOString(),
+        id: String(insertedId),
+        ts: rowTs,
         employee,
-        reason,        // 👈 return Reason
+        reason,
         io,
         qty,
-        price,
         ingredientId,
         ingredientName,
       };
 
-      // ... audit logging block stays the same ...
+      /* ------------------------------------------------------------
+         AUDIT LOG: Stock In / Out for ingredient (qty-only)
+         ------------------------------------------------------------ */
+      if (ingredientId) {
+        try {
+          const afterRows = await db.query(
+            `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+            [Number(ingredientId)]
+          );
+          const after = afterRows[0] || null;
 
-      res.status(201).json({ ok: true, id: String(id), row });
+          if (after) {
+            const delta = io === "In" ? qty : -qty;
+            const afterQty = Number(after.currentStock || 0);
+            const beforeQty = afterQty - delta;
+
+            const before = {
+              ...after,
+              currentStock: beforeQty,
+            };
+
+            const changes = {
+              currentStock: {
+                before: beforeQty,
+                after: afterQty,
+              },
+            };
+
+            const movement = {
+              direction: io,         // "In" | "Out"
+              qty,
+              beforeQty,
+              afterQty,
+              reason,
+              at: rowTs,
+            };
+
+            const statusMessage = `Inventory ${
+              io === "In" ? "stock in" : "stock out"
+            } for "${after.name}" (${qty}).`;
+
+            await logInventoryIngredientAuditSafe(db, req, {
+              action:
+                io === "In"
+                  ? "Inventory - Ingredient Updated (Stock In)"
+                  : "Inventory - Ingredient Updated (Stock Out)",
+              actionType: "update",
+              ingredient: after,
+              before,
+              after,
+              changes,
+              extra: {
+                statusMessage,
+                actionDetails: {
+                  ingredientId: String(after.id),
+                  movement,
+                },
+              },
+            });
+          }
+        } catch (err) {
+          console.error("[inv-activity] audit log failed:", err);
+        }
+      }
+
+      res.status(201).json({ ok: true, id: String(insertedId), row });
     } catch (e) {
       console.error("[inv-activity] create failed:", e);
       res.status(500).json({ ok: false, error: e.message || "Create failed" });

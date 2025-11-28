@@ -18,7 +18,7 @@ module.exports = function posShiftRouterFactory({ db }) {
 
   // ---------- schemas ----------
   const OpenBody = z.object({
-    terminal_id: z.coerce.string().trim().min(1).default("TERMINAL-2"),
+    terminal_id: z.coerce.string().trim().min(1).default("TERMINAL-1"),
     opening_float: z.coerce.number().nonnegative().default(0),
     denominations: z
       .array(
@@ -29,6 +29,13 @@ module.exports = function posShiftRouterFactory({ db }) {
       )
       .optional()
       .default([]),
+    note: z.coerce.string().trim().max(255).optional(),
+  });
+
+  // close shift body
+  const CloseBody = z.object({
+    terminal_id: z.coerce.string().trim().min(1).default("TERMINAL-1"),
+    declared_cash: z.coerce.number().nonnegative().optional(),
     note: z.coerce.string().trim().max(255).optional(),
   });
 
@@ -129,6 +136,7 @@ module.exports = function posShiftRouterFactory({ db }) {
         }
 
         // 2) insert main shift record
+        //    status ENUM('Open','Remitted','Voided')  -> use 'Open'
         const [ins] = await conn.query(
           `
           INSERT INTO pos_shifts (
@@ -139,7 +147,7 @@ module.exports = function posShiftRouterFactory({ db }) {
             opening_float,
             opening_note
           )
-          VALUES (?, ?, 'open', NOW(), ?, ?)
+          VALUES (?, ?, 'Open', NOW(), ?, ?)
           `,
           [terminal_id, employeeId, opening_float, note || null]
         );
@@ -164,9 +172,9 @@ module.exports = function posShiftRouterFactory({ db }) {
             const qty = qtyMap.get(val) ?? 0;
             await conn.query(
               `
-              INSERT INTO pos_shift_denominations (shift_id, denom_value, qty)
+              INSERT INTO pos_shift_denoms (shift_id, denom_value, qty)
               VALUES (?, ?, ?)
-            `,
+              `,
               [shiftId, val, qty]
             );
             inserted.push({ denom_value: val, qty });
@@ -223,7 +231,7 @@ module.exports = function posShiftRouterFactory({ db }) {
       }
 
       const terminalId = String(
-        req.query.terminal_id || "TERMINAL-2"
+        req.query.terminal_id || "TERMINAL-1"
       ).trim();
 
       const sql = `
@@ -245,6 +253,123 @@ module.exports = function posShiftRouterFactory({ db }) {
       return res.status(500).json({
         ok: false,
         error: DEBUG_POS ? err.message : "Failed to load latest open shift",
+      });
+    }
+  });
+
+  // ---------- POST /pos/shift/close ----------
+  router.post("/close", requireAuth, async (req, res) => {
+    let body;
+    try {
+      body = CloseBody.parse(req.body || {});
+    } catch (e) {
+      const first = e?.issues?.[0];
+      return res.status(400).json({
+        ok: false,
+        error: `${first?.path?.join(".") || "field"}: ${first?.message}`,
+      });
+    }
+
+    const { terminal_id, declared_cash, note } = body;
+
+    const employeeId =
+      req.user?.employeeId || req.user?.sub || req.user?.id || null;
+
+    if (!employeeId) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Authenticated employee not found" });
+    }
+
+    try {
+      if (typeof db.tx !== "function") {
+        throw new Error("db.tx helper is not available");
+      }
+
+      const shift = await db.tx(async (conn) => {
+        // 1) find latest open shift for this employee + terminal
+        const [rows] = await conn.query(
+          `
+          SELECT shift_id
+          FROM pos_shifts
+          WHERE employee_id = ?
+            AND terminal_id = ?
+            AND LOWER(status) = 'open'
+          ORDER BY opened_at DESC
+          LIMIT 1
+          `,
+          [employeeId, terminal_id]
+        );
+
+        if (!Array.isArray(rows) || rows.length === 0) {
+          const err = new Error("No open shift found for this terminal");
+          err.status = 404;
+          err.code = "NO_OPEN_SHIFT";
+          throw err;
+        }
+
+        const shiftId = rows[0].shift_id;
+
+        // 2) rich update using your actual columns
+        //    status ENUM('Open','Remitted','Voided')
+        //    declared_cash, variance_cash, closing_note
+        try {
+          await conn.query(
+            `
+            UPDATE pos_shifts
+            SET status = 'Remitted',
+                closed_at = NOW(),
+                closing_note = COALESCE(?, closing_note),
+                declared_cash = COALESCE(?, declared_cash),
+                variance_cash = COALESCE(?, declared_cash) - expected_cash
+            WHERE shift_id = ?
+            `,
+            [
+              note || null,
+              declared_cash != null ? declared_cash : null,
+              declared_cash != null ? declared_cash : null,
+              shiftId,
+            ]
+          );
+        } catch (e) {
+          // if something fails, do a minimal "close" that still uses valid ENUM
+          console.warn(
+            "[POS shift] rich close update failed, falling back to minimal:",
+            e.message
+          );
+          await conn.query(
+            `
+            UPDATE pos_shifts
+            SET status = 'Remitted',
+                closed_at = NOW()
+            WHERE shift_id = ?
+            `,
+            [shiftId]
+          );
+        }
+
+        const [afterRows] = await conn.query(
+          `SELECT * FROM pos_shifts WHERE shift_id = ?`,
+          [shiftId]
+        );
+        return afterRows[0] || null;
+      });
+
+      if (DEBUG_POS) {
+        console.log("[Backoffice POS] closed shift:", shift?.shift_id, {
+          terminal_id,
+          employeeId,
+          declared_cash,
+        });
+      }
+
+      return res.json({ ok: true, shift });
+    } catch (err) {
+      console.error("[POS shift] POST /pos/shift/close failed:", err);
+      return res.status(err.status || 500).json({
+        ok: false,
+        error: err?.message || "Failed to close shift",
+        code: err?.code || undefined,
       });
     }
   });

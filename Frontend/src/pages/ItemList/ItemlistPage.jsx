@@ -95,7 +95,7 @@ export default function ItemlistPage() {
     description: "",
     categoryId: "",
     categoryName: "",
-    price: "", // Item level price
+    price: "", // Item level selling price
     imageFile: null,
     imagePreview: "",
   };
@@ -103,11 +103,11 @@ export default function ItemlistPage() {
   const [f, setF] = useState(emptyForm);
 
   // ingredients from inventory (for ingredient selector inside Add/Edit)
-  const [inventory, setInventory] = useState([]); // {id,name,category,type,currentStock,price}
+  const [inventory, setInventory] = useState([]); // {id,name,category,type,currentStock}
   const [ingLoading, setIngLoading] = useState(false);
 
-  // ingredients used in item (create/edit)
-  const [itemIngredients, setItemIngredients] = useState([]); // each: { id, ingredientId, name, category, unit, currentStock, qty, price, cost }
+  // ingredients used in item (create/edit) – no pricing/costing, just composition
+  const [itemIngredients, setItemIngredients] = useState([]); // each: { id, ingredientId, name, category, unit, currentStock, qty }
 
   // selection
   const [selected, setSelected] = useState([]);
@@ -142,7 +142,7 @@ export default function ItemlistPage() {
   async function loadCategories() {
     try {
       const res = await fetch(`/api/categories`, { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({}));
       const list = (res.ok && data?.ok && Array.isArray(data.categories)) ? data.categories : [];
       setCats(list.map(c => ({ id: c.id, name: c.name })));
     } catch {
@@ -175,7 +175,7 @@ export default function ItemlistPage() {
     }
   }
 
-  // Load inventory ingredients for selector
+  // Load inventory ingredients for selector (no pricing)
   async function loadInventory() {
     setIngLoading(true);
     try {
@@ -188,7 +188,6 @@ export default function ItemlistPage() {
         category: x.category || "",
         unit: x.type || "",
         currentStock: Number(x.currentStock || 0),
-        price: Number(x.price || 0),
       })));
     } catch {
       setInventory([]);
@@ -246,11 +245,19 @@ export default function ItemlistPage() {
     setF(s => ({ ...s, categoryId: id, categoryName: found?.name || "" }));
   }
 
-  // Add one ingredient blank row
+  // Add one ingredient blank row (no price/cost)
   function addIngredientRow() {
     setItemIngredients(prev => [
       ...prev,
-      { id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, ingredientId: "", name: "", category: "", unit: "", currentStock: 0, qty: "", price: "", cost: 0 }
+      {
+        id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        ingredientId: "",
+        name: "",
+        category: "",
+        unit: "",
+        currentStock: 0,
+        qty: "",
+      },
     ]);
   }
 
@@ -259,11 +266,12 @@ export default function ItemlistPage() {
     setItemIngredients(prev => prev.filter(r => r.id !== id));
   }
 
-  // Select ingredient from inventory
+  // Select ingredient from inventory (no unit price / cost logic)
   function onSelectInventory(rowId, ingredientId) {
     const selectedIng = inventory.find(i => i.id === ingredientId);
     setItemIngredients(prev => prev.map(r => {
       if (r.id !== rowId) return r;
+
       if (!selectedIng) {
         return {
           ...r,
@@ -272,14 +280,9 @@ export default function ItemlistPage() {
           category: "",
           unit: "",
           currentStock: 0,
-          price: "",
           qty: "",
-          cost: 0,
         };
       }
-
-      const unitPrice = Number(selectedIng.price || 0);
-      const qtyN = parseFloat(r.qty) || 0;
 
       return {
         ...r,
@@ -288,49 +291,33 @@ export default function ItemlistPage() {
         category: selectedIng.category,
         unit: selectedIng.unit,
         currentStock: selectedIng.currentStock,
-        // store unit price
-        price: unitPrice,
-        // keep existing qty
+        // keep existing qty as-is
         qty: r.qty || "",
-        // cost = qty * unit price
-        cost: +(qtyN * unitPrice).toFixed(2),
       };
     }));
   }
 
-  // Update qty or price and auto-calc cost
+  // Update qty for ingredient row (no price/cost)
   function onRowChange(rowId, field, rawValue) {
+    if (field !== "qty") return;
     setItemIngredients(prev => prev.map(r => {
       if (r.id !== rowId) return r;
 
-      let v = String(rawValue ?? "").replace(/[^0-9.]/g, "");
-      if (field === "qty") {
-        // 🔹 allow ONLY whole numbers (no decimals)
-        v = v.replace(/\D/g, ""); // strip everything that is not 0–9
+      let v = String(rawValue ?? "").replace(/\D/g, ""); // only digits
 
-        // if user cleared the field, keep it empty
-        if (v === "") {
-          const newRow = {
-            ...r,
-            qty: "",
-            cost: 0,
-          };
-          return newRow;
-        }
-
-        // normalize leading zeros: "05" → "5"
-        v = String(parseInt(v, 10));
+      if (v === "") {
+        return {
+          ...r,
+          qty: "",
+        };
       }
 
-      const newRow = { ...r, [field]: v };
+      v = String(parseInt(v, 10));
 
-      const qtyN = parseFloat(newRow.qty) || 0;
-      const unitPrice = parseFloat(newRow.price) || 0;
-
-      // cost for this ingredient row
-      newRow.cost = +(qtyN * unitPrice).toFixed(2);
-
-      return newRow;
+      return {
+        ...r,
+        qty: v,
+      };
     }));
   }
 
@@ -340,7 +327,7 @@ export default function ItemlistPage() {
       prev.map(r => {
         if (r.id !== rowId) return r;
 
-        // When category changes, clear ingredient selection + stock/price/qty/cost
+        // When category changes, clear ingredient selection + stock/qty
         return {
           ...r,
           category: categoryName || "",
@@ -349,16 +336,10 @@ export default function ItemlistPage() {
           unit: "",
           currentStock: 0,
           qty: "",
-          price: "",
-          cost: 0,
         };
       })
     );
   }
-
-  const computeCostOverall = () => {
-    return itemIngredients.reduce((s, r) => s + (Number(r.cost || 0)), 0);
-  };
 
   // ========== CREATE ==========
   async function saveItem() {
@@ -395,19 +376,16 @@ export default function ItemlistPage() {
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
       const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
 
+      // Ingredients payload – composition only, no price/cost
       const ingPayload = itemIngredients
-        .filter(r => r.ingredientId && (String(r.qty).trim() || String(r.price).trim()))
+        .filter(r => r.ingredientId && String(r.qty).trim())
         .map(r => ({
           ingredientId: r.ingredientId,
           name: r.name,
           category: r.category,
           unit: r.unit,
           qty: Number(r.qty || 0),
-          price: Number(r.price || 0),
-          cost: Number(r.cost || 0),
         }));
-
-      const costOverall = ingPayload.reduce((s, x) => s + (Number(x.cost || 0)), 0);
 
       const form = new FormData();
       form.append("name", cleanName);
@@ -417,7 +395,7 @@ export default function ItemlistPage() {
       form.append("categoryName", cleanCatName);        // 🔴 always
       if (f.imageFile) form.append("image", f.imageFile);
       form.append("ingredients", JSON.stringify(ingPayload));
-      form.append("costOverall", String(costOverall));
+      // 🔸 no costOverall appended
 
       const res = await fetch(`/api/items`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
@@ -480,29 +458,26 @@ export default function ItemlistPage() {
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
       const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
 
+      // Ingredients payload – composition only, no price/cost
       const ingPayload = itemIngredients
-        .filter(r => r.ingredientId && (String(r.qty).trim() || String(r.price).trim()))
+        .filter(r => r.ingredientId && String(r.qty).trim())
         .map(r => ({
           ingredientId: r.ingredientId,
           name: r.name,
           category: r.category,
           unit: r.unit,
           qty: Number(r.qty || 0),
-          price: Number(r.price || 0),
-          cost: Number(r.cost || 0),
         }));
-
-      const costOverall = ingPayload.reduce((s, x) => s + (Number(x.cost || 0)), 0);
 
       const form = new FormData();
       form.append("name", cleanName);
       form.append("description", cleanDesc);
       form.append("price", String(itemPrice));
-      form.append("categoryId", f.categoryId);         // 🔴 always (no empty string)
-      form.append("categoryName", cleanCatName);       // 🔴 always (no empty string)
+      form.append("categoryId", f.categoryId);         // 🔴 always
+      form.append("categoryName", cleanCatName);       // 🔴 always
       form.append("ingredients", JSON.stringify(ingPayload));
-      form.append("costOverall", String(costOverall));
       if (f.imageFile) form.append("image", f.imageFile);
+      // 🔸 no costOverall appended
 
       const res = await fetch(`/api/items/${encodeURIComponent(editingId)}`, {
         method: "PATCH",
@@ -545,6 +520,7 @@ export default function ItemlistPage() {
       imagePreview: row.imageUrl || "",
     };
 
+    // Map ingredients from row – ignore old price/cost if present
     const initialIngredients = Array.isArray(row.ingredients)
       ? row.ingredients.map((x, idx) => {
           const inventoryItem = inventory.find((inv) => inv.id === x.ingredientId);
@@ -559,11 +535,6 @@ export default function ItemlistPage() {
             unit,
             currentStock,
             qty: x.qty != null ? String(x.qty) : "",
-            price: x.price != null ? String(x.price) : "",
-            cost:
-              x.cost != null
-                ? Number(x.cost)
-                : Number(x.qty || 0) * Number(x.price || 0),
           };
         })
       : [];
@@ -575,7 +546,7 @@ export default function ItemlistPage() {
     setOpenEdit(true);
     setEditShowErrors(false);
 
-    // ✅ Take the "initial" snapshot from the values we just computed
+    // initial snapshot for dirty tracking
     initialEditRef.current = snapshotFormFrom(nextF, initialIngredients);
     editTouchedRef.current = false;
   }
@@ -677,7 +648,6 @@ export default function ItemlistPage() {
     setPage(0);
   };
 
-
   // ✦ Track "touched" + initial snapshots
   const createTouchedRef = useRef(false);
   const editTouchedRef   = useRef(false);
@@ -691,7 +661,7 @@ export default function ItemlistPage() {
       description: String(formState.description || "").trim(),
       categoryId: String(formState.categoryId || ""),
       categoryName: String(formState.categoryName || "").trim(),
-      price: String(formState.price || "").trim(),
+      price: String(formState.price || "").trim(), // item price still tracked
       imageFile: !!formState.imageFile,
       imagePreview: !!formState.imagePreview,
     };
@@ -699,7 +669,6 @@ export default function ItemlistPage() {
     const ings = (ingredientsState || []).map((r) => ({
       ingredientId: String(r.ingredientId || ""),
       qty: String(r.qty || "").trim(),
-      price: String(r.price || "").trim(),
     }));
 
     return { f: cleanF, ings };
@@ -707,29 +676,20 @@ export default function ItemlistPage() {
 
   // ✦ Normalize the form for stable comparison (current state)
   function snapshotForm() {
-    return snapshotFormFrom(f, itemIngredients);
-  }
-
-  // ✦ Normalize the form for stable comparison
-  function snapshotForm() {
     const cleanF = {
       ...f,
-      // trim strings so whitespace edits don't false-trigger
       name: String(f.name || "").trim(),
       description: String(f.description || "").trim(),
       categoryId: String(f.categoryId || ""),
       categoryName: String(f.categoryName || "").trim(),
       price: String(f.price || "").trim(),
-      imageFile: !!f.imageFile,      // only presence matters for "dirty" detection
-      imagePreview: !!f.imagePreview // ditto
+      imageFile: !!f.imageFile,
+      imagePreview: !!f.imagePreview,
     };
 
-    // Only fields we actually edit on ingredients
     const ings = itemIngredients.map(r => ({
       ingredientId: String(r.ingredientId || ""),
       qty: String(r.qty || "").trim(),
-      price: String(r.price || "").trim(),
-      // name/category/unit/currentStock/cost are derived; we don’t include them
     }));
 
     return { f: cleanF, ings };
@@ -760,7 +720,7 @@ export default function ItemlistPage() {
     if (!openEdit) return false;
     const hasValidName = isValidName(normalizeName(f.name || ""));
     if (!hasValidName) return false;
-    if (!f.categoryId) return false;               // 🔴 must have category
+    if (!f.categoryId) return false;
     return isDirty("edit");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openEdit, f, itemIngredients]);
@@ -779,15 +739,15 @@ export default function ItemlistPage() {
 
   // Reusable menu styling: same scrollbar + full-bleed highlight
   const dropdownMenuProps = {
-    MenuListProps: { disablePadding: true },   // remove default List padding
+    MenuListProps: { disablePadding: true },
     PaperProps: {
-      className: "scroll-x",                   // ✅ picks up your global scrollbar design
+      className: "scroll-x",
       sx: {
         maxHeight: 320,
-        "& .MuiList-root": { py: 0 },          // extra safety
+        "& .MuiList-root": { py: 0 },
         "& .MuiMenuItem-root": {
-          px: 1.5,                             // keep text inset
-          mx: -1.5,                            // make hover/selected bg reach edges
+          px: 1.5,
+          mx: -1.5,
           borderRadius: 0,
         },
         "& .MuiMenuItem-root.Mui-disabled": {
@@ -838,7 +798,6 @@ export default function ItemlistPage() {
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
 
-            {/* 🔎 NEW search field (left of Category dropdown) */}
             <TextField
               size="small"
               placeholder="Search item or category"
@@ -929,7 +888,7 @@ export default function ItemlistPage() {
                   <TableCell><Typography fontWeight={600}>Item Name</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Category</Typography></TableCell>
                   <TableCell><Typography fontWeight={600}>Price</Typography></TableCell>
-                  {/* <TableCell><Typography fontWeight={600}>Cost Overall</Typography></TableCell> */}
+                  {/* Cost Overall column removed */}
                   <TableCell><Typography fontWeight={600}>Description</Typography></TableCell>
                   <TableCell align="center"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
@@ -994,11 +953,15 @@ export default function ItemlistPage() {
                       <TableCell><Typography fontWeight={600}>{r.name}</Typography></TableCell>
                       <TableCell><Typography>{r.categoryName || "—"}</Typography></TableCell>
                       <TableCell>
-                        <Typography>{r.price != null ? `₱${Number(r.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Typography>
+                        <Typography>
+                          {r.price != null
+                            ? `₱${Number(r.price).toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}`
+                            : "—"}
+                        </Typography>
                       </TableCell>
-                      {/* <TableCell>
-                        <Typography>{r.costOverall != null ? `₱${Number(r.costOverall).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Typography>
-                      </TableCell> */}
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Typography noWrap title={r.description || ""}>{r.description || "—"}</Typography>
                       </TableCell>
@@ -1046,8 +1009,8 @@ export default function ItemlistPage() {
             width: { xs: "100%", sm: "92%", md: "80%" },
             m: { xs: 0, sm: 2 },
             maxHeight: { xs: "100dvh", sm: "calc(100dvh - 64px)" },
-            overflow: "hidden",             // ✅ keep children inside
-            display: "flex",                // ✅ stack title/content/actions
+            overflow: "hidden",
+            display: "flex",
             flexDirection: "column",
           }
         }}
@@ -1068,8 +1031,8 @@ export default function ItemlistPage() {
             flexDirection: "column",
             gap: 2,
             pt: 2,
-            flexGrow: 1,            // ✅ fill remaining height
-            overflowY: "auto",      // ✅ vertical scroll inside modal
+            flexGrow: 1,
+            overflowY: "auto",
             overflowX: "hidden",
             px: { xs: 2, sm: 3 },
           }}
@@ -1111,10 +1074,9 @@ export default function ItemlistPage() {
                   value={f.categoryId || ""}
                   label="Category"
                   onChange={(e) => onPickCategory(e.target.value)}
-                  onBlur={() => setCreateTouched((s) => ({ ...s, category: true }))}  // mark touched
+                  onBlur={() => setCreateTouched((s) => ({ ...s, category: true }))}
                   MenuProps={dropdownMenuProps}
                 >
-                  {/* 🔴 remove "None" */}
                   {cats.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
                       {c.name}
@@ -1164,24 +1126,22 @@ export default function ItemlistPage() {
               elevation={0}
               sx={{
                 maxHeight: { xs: 300, sm: 400 },
-                overflowY: "auto",          // ✅ vertical scroll only
-                overflowX: "hidden",        // ✅ prevent side overflow
+                overflowY: "auto",
+                overflowX: "hidden",
                 "& table": {
                   width: "100%",
                   tableLayout: "fixed",
                   wordWrap: "break-word",
                 },
-                // ▼▼ Scoped compact padding just for INGREDIENTS table ▼▼
                 "& th, & td": {
-                  px: 1,         // 8px left/right
-                  py: 0.5,       // 4px top/bottom
+                  px: 1,
+                  py: 0.5,
                 },
-                "& .MuiInputBase-root": { height: 36 },              // compact Select/TextField height
-                "& .MuiSelect-select": { py: 0.75, px: 1 },          // compact select inner padding
-                "& .MuiInputAdornment-root": { m: 0 },               // tighten adornments
-                // ✅ Mobile-friendly stacked table (unchanged)
+                "& .MuiInputBase-root": { height: 36 },
+                "& .MuiSelect-select": { py: 0.75, px: 1 },
+                "& .MuiInputAdornment-root": { m: 0 },
                 "@media (max-width:600px)": {
-                  "& thead": { display: "none" }, // hide headers
+                  "& thead": { display: "none" },
                   "& tr": {
                     display: "block",
                     borderBottom: "1px solid rgba(0,0,0,0.1)",
@@ -1197,7 +1157,7 @@ export default function ItemlistPage() {
                     padding: "8px 6px !important",
                     border: "none !important",
                     "&::before": {
-                      content: "attr(data-label)",  // use table headers as labels
+                      content: "attr(data-label)",
                       fontWeight: 600,
                       color: "rgba(0,0,0,0.6)",
                       fontSize: "0.8rem",
@@ -1221,9 +1181,6 @@ export default function ItemlistPage() {
                     <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                     <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                     <TableCell data-label="Qty" align="center">Qty</TableCell>
-                    {/* <TableCell data-label="Costing Per Pack" align="center">
-                      Costing Per Pack
-                    </TableCell> */}
                     <TableCell data-label="Action" align="center">Action</TableCell>
                   </TableRow>
                 </TableHead>
@@ -1257,7 +1214,6 @@ export default function ItemlistPage() {
 
                     return (
                       <TableRow key={row.id}>
-                        {/* Category first column (dropdown) */}
                         <TableCell
                           data-label="Category"
                           align="center"
@@ -1284,7 +1240,6 @@ export default function ItemlistPage() {
                           </FormControl>
                         </TableCell>
 
-                        {/* Ingredient second column, filtered by category */}
                         <TableCell
                           data-label="Ingredient"
                           align="center"
@@ -1354,32 +1309,6 @@ export default function ItemlistPage() {
                           />
                         </TableCell>
 
-                        {/* <TableCell
-                          data-label="Costing Per Pack"
-                          align="center"
-                          sx={{ minWidth: 112 }}
-                        >
-                          <TextField
-                            size="small"
-                            // Costing Per Pack (unit cost copied from Inventory)
-                            value={
-                              row.price != null
-                                ? Number(row.price).toFixed(2)
-                                : ""}
-                            inputMode="decimal"
-                            placeholder="0.00"
-                            fullWidth
-                            disabled
-                            InputProps={{
-                              startAdornment: (
-                                <InputAdornment position="start">
-                                  ₱
-                                </InputAdornment>
-                              ),
-                            }}
-                          />
-                        </TableCell> */}
-
                         <TableCell
                           data-label="Action"
                           align="center"
@@ -1402,7 +1331,7 @@ export default function ItemlistPage() {
             </TableContainer>
           </Stack>
 
-          {/* Cost + Item Price + Profit/Margin in one row */}
+          {/* Item Price only – no cost/profit */}
           <Stack
             direction={{ xs: "column", sm: "row" }}
             spacing={2}
@@ -1410,19 +1339,6 @@ export default function ItemlistPage() {
             justifyContent="flex-end"
             sx={{ mt: 2, flexWrap: "wrap" }}
           >
-            {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <TextField
-                label="Cost Overall"
-                size="small"
-                value={computeCostOverall().toFixed(2)}
-                InputProps={{
-                  startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                  readOnly: true
-                }}
-                sx={{ width: 140 }}
-              />
-            </Box> */}
-
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
                 label="Item Price"
@@ -1437,22 +1353,6 @@ export default function ItemlistPage() {
                 sx={{ width: 140 }}
               />
             </Box>
-
-            {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <TextField
-                label="Profit / Margin"
-                size="small"
-                value={(() => {
-                  const price = parseFloat(f.price || 0);
-                  const cost = computeCostOverall();
-                  const profit = price - cost;
-                  const margin = price > 0 ? ((profit / price) * 100).toFixed(1) : "0";
-                  return `₱${profit.toFixed(2)} • ${margin}%`;
-                })()}
-                InputProps={{ readOnly: true }}
-                sx={{ width: 220 }}
-              />
-            </Box> */}
           </Stack>
 
           {saveErr && (
@@ -1484,7 +1384,7 @@ export default function ItemlistPage() {
             width: { xs: "100%", sm: "92%", md: "80%" },
             m: { xs: 0, sm: 2 },
             maxHeight: { xs: "100dvh", sm: "calc(100dvh - 64px)" },
-            overflow: "hidden",            // ✅ keep content inside
+            overflow: "hidden",
             display: "flex",
             flexDirection: "column",
           }
@@ -1507,7 +1407,7 @@ export default function ItemlistPage() {
             gap: 2,
             pt: 2,
             flexGrow: 1,
-            overflowY: "auto",      // ✅ vertical scroll inside
+            overflowY: "auto",
             overflowX: "hidden",
             px: { xs: 2, sm: 3 },
           }}
@@ -1556,7 +1456,6 @@ export default function ItemlistPage() {
                     "& .MuiSelect-select": { paddingY: "16.5px" },
                   }}
                 >
-                  {/* 🔴 remove "None" */}
                   {cats.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
                       {c.name}
@@ -1615,7 +1514,6 @@ export default function ItemlistPage() {
                     tableLayout: "fixed",
                     wordWrap: "break-word",
                   },
-                  // ▼▼ Scoped compact padding just for INGREDIENTS table ▼▼
                   "& th, & td": {
                     px: 1,
                     py: 0.5,
@@ -1623,9 +1521,8 @@ export default function ItemlistPage() {
                   "& .MuiInputBase-root": { height: 36 },
                   "& .MuiSelect-select": { py: 0.75, px: 1 },
                   "& .MuiInputAdornment-root": { m: 0 },
-                  // ✅ Mobile-friendly stacked table (unchanged)
                   "@media (max-width:600px)": {
-                    "& thead": { display: "none" }, // hide headers
+                    "& thead": { display: "none" },
                     "& tr": {
                       display: "block",
                       borderBottom: "1px solid rgba(0,0,0,0.1)",
@@ -1641,7 +1538,7 @@ export default function ItemlistPage() {
                       padding: "8px 6px !important",
                       border: "none !important",
                       "&::before": {
-                        content: "attr(data-label)",  // use table headers as labels
+                        content: "attr(data-label)",
                         fontWeight: 600,
                         color: "rgba(0,0,0,0.6)",
                         fontSize: "0.8rem",
@@ -1665,7 +1562,6 @@ export default function ItemlistPage() {
                       <TableCell data-label="Ingredient" align="center">Ingredient</TableCell>
                       <TableCell data-label="Unit / In stock" align="center">Unit / In stock</TableCell>
                       <TableCell data-label="Qty" align="center">Qty</TableCell>
-                      {/* <TableCell data-label="Costing Per Pack" align="center">Costing Per Pack</TableCell> */}
                       <TableCell data-label="Action" align="center">Action</TableCell>
                     </TableRow>
                   </TableHead>
@@ -1699,7 +1595,6 @@ export default function ItemlistPage() {
 
                       return (
                         <TableRow key={row.id}>
-                          {/* Category first */}
                           <TableCell
                             data-label="Category"
                             align="center"
@@ -1726,7 +1621,6 @@ export default function ItemlistPage() {
                             </FormControl>
                           </TableCell>
 
-                          {/* Ingredient second, filtered by category */}
                           <TableCell
                             data-label="Ingredient"
                             align="center"
@@ -1796,32 +1690,6 @@ export default function ItemlistPage() {
                             />
                           </TableCell>
 
-                          {/* <TableCell
-                            data-label="Costing Per Pack"
-                            align="center"
-                            sx={{ minWidth: 112 }}
-                          >
-                            <TextField
-                              size="small"
-                              // Costing Per Pack (unit cost copied from Inventory)
-                              value={
-                                row.price != null
-                                  ? Number(row.price).toFixed(2)
-                                  : ""}
-                              inputMode="decimal"
-                              placeholder="0.00"
-                              fullWidth
-                              disabled
-                              InputProps={{
-                                startAdornment: (
-                                  <InputAdornment position="start">
-                                    ₱
-                                  </InputAdornment>
-                                ),
-                              }}
-                            />
-                          </TableCell> */}
-
                           <TableCell
                             data-label="Action"
                             align="center"
@@ -1843,7 +1711,7 @@ export default function ItemlistPage() {
                 </Table>
               </TableContainer>
 
-              {/* Cost row */}
+              {/* Item Price only */}
               <Stack
                 direction={{ xs: "column", sm: "row" }}
                 spacing={2}
@@ -1851,19 +1719,6 @@ export default function ItemlistPage() {
                 justifyContent="flex-end"
                 sx={{ mt: 2, flexWrap: "wrap" }}
               >
-                {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <TextField
-                    label="Cost Overall"
-                    size="small"
-                    value={computeCostOverall().toFixed(2)}
-                    InputProps={{
-                      startAdornment: <InputAdornment position="start">₱</InputAdornment>,
-                      readOnly: true,
-                    }}
-                    sx={{ width: 140 }}
-                  />
-                </Box> */}
-
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <TextField
                     label="Item Price"
@@ -1878,22 +1733,6 @@ export default function ItemlistPage() {
                     sx={{ width: 140 }}
                   />
                 </Box>
-
-                {/* <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <TextField
-                    label="Profit / Margin"
-                    size="small"
-                    value={(() => {
-                      const price = parseFloat(f.price || 0);
-                      const cost = computeCostOverall();
-                      const profit = price - cost;
-                      const margin = price > 0 ? ((profit / price) * 100).toFixed(1) : "0";
-                      return `₱${profit.toFixed(2)} • ${margin}%`;
-                    })()}
-                    InputProps={{ readOnly: true }}
-                    sx={{ width: 220 }}
-                  />
-                </Box> */}
               </Stack>
             </Box>
           </Stack>

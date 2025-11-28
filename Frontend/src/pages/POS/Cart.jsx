@@ -175,7 +175,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
       denom_value: d.value,
       qty: Number(quantities[d.value] || 0),
     }));
-    const tid = terminalId || "TERMINAL-2";
+    const tid = terminalId || "TERMINAL-1";
 
     setSubmitting(true);
     try {
@@ -525,7 +525,7 @@ export default function Cart() {
 
   // For Backoffice POS we'll just use a static terminal + dummy shift for now.
 const { shiftId, hasShift, refreshLatestShift } = useShift();
-const terminalId = "TERMINAL-2";
+const terminalId = "TERMINAL-1";
   const employeeId = useMemo(
     () =>
       (user && (user.sub || user.employeeId)) ||

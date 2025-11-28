@@ -28,10 +28,6 @@ import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 const ACTIONS = [
   { key: "void_order", label: "Void order" },
   { key: "refund", label: "Refund transaction" },
-  {
-    key: "open_shift_cash_limit",
-    label: "Open shift when cash in drawer exceeds limit",
-  },
 ];
 
 export default function AuthorizationPinsPage() {
