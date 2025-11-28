@@ -139,7 +139,7 @@ const quantityOptions = [
   { value: 100, label: "100" },
 ];
 
-function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshLatestShift }) {
+function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshLatestShift, openShift }) {
   const [quantities, setQuantities] = useState({});
   const [entryMode, setEntryMode] = useState("quick"); // 'quick' | 'manual'
   const [submitting, setSubmitting] = useState(false);
@@ -171,6 +171,15 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
 
   const handleOpenShift = async () => {
     const total = calculateTotal();
+
+    // Optional: block zero-opening like on Cashier side
+    if (total <= 0) {
+      window.alert(
+        "Opening float cannot be ₱0. Please enter at least one denomination."
+      );
+      return;
+    }
+
     const denoms = denominations.map((d) => ({
       denom_value: d.value,
       qty: Number(quantities[d.value] || 0),
@@ -179,53 +188,75 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
 
     setSubmitting(true);
     try {
-      const res = await fetch(shiftApi("/open"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          terminal_id: tid,
-          opening_float: total,
-          denominations: denoms,
-          note: "",
-        }),
+      // ✅ Use ShiftContext.openShift (this no longer shows snackbar)
+      const shift = await openShift({
+        terminal_id: tid,
+        opening_float: total,
+        denominations: denoms,
+        note: "",
       });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || data?.ok === false) {
-        // 🔴 Special handling: shift already open on another terminal (e.g. TERMINAL-1 / Cashier)
-        if (
-          res.status === 409 &&
-          data?.code === "SHIFT_HELD_BY_OTHER_TERMINAL" &&
-          data?.holder
-        ) {
-          setConflict({
-            terminalId: data.holder.terminal_id || "Unknown terminal",
-            employeeName:
-              data.holder.employee_name || "Unknown employee",
-            employeeId: data.holder.employee_id || null,
-          });
-          setConflictOpen(true);
-          return; // don't throw; we already handled it with a dialog
-        }
-
-        // Other kinds of errors → show generic alert
-        throw new Error(
-          data?.error || `Failed to open shift (${res.status})`
-        );
-      }
-
-      // ✅ Success
       if (typeof refreshLatestShift === "function") {
         await refreshLatestShift();
       }
 
       if (typeof onShiftOpened === "function") {
-        onShiftOpened(data.shift || null);
+        onShiftOpened(shift || null);
       }
     } catch (err) {
       console.error("[Backoffice POS] open shift failed", err);
+
+      // Nice dialog for all shift-related conflicts
+      if (
+        err.status === 409 ||
+        (err.code && String(err.code).startsWith("SHIFT_"))
+      ) {
+        let message = err.message || "Failed to open shift.";
+        let cTerminalId = tid;
+        let cEmployeeName = null;
+        let cEmployeeId = null;
+
+        // Case 1: held by another terminal (Cashier or other)
+        if (
+          err.code === "SHIFT_HELD_BY_OTHER_TERMINAL" &&
+          err.holder
+        ) {
+          cTerminalId = err.holder.terminal_id || tid || "another terminal";
+
+          cEmployeeName =
+            err.holder.employee_name ||
+            err.holder.employee_username ||
+            err.holder.employee_email ||
+            (err.holder.employee_id
+              ? `Employee #${err.holder.employee_id}`
+              : "another user");
+
+          cEmployeeId = err.holder.employee_id || null;
+
+          message = `A shift is already open on ${cTerminalId} for ${cEmployeeName}. You can’t open another shift while that terminal’s shift is still open. Please ask them to remit/close their shift first.`;
+        }
+        // Case 2: same terminal / already open for this user
+        else if (
+          err.code === "SHIFT_ALREADY_OPEN_SAME_TERMINAL" ||
+          err.code === "SHIFT_ALREADY_OPEN" ||
+          err.message === "Shift already open"
+        ) {
+          cTerminalId = tid;
+          message = `A shift is already open on ${cTerminalId}. You can’t open another shift while this terminal’s shift is still open. Please remit/close the current shift first.`;
+        }
+
+        setConflict({
+          terminalId: cTerminalId,
+          employeeName: cEmployeeName,
+          employeeId: cEmployeeId,
+          message,
+        });
+        setConflictOpen(true);
+        setSubmitting(false);
+        return;
+      }
+
+      // Other unexpected errors → simple alert
       window.alert(err.message || "Failed to open shift");
     } finally {
       setSubmitting(false);
@@ -445,13 +476,13 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           variant="contained"
           onClick={handleOpenShift}
           color="primary"
-          disabled={false}// disabled={submitting}
+          disabled={submitting}
         >
           {submitting ? "Opening…" : "Open Shift"}
         </Button>
       </DialogActions>
 
-      {/* 🔴 Conflict dialog: someone else already has an open shift */}
+      {/* 🔴 Conflict dialog: cannot open shift */}
       <Dialog
         open={conflictOpen}
         onClose={() => {
@@ -460,26 +491,27 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Shift Already Open</DialogTitle>
+        <DialogTitle>Cannot Open Shift</DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            A shift is already open on{" "}
-            <strong>{conflict?.terminalId || "another terminal"}</strong>.
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            {conflict?.message ||
+              "A shift is already open. You can’t open another shift until the current one is remitted/closed."}
           </Typography>
-          <Typography variant="body2">
-            Current holder:{" "}
-            <strong>
-              {conflict?.employeeName || "Unknown employee"}
-            </strong>
-            {conflict?.employeeId
-              ? ` (ID: ${conflict.employeeId})`
-              : ""}
-            .
-          </Typography>
-          <Typography variant="body2" sx={{ mt: 1.5, opacity: 0.8 }}>
-            Please ask them to close their shift in the Cashier POS before
-            opening a Backoffice shift.
-          </Typography>
+
+          {/* Optional extra detail line */}
+          {conflict?.terminalId && (
+            <Typography variant="body2" sx={{ opacity: 0.8 }}>
+              Terminal: <strong>{conflict.terminalId}</strong>
+              {conflict?.employeeName && (
+                <>
+                  {" "}
+                  · Current holder:{" "}
+                  <strong>{conflict.employeeName}</strong>
+                  {conflict.employeeId ? ` (ID: ${conflict.employeeId})` : ""}
+                </>
+              )}
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
           <Button
@@ -490,7 +522,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           </Button>
         </DialogActions>
       </Dialog>
-
 
     </Dialog>
   );
@@ -520,12 +551,13 @@ export default function Cart() {
     viewMode,
   } = useCart();
 
-  // 🔹 Backoffice auth
-  const { user } = useAuth();
+// 🔹 Backoffice auth
+const { user } = useAuth();
 
-  // For Backoffice POS we'll just use a static terminal + dummy shift for now.
-const { shiftId, hasShift, refreshLatestShift } = useShift();
+// For Backoffice POS we'll just use a static terminal + dummy shift for now.
+const { shiftId, hasShift, refreshLatestShift, openShift } = useShift();
 const terminalId = "TERMINAL-1";
+
   const employeeId = useMemo(
     () =>
       (user && (user.sub || user.employeeId)) ||
@@ -1399,6 +1431,7 @@ const terminalId = "TERMINAL-1";
           open={shiftDialogOpen}
           terminalId={terminalId}
           refreshLatestShift={refreshLatestShift}
+          openShift={openShift}
           onClose={() => {
             setShiftDialogOpen(false);
             nextActionRef.current = null;

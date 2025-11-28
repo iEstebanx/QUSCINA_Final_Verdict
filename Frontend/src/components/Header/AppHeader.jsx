@@ -19,6 +19,7 @@ import {
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { useShift } from "@/context/ShiftContext";
 
 export const APPBAR_HEIGHT = 64;
 
@@ -32,6 +33,8 @@ export default function AppHeader({
   const navigate = useNavigate();
   const [params] = useSearchParams();
 
+  const { hasShift } = useShift() || {};
+
   const selectedOrderId = params.get("orderId");
   const isPosOrdersPage = location.pathname === "/pos/orders";
   const isPosChargePage = location.pathname === "/pos/charge";
@@ -43,7 +46,7 @@ export default function AppHeader({
   const labelMap = {
     "": "Home",
     dashboard: "Dashboard",
-    users: "Users",
+    users: "Users Management",
     reports: "Reports",
     menu: "Menu",
     inventory: "Inventory",
@@ -108,7 +111,7 @@ export default function AppHeader({
   };
 
   const handleRefundClick = () => {
-    if (!selectedOrderId) return;
+    if (!selectedOrderId || !hasShift) return;
     navigate("/pos/refund", {
       state: { orderId: Number(selectedOrderId) },
     });
@@ -197,7 +200,7 @@ export default function AppHeader({
             variant="contained"
             color="primary"
             size="small"
-            disabled={!selectedOrderId}
+            disabled={!selectedOrderId || !hasShift} // 🔹 disable if no shift
             onClick={handleRefundClick}
             sx={{
               textTransform: "none",

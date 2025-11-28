@@ -77,6 +77,9 @@ export default function POSLayout() {
             display: "flex",
             boxSizing: "border-box",
             pt: `${APPBAR_HEIGHT}px`,
+            // 👇 NEW: lock height to viewport minus header
+            height: `calc(100vh - ${APPBAR_HEIGHT}px)`,
+            overflow: "hidden",           // 👈 prevent main from scrolling; children will
             ml: {
               xs: 0,
               sm: isFullScreenPos
@@ -91,7 +94,15 @@ export default function POSLayout() {
           }}
         >
           {/* Left: page content (Menu, Orders, Refund, etc.) */}
-          <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+            }}
+          >
             <Outlet />
           </Box>
 

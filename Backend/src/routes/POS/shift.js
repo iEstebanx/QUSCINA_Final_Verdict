@@ -71,49 +71,47 @@ module.exports = function posShiftRouterFactory({ db }) {
       }
 
       const { shift, inserted } = await db.tx(async (conn) => {
-        // 0) BLOCK opening if ANY terminal already has an open shift
-        const [globalRows] = await conn.query(
-          `
-          SELECT 
-            s.shift_id,
-            s.terminal_id,
-            s.employee_id,
-            CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
-            e.username  AS employee_username,
-            e.email     AS employee_email
-          FROM pos_shifts s
-          LEFT JOIN employees e 
-            ON e.employee_id = s.employee_id
-          WHERE LOWER(s.status) = 'open'
-          ORDER BY s.opened_at DESC, s.shift_id DESC
-          LIMIT 1
-          `
+      // 0) STRICT: block opening if ANY shift in the system is already open
+      const [globalRows] = await conn.query(
+        `
+        SELECT 
+          s.shift_id,
+          s.terminal_id,
+          s.employee_id,
+          CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+          e.username  AS employee_username,
+          e.email     AS employee_email
+        FROM pos_shifts s
+        LEFT JOIN employees e 
+          ON e.employee_id = s.employee_id
+        WHERE LOWER(s.status) = 'open'
+        ORDER BY s.opened_at DESC, s.shift_id DESC
+        LIMIT 1
+        `
+      );
+
+      if (Array.isArray(globalRows) && globalRows.length > 0) {
+        const holder = globalRows[0];
+
+        const displayName =
+          holder.employee_name ||
+          holder.employee_username ||
+          holder.employee_email ||
+          `Employee #${holder.employee_id}`;
+
+        const err = new Error(
+          `Shift already open on ${holder.terminal_id} by ${displayName}`
         );
-        if (Array.isArray(globalRows) && globalRows.length > 0) {
-          const holder = globalRows[0];
-
-          // Only block if the open shift is on a *different* terminal
-          if (holder.terminal_id && holder.terminal_id !== terminal_id) {
-            const displayName =
-              holder.employee_name ||
-              holder.employee_username ||
-              holder.employee_email ||
-              `Employee #${holder.employee_id}`;
-
-            const err = new Error(
-              `Shift already open on ${holder.terminal_id} by ${displayName}`
-            );
-            err.status = 409;
-            err.code = "SHIFT_HELD_BY_OTHER_TERMINAL";
-            err.holder = {
-              terminal_id: holder.terminal_id,
-              shift_id: holder.shift_id,
-              employee_id: holder.employee_id,
-              employee_name: displayName,
-            };
-            throw err;
-          }
-        }
+        err.status = 409;
+        err.code = "SHIFT_ALREADY_OPEN_GLOBAL";
+        err.holder = {
+          terminal_id: holder.terminal_id,
+          shift_id: holder.shift_id,
+          employee_id: holder.employee_id,
+          employee_name: displayName,
+        };
+        throw err;
+      }
 
         // 1) prevent duplicate open shift for same user + terminal
         const [existingRows] = await conn.query(

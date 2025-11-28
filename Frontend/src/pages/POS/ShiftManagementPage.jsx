@@ -1,5 +1,5 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/ShiftManagementPage.jsx
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Box,
   Paper,
@@ -15,39 +15,72 @@ import {
   CircularProgress,
 } from "@mui/material";
 
+import { useShift } from "@/context/ShiftContext";
+
 const PHP = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
 export default function ShiftManagementPage() {
-  const [activeTab, setActiveTab] = useState("cash"); // "cash" | "end"
-
-  // 🔹 End-shift dialog state
+  // 🔹 dialogs & form state
   const [endDialogOpen, setEndDialogOpen] = useState(false);
+  const [successDialogOpen, setSuccessDialogOpen] = useState(false);
   const [declaredCash, setDeclaredCash] = useState("");
   const [note, setNote] = useState("");
   const [ending, setEnding] = useState(false);
 
-  // For now this is static; later you can wire this to your shift summary API
-  const shift = {
-    number: 61,
-    openedBy: "202500002",
-    openedAt: "11/29/2025, 12:40:18 AM",
-    startingCash: 7000,
-    cashPayments: 0,
-    gcashPayments: 0,
-    cashRefunds: 0,
-    cashIn: 0,
-    cashOut: 0,
-    expectedCash: 7000,
-    grossSales: 0,
-    refunds: 0,
-    discounts: 0,
+  // 🔹 from ShiftContext (raw row from pos_shifts)
+  const { shift: rawShift, clearShift, refreshLatestShift } = useShift();
+
+  // 🔹 Map DB row → UI fields
+  const shift = useMemo(() => {
+    if (!rawShift) return null;
+
+    return {
+      number: rawShift.shift_id,
+      openedBy: rawShift.employee_id,
+      openedAt: rawShift.opened_at
+        ? new Date(rawShift.opened_at).toLocaleString("en-PH", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "",
+
+      // Cash drawer
+      startingCash: Number(rawShift.opening_float || 0),
+      cashPayments: Number(rawShift.total_cash_payments || 0),
+      gcashPayments: Number(rawShift.total_online_payments || 0), // treat online as GCash
+      cashRefunds: Number(rawShift.total_refunds || 0), // or split later if you add separate column
+      cashIn: Number(rawShift.total_cash_in || 0),
+      cashOut: Number(rawShift.total_cash_out || 0),
+      expectedCash: Number(rawShift.expected_cash || 0),
+
+      // Sales summary
+      grossSales: Number(rawShift.total_gross_sales || 0),
+      refunds: Number(rawShift.total_refunds || 0),
+      discounts: Number(rawShift.total_discounts || 0),
+    };
+  }, [rawShift]);
+
+  const hasShift = !!shift;
+
+  const handleCashInOut = () => {
+    // completely ignore clicks if no open shift
+    if (!hasShift) return;
+
+    // TODO: wire to your Cash In/Out / Cash Management page or dialog
+    // e.g. navigate("/pos/cash-management");
   };
 
-  const isCashTab = activeTab === "cash";
-
   const handleOpenEndDialog = () => {
-    // prefill with expected cash like your reference screenshot
-    setDeclaredCash(String(shift.expectedCash ?? ""));
+    if (!shift) return;
+    // prefill with expected cash (from DB)
+    setDeclaredCash(
+      shift.expectedCash != null && !Number.isNaN(shift.expectedCash)
+        ? String(shift.expectedCash)
+        : ""
+    );
     setEndDialogOpen(true);
   };
 
@@ -78,9 +111,28 @@ export default function ShiftManagementPage() {
         throw new Error(data.error || "Failed to end shift");
       }
 
-      window.alert("Shift ended successfully.");
+      // 🔹 Clear frontend shift + cart state (no more spammed shiftId in Cart)
+      try {
+        if (typeof clearShift === "function") {
+          clearShift();
+        }
+
+        // Clear POS-related localStorage so Cart starts clean
+        localStorage.removeItem("openOrders");
+        localStorage.removeItem("currentOrderId");
+        // If you also want to reset type:
+        // localStorage.removeItem("orderType");
+      } catch (e) {
+        console.warn("[ShiftManagementPage] local cleanup failed", e);
+      }
+
+      // 🔹 Sync with backend (now there should be no open shift)
+      if (typeof refreshLatestShift === "function") {
+        await refreshLatestShift();
+      }
+
       setEndDialogOpen(false);
-      // TODO: refresh data or redirect if you want
+      setSuccessDialogOpen(true); // 🔹 nice success dialog instead of ugly alert
     } catch (err) {
       console.error("[ShiftManagementPage] end shift failed:", err);
       window.alert(err.message || "Failed to end shift");
@@ -89,11 +141,15 @@ export default function ShiftManagementPage() {
     }
   };
 
-  const expectedCash = Number(shift.expectedCash || 0);
+  const expectedCash = Number(shift?.expectedCash || 0);
   const declaredNum =
     declaredCash === "" ? expectedCash : Number(declaredCash || 0);
   const diff = declaredNum - expectedCash;
   const diffDisplay = PHP(Math.abs(diff));
+
+  const netSales = shift
+    ? shift.grossSales - shift.refunds - shift.discounts
+    : 0;
 
   return (
     <>
@@ -112,11 +168,11 @@ export default function ShiftManagementPage() {
             maxWidth: 720,
             borderRadius: 4,
             p: 3,
-            bgcolor: "#fdf1df", // soft beige like your screenshot
+            bgcolor: "#fdf1df",
             boxShadow: "0 8px 20px rgba(0,0,0,0.08)",
           }}
         >
-          {/* Top toggle buttons */}
+          {/* Top action buttons (no tabs, just actions) */}
           <Stack
             direction="row"
             spacing={2}
@@ -127,16 +183,17 @@ export default function ShiftManagementPage() {
           >
             <Button
               fullWidth
-              onClick={() => setActiveTab("cash")}
+              onClick={handleCashInOut}
+              disabled={!hasShift}
               sx={{
                 textTransform: "none",
                 fontWeight: 700,
                 borderRadius: 999,
                 py: 1.2,
-                bgcolor: isCashTab ? "#8b5a2b" : "#c7a17a",
+                bgcolor: hasShift ? "#c7a17a" : "grey.500",
                 color: "common.white",
                 "&:hover": {
-                  bgcolor: isCashTab ? "#754821" : "#b18d65",
+                  bgcolor: hasShift ? "#b18d65" : "grey.600",
                 },
               }}
             >
@@ -144,16 +201,17 @@ export default function ShiftManagementPage() {
             </Button>
             <Button
               fullWidth
-              onClick={() => setActiveTab("end")}
+              onClick={handleOpenEndDialog}
+              disabled={!hasShift}
               sx={{
                 textTransform: "none",
                 fontWeight: 700,
                 borderRadius: 999,
                 py: 1.2,
-                bgcolor: !isCashTab ? "#8b5a2b" : "#c7a17a",
+                bgcolor: hasShift ? "#8b5a2b" : "grey.500",
                 color: "common.white",
                 "&:hover": {
-                  bgcolor: !isCashTab ? "#754821" : "#b18d65",
+                  bgcolor: hasShift ? "#754821" : "grey.600",
                 },
               }}
             >
@@ -171,21 +229,26 @@ export default function ShiftManagementPage() {
           >
             <Box>
               <Typography variant="body1" fontWeight={600}>
-                Shift Number {shift.number}
+                {hasShift
+                  ? `Shift Number ${shift.number}`
+                  : "No open shift detected"}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Shift Opened By {shift.openedBy}
-              </Typography>
+              {hasShift && (
+                <Typography variant="body2" color="text.secondary">
+                  Shift Opened By {shift.openedBy}
+                </Typography>
+              )}
             </Box>
-            <Typography variant="body2" color="text.secondary">
-              {shift.openedAt}
-            </Typography>
+            {hasShift && (
+              <Typography variant="body2" color="text.secondary">
+                {shift.openedAt}
+              </Typography>
+            )}
           </Stack>
 
           <Divider sx={{ mb: 2 }} />
 
-          {/* CONTENT */}
-          {isCashTab ? (
+          {hasShift ? (
             <>
               {/* Cash Drawer section */}
               <Typography
@@ -227,35 +290,12 @@ export default function ShiftManagementPage() {
 
               <Divider sx={{ my: 2 }} />
 
-              <Row
-                label="Net Sales"
-                value={PHP(
-                  shift.grossSales - shift.refunds - shift.discounts
-                )}
-                bold
-              />
+              <Row label="Net Sales" value={PHP(netSales)} bold />
             </>
           ) : (
-            <>
-              {/* End Shift tab content: just button now */}
-              <Box sx={{ mt: 3, textAlign: "right" }}>
-                <Button
-                  variant="contained"
-                  onClick={handleOpenEndDialog}
-                  sx={{
-                    textTransform: "none",
-                    fontWeight: 700,
-                    borderRadius: 999,
-                    px: 4,
-                    py: 1.1,
-                    bgcolor: "#8b5a2b",
-                    "&:hover": { bgcolor: "#754821" },
-                  }}
-                >
-                  End Shift
-                </Button>
-              </Box>
-            </>
+            <Typography variant="body2" color="text.secondary">
+              There is currently no open shift for this terminal / user.
+            </Typography>
           )}
         </Paper>
       </Box>
@@ -269,7 +309,7 @@ export default function ShiftManagementPage() {
             fontWeight: 700,
           }}
         >
-          Close Shift
+          End Shift
         </DialogTitle>
         <DialogContent
           dividers
@@ -367,6 +407,54 @@ export default function ShiftManagementPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* 🔹 Nice success dialog (replaces window.alert) */}
+      <Dialog
+        open={successDialogOpen}
+        onClose={() => setSuccessDialogOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle
+          sx={{
+            bgcolor: "#2e7d32",
+            color: "common.white",
+            fontWeight: 700,
+          }}
+        >
+          Shift Ended
+        </DialogTitle>
+        <DialogContent
+          sx={{ bgcolor: "#fdf1df", py: 3 }}
+        >
+          <Typography variant="body1" sx={{ mb: 1 }}>
+            Shift has been successfully remitted.
+          </Typography>
+          {shift && (
+            <Typography variant="body2" color="text.secondary">
+              (This summary reflects the values at the time of closing.)
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions
+          sx={{ bgcolor: "#fdf1df", px: 3, py: 2, justifyContent: "flex-end" }}
+        >
+          <Button
+            variant="contained"
+            onClick={() => setSuccessDialogOpen(false)}
+            sx={{
+              textTransform: "none",
+              fontWeight: 600,
+              borderRadius: 999,
+              px: 3,
+              bgcolor: "#2e7d32",
+              "&:hover": { bgcolor: "#255d27" },
+            }}
+          >
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }
@@ -380,16 +468,10 @@ function Row({ label, value, bold = false }) {
       alignItems="center"
       spacing={2}
     >
-      <Typography
-        variant="body2"
-        sx={{ fontWeight: bold ? 600 : 400 }}
-      >
+      <Typography variant="body2" sx={{ fontWeight: bold ? 600 : 400 }}>
         {label}
       </Typography>
-      <Typography
-        variant="body2"
-        sx={{ fontWeight: bold ? 600 : 400 }}
-      >
+      <Typography variant="body2" sx={{ fontWeight: bold ? 600 : 400 }}>
         {value}
       </Typography>
     </Stack>
