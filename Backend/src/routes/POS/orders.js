@@ -1144,6 +1144,163 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
   });
 
   // ==================================================
+  // 4) Void Item
+  // ==================================================
+  router.post("/:id/void-item", async (req, res) => {
+    const orderId = req.params.id;
+    const { itemId, qty, reason, employeeId } = req.body || {};
+    
+    const reqQty = Number(qty || 0);
+
+    if (!orderId || !itemId || reqQty <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "orderId, itemId and positive qty required",
+      });
+    }
+
+    try {
+      // Load order
+      const orderRows = asArray(
+        await db.query(
+          `SELECT order_id, shift_id, status 
+          FROM pos_orders 
+          WHERE order_id = ? LIMIT 1`,
+          [orderId]
+        )
+      );
+
+      if (!orderRows.length) {
+        return res.status(404).json({ ok: false, error: "Order not found" });
+      }
+      const order = orderRows[0];
+
+      if (!["paid", "open", "pending"].includes(order.status)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Only pending/open/paid orders can have item voids",
+        });
+      }
+
+      // Load items
+      const itemRows = asArray(
+        await db.query(
+          `SELECT id, item_id, item_name, item_price, qty, voided_qty
+          FROM pos_order_items
+          WHERE order_id = ? AND item_id = ?
+          LIMIT 1`,
+          [orderId, itemId]
+        )
+      );
+
+      if (!itemRows.length) {
+        return res.status(404).json({ ok: false, error: "Item not found in order" });
+      }
+
+      const it = itemRows[0];
+      const remaining = Number(it.qty) - Number(it.voided_qty);
+
+      if (reqQty > remaining) {
+        return res.status(400).json({
+          ok: false,
+          error: `Only ${remaining} qty remaining to void`,
+        });
+      }
+
+      const amount = reqQty * Number(it.item_price);
+
+      // Update voided_qty
+      await db.query(
+        `UPDATE pos_order_items
+        SET voided_qty = voided_qty + ?
+        WHERE id = ?`,
+        [reqQty, it.id]
+      );
+
+      // Insert void history
+      await db.query(
+        `INSERT INTO pos_order_voids
+          (order_id, item_id, item_name, qty, amount, reason, employee_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          orderId,
+          it.item_id,
+          it.item_name,
+          reqQty,
+          amount,
+          reason || null,
+          employeeId || null,
+        ]
+      );
+
+      // Recompute remaining totals
+      const totalsRows = asArray(
+        await db.query(
+          `SELECT qty, voided_qty, item_price
+          FROM pos_order_items
+          WHERE order_id = ?`,
+          [orderId]
+        )
+      );
+
+      let gross = 0;
+      for (const r of totalsRows) {
+        const validQty = Number(r.qty) - Number(r.voided_qty);
+        if (validQty > 0) {
+          gross += validQty * Number(r.item_price);
+        }
+      }
+
+      const discount = 0; // same as your current behavior
+      const net = gross - discount;
+
+      let newStatus = order.status;
+      const stillHasItems = totalsRows.some(
+        (r) => Number(r.qty) - Number(r.voided_qty) > 0
+      );
+      if (!stillHasItems) newStatus = "voided";
+
+      await db.query(
+        `UPDATE pos_orders
+          SET gross_amount = ?, 
+              discount_amount = ?, 
+              net_amount = ?, 
+              status = ?
+        WHERE order_id = ?`,
+        [gross, discount, net, newStatus, orderId]
+      );
+
+      await logOrderAudit({
+        app: APP,
+        action: "Void Item Qty",
+        success: true,
+        orderId,
+        shiftId: order.shift_id,
+        employeeId,
+        extra: {
+          itemId,
+          qty: reqQty,
+          amount,
+          reason: reason || "",
+          newStatus,
+        },
+        req,
+      });
+
+      return res.json({
+        ok: true,
+        orderId,
+        voidAmount: amount,
+        newNet: net,
+        status: newStatus,
+      });
+    } catch (e) {
+      console.error("[Void Item] failed:", e);
+      return res.status(500).json({ ok: false, error: "Server error" });
+    }
+  });
+
+  // ==================================================
   // 3) VOID ORDER → pos_orders
   // ==================================================
   router.post("/:id/void", async (req, res) => {
@@ -1216,7 +1373,6 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         .json({ ok: false, error: "Failed to void order" });
     }
   });
-
   
   /* ==================================================
      4) CHARGE / FINALIZE ORDER  → /pos/orders/charge

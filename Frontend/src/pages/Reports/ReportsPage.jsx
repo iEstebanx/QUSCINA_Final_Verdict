@@ -268,7 +268,6 @@ export default function ReportsPage() {
     paymentsData,
     bestSellerData,
     staffPerformanceData,
-    ordersData,
     preparedBy,
   }) => {
     const reportInfo = {
@@ -318,14 +317,6 @@ export default function ReportsPage() {
       { label: "Total Sales", key: "sales" },
     ]);
 
-    const ordersCSV = convertToCSV(ordersData, [
-      { label: "Receipt No", key: "id" },
-      { label: "Date", key: "date" },
-      { label: "Employee", key: "employee" },
-      { label: "Type", key: "type" },
-      { label: "Total", key: "total" },
-    ]);
-
     const staffCSV = convertToCSV(staffPerformanceData, [
       { label: "Shift No.", key: "shiftNo" },
       { label: "Staff Name", key: "staffName" },
@@ -343,28 +334,25 @@ export default function ReportsPage() {
         : "";
 
     const fullCSV = `Sales Report - ${reportInfo.dateRange}
-    Generated: ${reportInfo.generatedAt}
+  Generated: ${reportInfo.generatedAt}
 
-    TOP 5 CATEGORIES
-    ${categoryCSV || "No data"}
+  TOP 5 CATEGORIES
+  ${categoryCSV || "No data"}
 
-    SALES BY PAYMENT TYPE
-    ${paymentsCSV || "No data"}
+  SALES BY PAYMENT TYPE
+  ${paymentsCSV || "No data"}
 
-    BEST SELLERS
-    ${bestSellerCSV || "No data"}
+  BEST SELLERS
+  ${bestSellerCSV || "No data"}
 
-    ORDERS
-    ${ordersCSV || "No data"}
+  SHIFT HISTORY
+  ${staffCSV || "No data"}
 
-    STAFF PERFORMANCE
-    ${staffCSV || "No data"}
+  SALES CHART DATA
+  Date,Amount
+  ${chartCSV || ""}
 
-    SALES CHART DATA
-    Date,Amount
-    ${chartCSV || ""}
-
-    ${preparedBy || "Prepared by: N/A"}`;
+  ${preparedBy || "Prepared by: N/A"}`;
 
     return fullCSV;
   };
@@ -391,9 +379,8 @@ export default function ReportsPage() {
       categoryTop5Data: categoryTop5,
       categorySeriesData: categorySeries,
       paymentsData: payments,
-      bestSellerData: bestSeller,
+      bestSellerData: (bestSeller || []).slice(0, 5),
       staffPerformanceData: staffPerformance,
-      ordersData: filteredOrders,
       preparedBy,
     });
 
@@ -416,20 +403,18 @@ export default function ReportsPage() {
           ? `range=custom&from=${excelFrom}&to=${excelTo}`
           : `range=${excelRange}`;
 
-      const [c1, c2, p, b, o, sp] = await Promise.all([
+      const [c1, c2, p, b, sp] = await Promise.all([
         fetch(`/api/reports/category-top5?${qs}`).then((r) => r.json()),
         fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
         fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
         fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/orders?${qs}`).then((r) => r.json()),
         fetch(`/api/reports/staff-performance?${qs}`).then((r) => r.json()),
       ]);
 
       const categoryTop5Data = c1?.ok ? c1.data || [] : [];
       const categorySeriesData = c2?.ok ? c2.data || [] : [];
       const paymentsData = p?.ok ? p.data || [] : [];
-      const bestSellerData = b?.ok ? b.data || [] : [];
-      const ordersData = o?.ok ? o.data || [] : [];
+      const bestSellerData = (b?.ok ? b.data || [] : []).slice(0, 5);
       const staffPerformanceData = sp?.ok ? sp.data || [] : [];
 
       const label =
@@ -444,7 +429,6 @@ export default function ReportsPage() {
         paymentsData,
         bestSellerData,
         staffPerformanceData,
-        ordersData,
         preparedBy,
       });
 
@@ -604,17 +588,24 @@ export default function ReportsPage() {
     cursorY = doc.lastAutoTable.finalY + 24;
 
     doc.setFont("helvetica", "bold");
-    doc.text("Sales Categories", 72, cursorY);
+    doc.text("Best Seller", 72, cursorY);
     cursorY += 8;
+
+    const bestSellerTop5 = (bestSellerData || []).slice(0, 5);
 
     autoTable(doc, {
       startY: cursorY + 8,
-      head: [["Category", "Sales"]],
-      body: categoryTop5Data.map((c) => [c.name, formatNumberMoney(c.net)]),
+      head: [["Rank", "Item Name", "Total Orders", "Total Sales"]],
+      body: bestSellerTop5.map((b) => [
+        b.rank,
+        b.name,
+        b.orders,
+        formatNumberMoney(b.sales),
+      ]),
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 4 },
       headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 200 },
+      margin: { left: 72, right: 180 },
     });
     cursorY = doc.lastAutoTable.finalY + 24;
 
@@ -639,27 +630,7 @@ export default function ReportsPage() {
     cursorY = doc.lastAutoTable.finalY + 24;
 
     doc.setFont("helvetica", "bold");
-    doc.text("Best Seller", 72, cursorY);
-    cursorY += 8;
-
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [["Rank", "Item Name", "Total Orders", "Total Sales"]],
-      body: bestSellerData.map((b) => [
-        b.rank,
-        b.name,
-        b.orders,
-        formatNumberMoney(b.sales),
-      ]),
-      theme: "grid",
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 180 },
-    });
-    cursorY = doc.lastAutoTable.finalY + 24;
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Staff Performance", 72, cursorY);
+    doc.text("Shift History", 72, cursorY);
     cursorY += 8;
 
     autoTable(doc, {
