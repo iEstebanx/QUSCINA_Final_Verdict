@@ -41,6 +41,7 @@ import PaymentIcon from "@mui/icons-material/Payment";
 import PeopleIcon from "@mui/icons-material/People";
 import { useNavigate } from "react-router-dom";
 import { subscribeUsers } from "@/services/Users/users";
+import { joinApi } from "@/utils/apiBase"; // ✅ NEW
 
 const peso = (n) =>
   `₱${Number(n || 0).toLocaleString(undefined, {
@@ -164,9 +165,10 @@ export default function DashboardPage() {
     let alive = true;
     (async () => {
       try {
-        const res = await fetch("/api/inventory/ingredients/low-stock", {
-          cache: "no-store",
-        });
+        const res = await fetch(
+          joinApi("api/inventory/ingredients/low-stock"), // ✅ use joinApi
+          { cache: "no-store" }
+        );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data?.ok !== true) {
           throw new Error(data?.error || `HTTP ${res.status}`);
@@ -207,22 +209,30 @@ export default function DashboardPage() {
 
       try {
         // metrics
-        const mRes = await fetch(`/api/dashboard/metrics?${qs}`);
+        const mRes = await fetch(
+          joinApi(`api/dashboard/metrics?${qs}`) // ✅ use joinApi
+        );
         const mData = await mRes.json();
         if (alive && mData.ok) setMetrics(mData.metrics);
 
         // sales series
-        const sRes = await fetch(`/api/dashboard/sales-series?${qs}`);
+        const sRes = await fetch(
+          joinApi(`api/dashboard/sales-series?${qs}`) // ✅ use joinApi
+        );
         const sData = await sRes.json();
         if (alive && sData.ok) setSalesSeries(sData.series);
 
         // best sellers
-        const bRes = await fetch(`/api/dashboard/best-sellers?${qs}`);
+        const bRes = await fetch(
+          joinApi(`api/dashboard/best-sellers?${qs}`) // ✅ use joinApi
+        );
         const bData = await bRes.json();
         if (alive && bData.ok) setBestSellers(bData.bestSellers);
 
         // payments
-        const pRes = await fetch(`/api/dashboard/payments?${qs}`);
+        const pRes = await fetch(
+          joinApi(`api/dashboard/payments?${qs}`) // ✅ use joinApi
+        );
         const pData = await pRes.json();
         if (alive && pData.ok) setPaymentData(pData.payments);
       } catch (err) {
@@ -478,9 +488,9 @@ export default function DashboardPage() {
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-            <List dense sx={{ flex: 1 }}>
-              {sortedBestSellers.slice(0, 5).map((item, i) => (
-                <ListItem key={i} disableGutters sx={{ py: 1 }}>
+              <List dense sx={{ flex: 1 }}>
+                {sortedBestSellers.slice(0, 5).map((item, i) => (
+                  <ListItem key={i} disableGutters sx={{ py: 1 }}>
                     {/* Rank number */}
                     <Avatar
                       sx={{

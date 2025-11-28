@@ -1,6 +1,6 @@
 // Frontend/src/utils/apiBase.js
 const RAILWAY_API_ORIGIN =
-  "https://quscinabackoffice-production.up.railway.app";
+  "https://quscinabackofficebackend-production.up.railway.app"; // ← make sure this matches Railway
 
 function computeApiBase() {
   if (typeof window === "undefined") return "";
@@ -13,7 +13,10 @@ function computeApiBase() {
     host.startsWith("192.168.") ||
     host.startsWith("10.");
 
+  // Local dev → use Vite proxy (/api → localhost:5000)
   if (isLocal) return "";
+
+  // Deployed frontend (Vercel) → call Railway directly
   return RAILWAY_API_ORIGIN;
 }
 
