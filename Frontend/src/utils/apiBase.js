@@ -1,6 +1,6 @@
 // Frontend/src/utils/apiBase.js
 const RAILWAY_API_ORIGIN =
-  "https://quscinabackofficebackend-production.up.railway.app"; // ← make sure this matches Railway
+  "https://quscinabackoffice-production.up.railway.app"; // ✅ correct URL
 
 function computeApiBase() {
   if (typeof window === "undefined") return "";
