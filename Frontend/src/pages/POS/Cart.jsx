@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import PersonOutline from "@mui/icons-material/PersonOutline";
 import BadgeOutlined from "@mui/icons-material/BadgeOutlined";
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import {
   Add,
   Remove,
@@ -40,7 +41,6 @@ import { useTheme, alpha } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import { useCart } from "@/context/CartContext";
 import { API_BASE } from "@/utils/apiBase";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useShift } from "@/context/ShiftContext";
@@ -51,6 +51,7 @@ import { useAuth } from "@/context/AuthContext";
 const PHP = (n) => `₱${Number(n).toFixed(2)}`;
 const LS_REFLECTING_KEY = "currentOrderId"; // persist reflected order id
 const LS_ORDER_TYPE = "orderType"; // persist dine-in / take-out
+const LS_VOIDED_MAP = "posVoidedQtyMap"; // per-order void counts
 
 // 🔹 Build Backoffice POS shift API URL
 const shiftApi = (subPath = "") => {
@@ -533,6 +534,7 @@ export default function Cart() {
   const navigate = useNavigate();
   const {
     items,
+    addItem,
     incrementItem,
     decrementItem,
     clearCart,
@@ -728,23 +730,20 @@ const terminalId = "TERMINAL-1";
     const qty = item.quantity ?? 1;
 
     // Only allow per-item void when:
-    //  - reflecting an existing pending order
-    //  - this item has a base qty from that ticket
-    //  - there's at least 1 qty remaining
     if (!isReflectingExisting || baseQty <= 0 || qty <= 0) return;
 
     const maxQty = Math.min(baseQty, qty); // can't void more than base or current qty
 
-    setPendingVoidItem({
+    setVoidContext({
       itemId: item.id,
       itemName: item.name,
       unitPrice: item.price || 0,
-      qty: maxQty > 0 ? 1 : 0, // start at 1
       maxQty,
     });
-    setPinError("");
-    setPinDigits(Array(6).fill(""));
-    openSafely(setPinDialogOpen);
+    setVoidQty(1);
+    setVoidReason("");
+    setPendingVoidItem(null); // will be set when user clicks Continue
+    openSafely(setVoidItemDialogOpen);
   };
 
   const total = Math.max(0, subtotal - discountAmount); // no VAT, just net total
@@ -758,6 +757,31 @@ const terminalId = "TERMINAL-1";
 
   // 🔹 When voiding a single item from a reflected ticket
   const [pendingVoidItem, setPendingVoidItem] = useState(null);
+
+  // Void dialog (quantity + reason)
+  const [voidItemDialogOpen, setVoidItemDialogOpen] = useState(false);
+  const [voidContext, setVoidContext] = useState(null); // { itemId, itemName, maxQty, unitPrice }
+  const [voidQty, setVoidQty] = useState(1);
+  const [voidReason, setVoidReason] = useState("");
+
+  // Success dialog after void
+  const [voidSuccessOpen, setVoidSuccessOpen] = useState(false);
+
+  // Track how many were voided (for "1 voided" red label)
+  const [voidedQtyMap, setVoidedQtyMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(LS_VOIDED_MAP)) ?? {};
+    } catch {
+      return {};
+    }
+  });
+
+  // keep it in localStorage so it survives refresh
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_VOIDED_MAP, JSON.stringify(voidedQtyMap));
+    } catch {}
+  }, [voidedQtyMap]);
 
   // --- Load available discount types (same as MenuPage) --------------------
   const [discountChoices, setDiscountChoices] = useState([]);
@@ -1113,35 +1137,94 @@ const terminalId = "TERMINAL-1";
     setPendingOpen(false);
   };
 
-  const saveUpdatedTicket = () => {
+  const saveUpdatedTicket = async () => {
     if (!currentOrderId) return;
 
+    if (!shiftId) {
+      window.alert("No open shift. Please open a shift before saving orders.");
+      return;
+    }
+
+    const baseOrder =
+      openOrders.find((o) => o.id === currentOrderId) || {};
+
+    const payload = {
+      shiftId,
+      terminalId,
+      employeeId,
+      orderType,
+      customerName: baseOrder.customer || "Walk-in",
+      tableNo: baseOrder.table || null,
+      items: items.map((i) => ({
+        id: i.id,
+        name: i.name,
+        price: i.price,
+        qty: i.quantity ?? 1,
+      })),
+      discounts: discounts.map((d) => ({
+        name: d.name,
+        percent: Number(d.percent) || 0,
+      })),
+    };
+
+    let updatedSummary = null;
+
+    try {
+      const url = ordersApi(`/${encodeURIComponent(currentOrderId)}/pending`);
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.ok === false) {
+        throw new Error(
+          data.error || `Failed to update pending order (${res.status})`
+        );
+      }
+
+      updatedSummary = data.summary || null;
+    } catch (err) {
+      console.error("[Cart] saveUpdatedTicket failed", err);
+      window.alert(err.message || "Failed to save updated ticket");
+      return;
+    }
+
+    // ✅ Update local snapshot to match backend
     const updated = {
       id: currentOrderId,
       status: "pending",
       source: "Backoffice POS",
       employee: employeeId,
       time: new Date().toISOString(),
-      customer:
-        openOrders.find((o) => o.id === currentOrderId)?.customer ||
-        "Walk-in",
-      table: openOrders.find((o) => o.id === currentOrderId)?.table || "-",
-      items: items.map((i) => ({
-        id: i.id,
-        name: i.name,
-        price: i.price,
-        qty: i.quantity ?? 1,
-        image: i.image,
+      customer: payload.customerName,
+      table: payload.tableNo,
+      items: payload.items.map((it) => ({
+        ...it,
+        image: (baseOrder.items || []).find((b) => b.id === it.id)?.image,
       })),
-      discounts: discounts.map((d) => ({ ...d })),
+      discounts: payload.discounts.map((d) => ({ ...d })),
+      amount:
+        updatedSummary?.amount ??
+        Math.max(
+          0,
+          payload.items.reduce(
+            (s, it) =>
+              s + (Number(it.price) || 0) * (Number(it.qty) || 1),
+            0
+          ) *
+            (1 -
+              payload.discounts.reduce(
+                (pct, d) => pct + (Number(d.percent) || 0),
+                0
+              ) /
+                100)
+        ),
     };
-
-    const ss = updated.items.reduce((s, i) => s + i.price * i.qty, 0);
-    const tp = updated.discounts.reduce(
-      (a, d) => a + (Number(d.percent) || 0),
-      0
-    );
-    updated.amount = Math.max(0, ss - (ss * tp) / 100);
 
     setOpenOrders((prev) =>
       prev.map((o) => (o.id === currentOrderId ? updated : o))
@@ -1208,19 +1291,15 @@ const terminalId = "TERMINAL-1";
   };
   const closeSummary = () => setSummaryOrder(null);
 
-  const { addItem: _add } = useCart();
-  const addItemSafe = (p) => {
-    if (typeof _add === "function") _add(p);
-  };
-
   const restoreToCart = () => {
     if (!summaryOrder) return;
 
     clearCart();
     clearDiscounts();
     summaryOrder.items.forEach((it) => {
-      for (let k = 0; k < (it.qty ?? 1); k++) {
-        addItemSafe({
+      const qty = it.qty ?? 1;
+      for (let k = 0; k < qty; k++) {
+        addItem({
           id: it.id,
           name: it.name,
           price: it.price,
@@ -1228,6 +1307,7 @@ const terminalId = "TERMINAL-1";
         });
       }
     });
+
     if (Array.isArray(summaryOrder.discounts)) {
       summaryOrder.discounts.forEach((d) =>
         applyDiscount(d.name ?? "Discount", d.percent ?? 0)
@@ -1330,6 +1410,8 @@ const terminalId = "TERMINAL-1";
 
   const handleConfirmSaveUpdated = () => {
     saveUpdatedTicket();
+
+    if (!currentOrderId) return;
 
     clearCart();
     clearDiscounts();
@@ -1569,6 +1651,9 @@ const terminalId = "TERMINAL-1";
               const baseQty = lockedBaseQty[item.id] || 0;
               const canVoid =
                 isReflectingExisting && baseQty > 0 && (item.quantity ?? 1) > 0;
+              const voidKey =
+                currentOrderId ? `${currentOrderId}:${item.id}` : null;
+              const voidedQty = voidKey ? voidedQtyMap[voidKey] || 0 : 0;
 
               return (
                 <Box
@@ -1648,17 +1733,37 @@ const terminalId = "TERMINAL-1";
                         gap: 1,
                       }}
                     >
-                      {false && (
+                      {voidedQty > 0 && (
+                        <Typography
+                          sx={{
+                            mt: 0.5,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: t.palette.error.main,
+                          }}
+                        >
+                          {voidedQty} voided
+                        </Typography>
+                      )}
+                      {canVoid && (
                         <Button
                           size="small"
                           color="error"
-                          variant="text"
+                          variant="outlined"
                           onClick={() => handleVoidItemClick(item)}
                           sx={{
-                            px: 0,
+                            px: 1.5,
                             minWidth: 0,
                             fontSize: 12,
                             textTransform: "none",
+                            borderRadius: 999,
+                            borderColor: t.palette.error.main,
+                            bgcolor: t.palette.error.main,
+                            color: "#fff",
+                            "&:hover": {
+                              bgcolor: t.palette.error.dark,
+                              borderColor: t.palette.error.dark,
+                            },
                           }}
                         >
                           Void item
@@ -1736,6 +1841,9 @@ const terminalId = "TERMINAL-1";
                 isReflectingExisting &&
                 baseQty > 0 &&
                 (item.quantity ?? 1) > 0;
+              const voidKey =
+                currentOrderId ? `${currentOrderId}:${item.id}` : null;
+              const voidedQty = voidKey ? voidedQtyMap[voidKey] || 0 : 0;
 
               return (
                 <Box
@@ -1788,17 +1896,37 @@ const terminalId = "TERMINAL-1";
                       gap: 1,
                     }}
                   >
-                    {false && (
+                    {voidedQty > 0 && (
+                      <Typography
+                        sx={{
+                          mt: 0.5,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: t.palette.error.main,
+                        }}
+                      >
+                        {voidedQty} voided
+                      </Typography>
+                    )}
+                    {canVoid && (
                       <Button
                         size="small"
                         color="error"
-                        variant="text"
+                        variant="outlined"
                         onClick={() => handleVoidItemClick(item)}
                         sx={{
-                          px: 0,
+                          px: 1.5,
                           minWidth: 0,
                           fontSize: 12,
                           textTransform: "none",
+                          borderRadius: 999,
+                          borderColor: t.palette.error.main,
+                          bgcolor: t.palette.error.main,
+                          color: "#fff",
+                          "&:hover": {
+                            bgcolor: t.palette.error.dark,
+                            borderColor: t.palette.error.dark,
+                          },
                         }}
                       >
                         Void item
@@ -2693,6 +2821,116 @@ const terminalId = "TERMINAL-1";
         </DialogActions>
       </Dialog>
 
+      {/* Void Item dialog (quantity + reason) */}
+      <Dialog
+        open={voidItemDialogOpen && !!voidContext}
+        onClose={() => {
+          setVoidItemDialogOpen(false);
+          setVoidContext(null);
+          setVoidQty(1);
+          setVoidReason("");
+        }}
+        PaperProps={{ sx: { minWidth: 360 } }}
+      >
+        <DialogTitle>Void Item</DialogTitle>
+        <DialogContent dividers>
+          {voidContext && (
+            <Box sx={{ mt: 0.5 }}>
+              <Typography
+                variant="subtitle1"
+                sx={{ mb: 0.5, fontWeight: 600 }}
+              >
+                {voidContext.itemName}
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{ mb: 2, opacity: 0.8 }}
+              >
+                Max voidable quantity: {voidContext.maxQty}
+              </Typography>
+
+              <TextField
+                fullWidth
+                type="number"
+                size="small"
+                label="Quantity to void"
+                value={voidQty}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (!Number.isFinite(n)) {
+                    setVoidQty("");
+                  } else {
+                    setVoidQty(n);
+                  }
+                }}
+                inputProps={{
+                  min: 1,
+                  max: voidContext.maxQty,
+                }}
+                sx={{ mb: 2 }}
+              />
+
+              <TextField
+                fullWidth
+                size="small"
+                label="Reason (optional)"
+                value={voidReason}
+                onChange={(e) =>
+                  setVoidReason(e.target.value.slice(0, 255))
+                }
+                multiline
+                minRows={2}
+              />
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button
+            onClick={() => {
+              setVoidItemDialogOpen(false);
+              setVoidContext(null);
+              setVoidQty(1);
+              setVoidReason("");
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            disabled={
+              !voidContext ||
+              !voidQty ||
+              Number(voidQty) < 1 ||
+              Number(voidQty) > (voidContext?.maxQty || 0)
+            }
+            onClick={() => {
+              if (!voidContext) return;
+              const safeQty = Math.min(
+                Math.max(1, Number(voidQty) || 1),
+                voidContext.maxQty || 1
+              );
+
+              setPendingVoidItem({
+                itemId: voidContext.itemId,
+                itemName: voidContext.itemName,
+                unitPrice: voidContext.unitPrice,
+                qty: safeQty,
+                maxQty: voidContext.maxQty,
+                reason: voidReason.trim() || null,
+              });
+
+              setPinError("");
+              setPinDigits(Array(6).fill(""));
+              setPinVisible(false);
+              openSafely(setPinDialogOpen);
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Approval PIN Dialog */}
       <Dialog
         open={pinDialogOpen}
@@ -2800,89 +3038,6 @@ const terminalId = "TERMINAL-1";
             </Typography>
 
             {/* 🔹 NEW: Quantity selector for per-item void */}
-            {pendingVoidItem && pendingVoidItem.maxQty > 0 && (
-              <Box
-                sx={{
-                  mt: 1.5,
-                  width: "100%",
-                  maxWidth: 260,
-                  textAlign: "center",
-                }}
-              >
-                <Typography
-                  variant="subtitle2"
-                  sx={{ mb: 0.5, fontWeight: 600 }}
-                >
-                  Void quantity for {pendingVoidItem.itemName}
-                </Typography>
-
-                <Stack
-                  direction="row"
-                  alignItems="center"
-                  justifyContent="center"
-                  spacing={1}
-                >
-                  <IconButton
-                    size="small"
-                    onClick={() =>
-                      setPendingVoidItem((prev) =>
-                        !prev
-                          ? prev
-                          : {
-                              ...prev,
-                              qty: Math.max(1, (prev.qty || 1) - 1),
-                            }
-                      )
-                    }
-                    disabled={(pendingVoidItem.qty || 1) <= 1}
-                  >
-                    <Remove fontSize="small" />
-                  </IconButton>
-
-                  <Typography
-                    variant="h6"
-                    sx={{
-                      minWidth: 40,
-                      textAlign: "center",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {pendingVoidItem.qty || 1}
-                  </Typography>
-
-                  <IconButton
-                    size="small"
-                    onClick={() =>
-                      setPendingVoidItem((prev) =>
-                        !prev
-                          ? prev
-                          : {
-                              ...prev,
-                              qty: Math.min(
-                                prev.maxQty || 1,
-                                (prev.qty || 1) + 1
-                              ),
-                            }
-                      )
-                    }
-                    disabled={
-                      (pendingVoidItem.qty || 1) >=
-                      (pendingVoidItem.maxQty || 1)
-                    }
-                  >
-                    <Add fontSize="small" />
-                  </IconButton>
-                </Stack>
-
-                <Typography
-                  variant="caption"
-                  sx={{ mt: 0.5, opacity: 0.7, display: "block" }}
-                >
-                  Max {pendingVoidItem.maxQty} can be voided
-                </Typography>
-              </Box>
-            )}
-
             {pinError && (
               <Typography
                 variant="body2"
@@ -2920,10 +3075,7 @@ const terminalId = "TERMINAL-1";
 
               try {
                 // 1) Verify PIN (same endpoint as before)
-                const base = API_BASE || "";
-                const verifyUrl = base
-                  ? `${base}/menu/cart/verify-pin`
-                  : "/api/menu/cart/verify-pin";
+                const verifyUrl = ordersApi("/verify-refund-pin");
 
                 const res = await fetch(verifyUrl, {
                   method: "POST",
@@ -2944,7 +3096,7 @@ const terminalId = "TERMINAL-1";
 
                 // 2) PIN OK → if we have a pendingVoidItem + currentOrderId, call /void-item
                 if (pendingVoidItem && currentOrderId) {
-                  const { itemId, qty = 1, unitPrice } = pendingVoidItem;
+                  const { itemId, qty = 1, unitPrice, reason } = pendingVoidItem;
 
                   try {
                     const voidUrl = ordersApi(
@@ -2958,7 +3110,7 @@ const terminalId = "TERMINAL-1";
                       body: JSON.stringify({
                         itemId,
                         qty,
-                        reason: null,
+                        reason: reason || null,
                         employeeId,
                       }),
                     });
@@ -2981,8 +3133,20 @@ const terminalId = "TERMINAL-1";
                       return next;
                     });
 
-                    // Decrement from cart items
-                    decrementItem(itemId);
+                    // Track how many were voided (for "1 voided" label)
+                    setVoidedQtyMap((prev) => {
+                      if (!currentOrderId) return prev; // safety
+                      const key = `${currentOrderId}:${itemId}`;
+                      return {
+                        ...prev,
+                        [key]: (prev[key] || 0) + qty,
+                      };
+                    });
+
+                    // Decrement from cart items (qty may be > 1)
+                    for (let i = 0; i < qty; i++) {
+                      decrementItem(itemId);
+                    }
 
                     // Update openOrders snapshot
                     setOpenOrders((prev) =>
@@ -3027,6 +3191,12 @@ const terminalId = "TERMINAL-1";
                     setPinVisible(false);
                     setPendingVoidItem(null);
                     setPinError("");
+
+                    setVoidItemDialogOpen(false);
+                    setVoidContext(null);
+                    setVoidQty(1);
+                    setVoidReason("");
+                    setVoidSuccessOpen(true);
                   } catch (err2) {
                     console.error("[Cart] void-item failed", err2);
                     setIsPinChecking(false);
@@ -3050,6 +3220,28 @@ const terminalId = "TERMINAL-1";
             }}
           >
             {isPinChecking ? "Checking…" : "Confirm"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Void success dialog */}
+      <Dialog
+        open={voidSuccessOpen}
+        onClose={() => setVoidSuccessOpen(false)}
+        PaperProps={{ sx: { minWidth: 320 } }}
+      >
+        <DialogTitle>Void Successful</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2">
+            The item was voided successfully.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button
+            variant="contained"
+            onClick={() => setVoidSuccessOpen(false)}
+          >
+            OK
           </Button>
         </DialogActions>
       </Dialog>

@@ -1,4 +1,3 @@
-// Frontend/src/pages/Settings/QuscinasMemo/QuscinasMemo.jsx
 import { Box, Paper, Typography, Divider, Stack } from "@mui/material";
 import logo from "@/assets/LOGO.png";
 
@@ -11,9 +10,11 @@ export default function QuscinasMemoPage() {
           p: { xs: 2, sm: 3, md: 4 },
           borderRadius: 2,
           border: (theme) =>
-            `1px solid ${theme.palette.mode === "light"
-              ? "rgba(0,0,0,0.06)"
-              : "rgba(255,255,255,0.12)"}`,
+            `1px solid ${
+              theme.palette.mode === "light"
+                ? "rgba(0,0,0,0.06)"
+                : "rgba(255,255,255,0.12)"
+            }`,
         }}
       >
         {/* Header with logo + restaurant name */}
@@ -37,6 +38,7 @@ export default function QuscinasMemoPage() {
           Memorandum
         </Typography>
 
+        {/* To / From / Subject */}
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2">
             <strong>To:</strong> All Staff of the Quscina Restaurant
@@ -64,46 +66,53 @@ export default function QuscinasMemoPage() {
           </Typography>
         </Box>
 
-        {/* Standard weights */}
+        {/* Standard Weights */}
         <Box sx={{ mb: 2 }}>
           <Typography variant="subtitle1" fontWeight={700} gutterBottom>
             Standard Weights of Raw Ingredients (Per Pack)
           </Typography>
 
-          <Typography variant="body2" fontStyle="italic" sx={{ mt: 1 }}>
-            Meat &amp; Poultry
-          </Typography>
-          <Typography variant="body2">- Chicken Breast – 1 pack: 2.0 kg</Typography>
-          <Typography variant="body2">- Chicken Wings – 1 pack: 1.5 kg</Typography>
-          <Typography variant="body2">- Pork Belly – 1 pack: 1.8 kg</Typography>
-          <Typography variant="body2">- Ground Pork – 1 pack: 1.0 kg</Typography>
-          <Typography variant="body2">- Beef Cubes – 1 pack: 1.2 kg</Typography>
-
-          <Typography variant="body2" fontStyle="italic" sx={{ mt: 2 }}>
-            Seafood
-          </Typography>
-          <Typography variant="body2">- Shrimp – 1 pack: 1.0 kg</Typography>
-        </Box>
-
-        {/* Reminders */}
-        <Box sx={{ mb: 2 }}>
-          <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-            Reminders
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            - Pork Tapa – 1 pack: <strong>1.0 kg</strong>
           </Typography>
           <Typography variant="body2">
-            - Always base inventory entries on the standard pack weights listed above,
-            unless the pack is partially used.
+            - Chicken Leg Quarter – 1 pack: <strong>1 pcs</strong>
           </Typography>
           <Typography variant="body2">
-            - Any pack with missing, damaged, or incorrect weight must be reported
-            immediately.
+            - Cream Dory – 1 pack: <strong>500g</strong>
           </Typography>
           <Typography variant="body2">
-            - Do not assume or estimate weights—verify using the memo as reference.
+            - Ground Pork – 1 pack: <strong>500g</strong>
           </Typography>
           <Typography variant="body2">
-            - This memo must be kept accessible in the storage area and back office at
-            all times.
+            - Pork Belly – 1 pack: <strong>1 kg</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Pork Chop – 1 pack: <strong>7 slices</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Pork Liempo – 1 pack: <strong>1.0 kg</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Pork Pata – 1 pack: <strong>1 pcs</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Egg – <strong>1 pcs</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Beef Sirloin – 1 pack: <strong>1.0 kg</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Beef Cubes – 1 pack: <strong>1.0 kg</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Beef Ribs – 1 pack: <strong>1.0 kg</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Bacon – 1 pack: <strong>500g</strong>
+          </Typography>
+          <Typography variant="body2">
+            - Bulaklak – 1 pack: <strong>500g</strong>
           </Typography>
         </Box>
 

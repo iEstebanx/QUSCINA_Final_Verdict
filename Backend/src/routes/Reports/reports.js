@@ -37,6 +37,65 @@ module.exports = ({ db }) => {
   }
 
   /* =========================================================================
+  * 0) DATE BOUNDS (first and last order date)
+  * ========================================================================= */
+  router.get("/date-bounds", async (req, res) => {
+    try {
+      const rows = await db.query(
+        `
+        SELECT 
+          MIN(DATE(closed_at)) AS minDate,
+          MAX(DATE(closed_at)) AS maxDate
+        FROM pos_orders
+        WHERE status IN ('paid','refunded')
+        `
+      );
+
+      const row = rows[0] || {};
+
+      return res.json({
+        ok: true,
+        minDate: row.minDate || null, // e.g. "2024-02-10"
+        maxDate: row.maxDate || null, // e.g. "2025-01-03"
+      });
+    } catch (e) {
+      console.error("DATE BOUNDS ERROR", e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  router.get("/active-days", async (req, res) => {
+    try {
+      const rows = await db.query(
+        `
+        SELECT DISTINCT DATE(closed_at) AS day
+        FROM pos_orders
+        WHERE status IN ('paid','refunded')
+        ORDER BY day
+        `
+      );
+
+      // Normalize to "YYYY-MM-DD" strings
+      const days = rows
+        .map((r) => r.day)
+        .filter(Boolean)
+        .map((d) =>
+          d instanceof Date
+            ? d.toISOString().slice(0, 10) // "2025-11-26"
+            : String(d).slice(0, 10)
+        );
+
+      return res.json({
+        ok: true,
+        days,
+      });
+    } catch (e) {
+      console.error("ACTIVE DAYS ERROR", e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  /* =========================================================================
    * 1) TOP 5 CATEGORY SALES
    * ========================================================================= */
     router.get("/category-top5", async (req, res) => {
@@ -82,64 +141,61 @@ module.exports = ({ db }) => {
     try {
       const { range = "days", from, to } = req.query;
 
-      let sql = "";
-      if (range === "days" || range === "custom") {
-        sql = `
-          SELECT 
-            DATE(o.closed_at) AS label,
-            SUM(i.line_total) AS total
-          FROM pos_order_items i
-          JOIN pos_orders o ON o.order_id = i.order_id
-          WHERE o.status IN ('paid','refunded')
-          AND ${buildRangeSQL(range, from, to)}
-          GROUP BY DATE(o.closed_at)
-          ORDER BY DATE(o.closed_at)
-        `;
-      } else if (range === "weeks") {
-        sql = `
-          SELECT 
-            YEARWEEK(o.closed_at, 1) AS label,
-            SUM(i.line_total) AS total
-          FROM pos_order_items i
-          JOIN pos_orders o ON o.order_id = i.order_id
-          WHERE o.status IN ('paid','refunded')
-          AND ${buildRangeSQL("weeks")}
-          GROUP BY YEARWEEK(o.closed_at, 1)
-        `;
-      } else if (range === "monthly") {
-        sql = `
-          SELECT 
-            DATE_FORMAT(o.closed_at, '%Y-%m') AS label,
-            SUM(i.line_total) AS total
-          FROM pos_order_items i
-          JOIN pos_orders o ON o.order_id = i.order_id
-          WHERE o.status IN ('paid','refunded')
-          AND ${buildRangeSQL("monthly")}
-          GROUP BY YEAR(o.closed_at), MONTH(o.closed_at)
-        `;
-      } else if (range === "quarterly") {
-        sql = `
-          SELECT 
-            CONCAT('Q', QUARTER(o.closed_at), ' ', YEAR(o.closed_at)) AS label,
-            SUM(i.line_total) AS total
-          FROM pos_order_items i
-          JOIN pos_orders o ON o.order_id = i.order_id
-          WHERE o.status IN ('paid','refunded')
-          AND ${buildRangeSQL("quarterly")}
-          GROUP BY YEAR(o.closed_at), QUARTER(o.closed_at)
-        `;
-      } else if (range === "yearly") {
-        sql = `
-          SELECT 
-            YEAR(o.closed_at) AS label,
-            SUM(i.line_total) AS total
-          FROM pos_order_items i
-          JOIN pos_orders o ON o.order_id = i.order_id
-          WHERE o.status IN ('paid','refunded')
-          AND ${buildRangeSQL("yearly")}
-          GROUP BY YEAR(o.closed_at)
-        `;
+      // reuse your existing helper
+      const where = buildRangeSQL(range, from, to);
+
+      let labelExpr;
+      let groupByExpr;
+      let orderByExpr;
+
+      switch (range) {
+        case "weeks":
+          labelExpr = "YEARWEEK(o.closed_at, 1)";
+          groupByExpr = labelExpr;
+          orderByExpr = labelExpr;
+          break;
+
+        case "monthly":
+          labelExpr = "DATE_FORMAT(o.closed_at, '%Y-%m')";
+          groupByExpr = labelExpr;
+          orderByExpr = labelExpr;
+          break;
+
+        case "quarterly":
+          labelExpr = "CONCAT('Q', QUARTER(o.closed_at), ' ', YEAR(o.closed_at))";
+          groupByExpr = labelExpr;
+          orderByExpr = labelExpr;
+          break;
+
+        case "yearly":
+          labelExpr = "YEAR(o.closed_at)";
+          groupByExpr = labelExpr;
+          orderByExpr = labelExpr;
+          break;
+
+        case "days":
+        case "custom":
+        default:
+          labelExpr = "DATE(o.closed_at)";
+          groupByExpr = labelExpr;
+          orderByExpr = labelExpr;
+          break;
       }
+
+      const sql = `
+        SELECT 
+          ${labelExpr} AS label,
+          SUM(i.line_total) AS total
+        FROM pos_order_items i
+        JOIN pos_orders o ON o.order_id = i.order_id
+        WHERE o.status IN ('paid','refunded')
+        AND ${where}
+        GROUP BY ${groupByExpr}
+        ORDER BY ${orderByExpr}
+      `;
+
+      // if you need to debug:
+      // console.log('CATEGORY SERIES SQL:', sql);
 
       const rows = await db.query(sql);
 
@@ -275,7 +331,7 @@ module.exports = ({ db }) => {
     }
     });
 
-    /* =========================================================================
+  /* =========================================================================
    * 6) STAFF PERFORMANCE (from pos_shifts)
    * ========================================================================= */
   router.get("/staff-performance", async (req, res) => {

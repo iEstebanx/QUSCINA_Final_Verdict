@@ -876,8 +876,7 @@ module.exports = ({ db } = {}) => {
       if (e?.code === "ER_ROW_IS_REFERENCED_2" || e?.errno === 1451) {
         return res.status(400).json({
           error:
-            "This user cannot be deleted because they are already used in POS shifts or other records. " +
-            "Please set the user status to Inactive instead of deleting.",
+            "This user cannot be deleted because they are already used in POS shifts or other records. ",
         });
       }
 

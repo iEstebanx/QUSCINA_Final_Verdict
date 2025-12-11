@@ -23,14 +23,6 @@ import {
   Avatar,
   Chip,
   useMediaQuery,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  RadioGroup,
-  FormControlLabel,
-  Radio,
-  FormHelperText,
 } from "@mui/material";
 import {
   LineChart,
@@ -44,11 +36,13 @@ import {
 import { useTheme } from "@mui/material/styles";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import SearchIcon from "@mui/icons-material/Search";
-import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
-import PaymentsIcon from "@mui/icons-material/Payments";
-import ReplayIcon from "@mui/icons-material/Replay";
 import GridOnIcon from "@mui/icons-material/GridOn"; // Excel icon
 import { useAuth } from "@/context/AuthContext";
+
+import dayjs from "dayjs";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 
 // 🔹 PDF libs + logo
 import jsPDF from "jspdf";
@@ -84,6 +78,58 @@ const pdfHeadStyles = {
 /* --------------------------------- Page --------------------------------- */
 export default function ReportsPage() {
   const { user } = useAuth();
+
+  const [activeDays, setActiveDays] = useState([]);
+  const [dateBounds, setDateBounds] = useState({ min: "", max: "" });
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadBounds() {
+      try {
+        const resp = await fetch("/api/reports/date-bounds");
+        const json = await resp.json();
+        if (!alive) return;
+
+        if (json?.ok && json.minDate && json.maxDate) {
+          setDateBounds({ min: json.minDate, max: json.maxDate });
+        }
+      } catch (err) {
+        console.error("[reports] date-bounds failed", err);
+      }
+    }
+
+    loadBounds();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadActiveDays() {
+      try {
+        const resp = await fetch("/api/reports/active-days");
+        const json = await resp.json();
+        if (!alive) return;
+
+        if (json?.ok && Array.isArray(json.days)) {
+          const normalized = json.days
+            .filter(Boolean)
+            .map((d) => dayjs(d).format("YYYY-MM-DD"));
+          setActiveDays(normalized);
+        }
+      } catch (err) {
+        console.error("[reports] active-days failed", err);
+      }
+    }
+
+    loadActiveDays();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const preparedBy = useMemo(() => {
     if (!user) return "Prepared by: N/A";
@@ -130,29 +176,14 @@ export default function ReportsPage() {
   const isSmall = useMediaQuery(theme.breakpoints.down("md"));
   const [selectedOrder, setSelectedOrder] = useState(null);
 
-  // 🔹 PDF dialog state
-  const [pdfDialogOpen, setPdfDialogOpen] = useState(false);
-  const [pdfMode, setPdfMode] = useState("current");
-  const [pdfRange, setPdfRange] = useState("days");
-  const [pdfFrom, setPdfFrom] = useState("");
-  const [pdfTo, setPdfTo] = useState("");
-  const [pdfError, setPdfError] = useState("");
-  const [pdfLoading, setPdfLoading] = useState(false);
-
-  // 🔹 EXCEL dialog state (same behavior as PDF)
-  const [excelDialogOpen, setExcelDialogOpen] = useState(false);
-  const [excelMode, setExcelMode] = useState("current");
-  const [excelRange, setExcelRange] = useState("days");
-  const [excelFrom, setExcelFrom] = useState("");
-  const [excelTo, setExcelTo] = useState("");
-  const [excelError, setExcelError] = useState("");
-  const [excelLoading, setExcelLoading] = useState(false);
-
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
+  const displayDate = (s) =>
+  dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s;
+  
   const currentRangeLabel = useMemo(() => {
     if (range === "custom") {
       if (customFrom && customTo) {
-        return `${customFrom} – ${customTo}`;
+        return `${displayDate(customFrom)} – ${displayDate(customTo)}`;
       }
       return "Custom date range";
     }
@@ -172,6 +203,11 @@ export default function ReportsPage() {
         return "All";
     }
   }, [range, customFrom, customTo]);
+
+  const activeDaySet = useMemo(
+    () => new Set(activeDays),
+    [activeDays]
+  );
 
   const formatRangePresetLabel = (r) => {
     switch (r) {
@@ -372,8 +408,17 @@ export default function ReportsPage() {
     document.body.removeChild(link);
   };
 
+  const ensureCustomRangeComplete = () => {
+    if (range === "custom" && (!customFrom || !customTo)) {
+      alert("Please select both From and To dates for custom range.");
+      return false;
+    }
+    return true;
+  };
+
   /* -------------------------- Excel Export (current) -------------------------- */
   const handleExcelExportCurrent = () => {
+    if (!ensureCustomRangeComplete()) return;
     const csv = buildSalesExcelCsv({
       rangeText: currentRangeLabel,
       categoryTop5Data: categoryTop5,
@@ -385,70 +430,6 @@ export default function ReportsPage() {
     });
 
     triggerExcelDownload(csv, currentRangeLabel);
-  };
-
-  /* ---------------------- Excel Export (custom from dialog) ---------------------- */
-  const handleExcelExportRange = async () => {
-    if (excelRange === "custom" && (!excelFrom || !excelTo)) {
-      setExcelError("Please select both From and To dates.");
-      return;
-    }
-
-    setExcelError("");
-    setExcelLoading(true);
-
-    try {
-      const qs =
-        excelRange === "custom"
-          ? `range=custom&from=${excelFrom}&to=${excelTo}`
-          : `range=${excelRange}`;
-
-      const [c1, c2, p, b, sp] = await Promise.all([
-        fetch(`/api/reports/category-top5?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/staff-performance?${qs}`).then((r) => r.json()),
-      ]);
-
-      const categoryTop5Data = c1?.ok ? c1.data || [] : [];
-      const categorySeriesData = c2?.ok ? c2.data || [] : [];
-      const paymentsData = p?.ok ? p.data || [] : [];
-      const bestSellerData = (b?.ok ? b.data || [] : []).slice(0, 5);
-      const staffPerformanceData = sp?.ok ? sp.data || [] : [];
-
-      const label =
-        excelRange === "custom"
-          ? `${excelFrom} – ${excelTo}`
-          : formatRangePresetLabel(excelRange);
-
-      const csv = buildSalesExcelCsv({
-        rangeText: label,
-        categoryTop5Data,
-        categorySeriesData,
-        paymentsData,
-        bestSellerData,
-        staffPerformanceData,
-        preparedBy,
-      });
-
-      triggerExcelDownload(csv, label);
-      setExcelDialogOpen(false);
-    } catch (err) {
-      console.error("[reports] custom excel failed", err);
-      setExcelError("Failed to generate Excel. Please try again.");
-    } finally {
-      setExcelLoading(false);
-    }
-  };
-
-  const handleExcelDialogConfirm = async () => {
-    if (excelMode === "current") {
-      setExcelDialogOpen(false);
-      handleExcelExportCurrent();
-    } else {
-      await handleExcelExportRange();
-    }
   };
 
   /* ------------------ Shared PDF builder (uses passed data) ------------------ */
@@ -688,6 +669,7 @@ export default function ReportsPage() {
 
   /* ---------------------------- PDF Export (current) ---------------------------- */
   const handlePdfExportCurrent = async () => {
+    if (!ensureCustomRangeComplete()) return;
     await buildSalesPdf({
       rangeText: currentRangeLabel,
       categoryTop5Data: categoryTop5,
@@ -699,847 +681,567 @@ export default function ReportsPage() {
     });
   };
 
-  /* ------------------------ PDF Export (custom from dialog) ------------------------ */
-  const handlePdfExportRange = async () => {
-    if (pdfRange === "custom" && (!pdfFrom || !pdfTo)) {
-      setPdfError("Please select both From and To dates.");
-      return;
-    }
-
-    setPdfError("");
-    setPdfLoading(true);
-
-    try {
-      const qs =
-        pdfRange === "custom"
-          ? `range=custom&from=${pdfFrom}&to=${pdfTo}`
-          : `range=${pdfRange}`;
-
-      const [c1, c2, p, b, sp] = await Promise.all([
-        fetch(`/api/reports/category-top5?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
-        fetch(`/api/reports/staff-performance?${qs}`).then((r) => r.json()),
-      ]);
-
-      const categoryTop5Data = c1?.ok ? c1.data || [] : [];
-      const categorySeriesData = c2?.ok ? c2.data || [] : [];
-      const paymentsData = p?.ok ? p.data || [] : [];
-      const bestSellerData = b?.ok ? b.data || [] : [];
-      const staffPerformanceData = sp?.ok ? sp.data || [] : [];
-
-      const label =
-        pdfRange === "custom"
-          ? `${pdfFrom} – ${pdfTo}`
-          : formatRangePresetLabel(pdfRange);
-
-      await buildSalesPdf({
-        rangeText: label,
-        categoryTop5Data,
-        categorySeriesData,
-        paymentsData,
-        bestSellerData,
-        staffPerformanceData,
-        preparedBy,
-      });
-
-      setPdfDialogOpen(false);
-    } catch (err) {
-      console.error("[reports] custom pdf failed", err);
-      setPdfError("Failed to generate PDF. Please try again.");
-    } finally {
-      setPdfLoading(false);
-    }
-  };
-
-  const handlePdfDialogConfirm = async () => {
-    if (pdfMode === "current") {
-      setPdfDialogOpen(false);
-      await handlePdfExportCurrent();
-    } else {
-      await handlePdfExportRange();
-    }
-  };
-
   return (
     <>
       <Box p={2} display="grid" gap={2} sx={{ overflowX: "hidden" }}>
-        {/* Controls */}
-        <Paper sx={{ p: 2, overflow: "hidden" }}>
-          <Stack
-            direction="row"
-            useFlexGap
-            alignItems="center"
-            flexWrap="wrap"
-            rowGap={1.5}
-            columnGap={2}
-          >
-            {/* 🔸 Range preset dropdown */}
-            <FormControl size="small" sx={{ minWidth: 160 }}>
-              <InputLabel id="range-label">Range</InputLabel>
-              <Select
-                labelId="range-label"
-                value={range}
-                label="Range"
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setRange(value);
-                  if (value !== "custom") {
+        <LocalizationProvider dateAdapter={AdapterDayjs}>
+          {/* Controls */}
+          <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Stack
+              direction="row"
+              useFlexGap
+              alignItems="center"
+              flexWrap="wrap"
+              rowGap={1.5}
+              columnGap={2}
+            >
+              {/* 🔸 Range preset dropdown */}
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel id="range-label">Range</InputLabel>
+                <Select
+                  labelId="range-label"
+                  value={range}
+                  label="Range"
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setRange(value);
+                    if (value !== "custom") {
+                      setCustomFrom("");
+                      setCustomTo("");
+                    }
+                  }}
+                >
+                  <MenuItem value="days">Day</MenuItem>
+                  <MenuItem value="weeks">Week</MenuItem>
+                  <MenuItem value="monthly">Monthly</MenuItem>
+                  <MenuItem value="quarterly">Quarterly</MenuItem>
+                  <MenuItem value="yearly">Yearly</MenuItem>
+                  <MenuItem value="custom">Custom</MenuItem>
+                </Select>
+              </FormControl>
+
+              {/* 🔸 Custom date range */}
+              <DatePicker
+                label="From"
+                views={["year", "month", "day"]}
+                format="MM/DD/YYYY"           // 👈 DISPLAY FORMAT (MUI v6+)
+                value={customFrom ? dayjs(customFrom) : null}
+                onChange={(value) => {
+                  if (!value) {
                     setCustomFrom("");
-                    setCustomTo("");
+                    return;
                   }
-                }}
-              >
-                <MenuItem value="days">Day</MenuItem>
-                <MenuItem value="weeks">Week</MenuItem>
-                <MenuItem value="monthly">Monthly</MenuItem>
-                <MenuItem value="quarterly">Quarterly</MenuItem>
-                <MenuItem value="yearly">Yearly</MenuItem>
-                <MenuItem value="custom">Custom</MenuItem>
-              </Select>
-            </FormControl>
 
-            {/* 🔸 Custom date range */}
-            <TextField
-              size="small"
-              type="date"
-              label="From"
-              value={customFrom}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (range !== "custom") setRange("custom");
-                setCustomFrom(value);
-                setPage1(0);
-                setPage2(0);
-              }}
-              InputLabelProps={{ shrink: true }}
-            />
+                  // INTERNAL VALUE stays ISO
+                  let s = value.format("YYYY-MM-DD");
+                  const { min, max } = dateBounds;
+                  if (min && s < min) s = min;
+                  if (max && s > max) s = max;
 
-            <TextField
-              size="small"
-              type="date"
-              label="To"
-              value={customTo}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (range !== "custom") setRange("custom");
-                setCustomTo(value);
-                setPage1(0);
-                setPage2(0);
-              }}
-              InputLabelProps={{ shrink: true }}
-            />
-
-            <Box sx={{ flexGrow: 1 }} />
-
-            {/* 🔸 Export Buttons */}
-            <Button
-              variant="contained"
-              color="success"
-              startIcon={<GridOnIcon />}
-              onClick={() => {
-                setExcelError("");
-                setExcelMode("current");
-                setExcelRange(range);
-                setExcelFrom("");
-                setExcelTo("");
-                setExcelDialogOpen(true);
-              }}
-            >
-              Excel
-            </Button>
-            <Button
-              variant="contained"
-              color="error"
-              startIcon={<PictureAsPdfIcon />}
-              onClick={() => {
-                setPdfError("");
-                setPdfMode("current");
-                setPdfRange(range);
-                setPdfFrom("");
-                setPdfTo("");
-                setPdfDialogOpen(true);
-              }}
-            >
-              PDF
-            </Button>
-          </Stack>
-        </Paper>
-
-        {/* ================= Sales by Category ================= */}
-        <Paper sx={{ p: 2, overflow: "hidden" }}>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            {/* Left panel */}
-            <Box
-              sx={{
-                flex: { xs: "1 1 100%", md: "0 0 40%" },
-                minWidth: { xs: 260, md: 360 },
-              }}
-            >
-              <Typography fontWeight={700} mb={1}>
-                Top 5 Category
-              </Typography>
-
-              <TableContainer
-                component={Paper}
-                elevation={0}
-                className="scroll-x"
-                sx={{
-                  width: "100%",
-                  borderRadius: 1,
-                  overflowX: "auto",
-                }}
-              >
-                <Table
-                  stickyHeader
-                  size="small"
-                  sx={{
-                    minWidth: 408,
-                    tableLayout: "fixed",
-                    ...comfyCells,
-                  }}
-                >
-                  <colgroup>
-                    <col style={{ width: 48 }} />
-                    <col />
-                    <col style={{ width: 140 }} />
-                  </colgroup>
-
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ width: 48 }}>#</TableCell>
-                      <TableCell>Name</TableCell>
-                      <TableCell align="right">Net Sales</TableCell>
-                    </TableRow>
-                  </TableHead>
-
-                  <TableBody>
-                    {categoryTop5.map((r, i) => (
-                      <TableRow key={i}>
-                        <TableCell>{i + 1}</TableCell>
-                        <TableCell
-                          sx={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {r.name}
-                        </TableCell>
-                        <TableCell align="right">{peso(r.net)}</TableCell>
-                      </TableRow>
-                    ))}
-                    {categoryTop5.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={3} align="center">
-                          No data for this range
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </Box>
-
-            <Divider
-              orientation="vertical"
-              flexItem
-              sx={{ display: { xs: "none", md: "block" } }}
-            />
-
-            {/* Right panel: chart */}
-            <Box
-              sx={{
-                flex: { xs: "1 1 100%", md: "0 0 60%" },
-                minWidth: 300,
-              }}
-            >
-              <Typography fontWeight={700} mb={1}>
-                Sales by Category Chart
-              </Typography>
-              <Paper variant="outlined" sx={{ p: 2, overflow: "hidden" }}>
-                <Box sx={{ width: "100%", height: 260 }}>
-                  <ResponsiveContainer>
-                    <LineChart
-                      data={categorySeries}
-                      margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="x"
-                        tick={{ fill: "#666", fontSize: 12 }}
-                        axisLine={{ stroke: "#ccc" }}
-                      />
-                      <YAxis
-                        tickFormatter={(v) =>
-                          `₱${v.toLocaleString(undefined, {
-                            maximumFractionDigits: 0,
-                          })}`
-                        }
-                        tick={{ fill: "#666", fontSize: 12 }}
-                        axisLine={{ stroke: "#ccc" }}
-                      />
-                      <Tooltip
-                        formatter={(value) =>
-                          `₱${Number(value).toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}`
-                        }
-                        labelStyle={{ fontWeight: 600 }}
-                        contentStyle={{
-                          background: "#fff",
-                          border: "1px solid #ddd",
-                          borderRadius: 8,
-                        }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="y"
-                        stroke={theme.palette.primary.main}
-                        strokeWidth={2.5}
-                        dot={{ r: 4 }}
-                        activeDot={{ r: 6 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </Box>
-              </Paper>
-            </Box>
-          </Stack>
-        </Paper>
-
-        {/* ================= Sales by Payment Type ================= */}
-        <Paper sx={{ p: 2, overflow: "hidden" }}>
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            mb={1}
-            gap={2}
-            flexWrap="wrap"
-          >
-            <Typography fontWeight={700}>Sales by Payment Type</Typography>
-            <TextField
-              size="small"
-              placeholder="Search"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage1(0);
-              }}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <SearchIcon />
-                  </InputAdornment>
-                ),
-              }}
-              sx={{ width: { xs: "100%", sm: 300 } }}
-            />
-          </Stack>
-
-          <TableContainer
-            component={Paper}
-            elevation={0}
-            className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
-          >
-            <Table
-              stickyHeader
-              sx={{
-                minWidth: { xs: 720, sm: 900, md: 1080 },
-                ...comfyCells,
-              }}
-            >
-              <TableHead>
-                <TableRow>
-                  <TableCell>Payment Type</TableCell>
-                  <TableCell>Payment Transactions</TableCell>
-                  <TableCell>Refund Transactions</TableCell>
-                  <TableCell>Net Amount</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {pagedPayments.map((r) => (
-                  <TableRow key={r.type}>
-                    <TableCell>{r.type}</TableCell>
-                    <TableCell>{r.tx}</TableCell>
-                    <TableCell>{r.refundTx}</TableCell>
-                    <TableCell>{peso(r.net)}</TableCell>
-                  </TableRow>
-                ))}
-                {pagedPayments.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={4} align="center">
-                      No results
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-
-          <TablePagination
-            component="div"
-            count={filteredPayments.length}
-            page={page1}
-            onPageChange={(_, p) => setPage1(p)}
-            rowsPerPage={rpp1}
-            onRowsPerPageChange={(e) => {
-              setRpp1(parseInt(e.target.value, 10));
-              setPage1(0);
-            }}
-            rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
-            labelRowsPerPage="Rows per page:"
-          />
-        </Paper>
-
-        {/* ================= Best Seller ================= */}
-        <Paper sx={{ p: 2, overflow: "hidden" }}>
-          <Typography fontWeight={700} mb={1}>
-            Best Seller
-          </Typography>
-          <TableContainer
-            component={Paper}
-            elevation={0}
-            className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
-          >
-            <Table
-              stickyHeader
-              sx={{
-                minWidth: { xs: 720, sm: 900, md: 1080 },
-                ...comfyCells,
-              }}
-            >
-              <TableHead>
-                <TableRow>
-                  <TableCell>Rank</TableCell>
-                  <TableCell>Item Name</TableCell>
-                  <TableCell>Total Orders</TableCell>
-                  <TableCell>Total Sales</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {bestSeller.map((r) => (
-                  <TableRow key={r.rank}>
-                    <TableCell>{r.rank}</TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Avatar
-                          variant="rounded"
-                          sx={{ width: 28, height: 28, fontSize: 12 }}
-                        >
-                          {r.name.slice(0, 1).toUpperCase()}
-                        </Avatar>
-                        <Typography>{r.name}</Typography>
-                      </Stack>
-                    </TableCell>
-                    <TableCell>{r.orders}</TableCell>
-                    <TableCell>{peso(r.sales)}</TableCell>
-                  </TableRow>
-                ))}
-                {bestSeller.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={4} align="center">
-                      No data for this range
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-
-        {/* ================= Latest Order ================= */}
-        {/* <Paper sx={{ p: 2, overflow: "hidden" }}>
-          <Stack direction="row" spacing={2} flexWrap="wrap" mb={2}>
-            <MetricCard
-              icon={<ReceiptLongIcon />}
-              label="All Receipts"
-              value={filteredOrders.length}
-            />
-            <MetricCard
-              icon={<PaymentsIcon />}
-              label="Sales"
-              value={filteredOrders.filter((o) => o.type === "Sale").length}
-              color="success"
-            />
-            <MetricCard
-              icon={<ReplayIcon />}
-              label="Refunds"
-              value={filteredOrders.filter((o) => o.type === "Refund").length}
-              color="error"
-            />
-          </Stack>
-
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-
-            <Box sx={{ flex: 2, minWidth: 300 }}>
-              <TableContainer
-                component={Paper}
-                elevation={0}
-                className="scroll-x"
-                sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
-              >
-                <Table
-                  stickyHeader
-                  sx={{
-                    minWidth: { xs: 720, sm: 900, md: 1080 },
-                    ...comfyCells,
-                  }}
-                >
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Receipt no.</TableCell>
-                      <TableCell>Date</TableCell>
-                      <TableCell>Employee</TableCell>
-                      <TableCell>Type</TableCell>
-                      <TableCell align="right">Total</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {pagedOrders.map((r) => {
-                      const dt = r.date ? new Date(r.date) : null;
-                      const formattedDate = dt
-                        ? dt.toLocaleString("en-PH", {
-                            month: "short",
-                            day: "2-digit",
-                            year: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : r.date;
-
-                      return (
-                        <TableRow
-                          key={r.id}
-                          hover
-                          onClick={() => onRowClick(r)}
-                          sx={{ cursor: "pointer" }}
-                        >
-                          <TableCell>{r.id}</TableCell>
-                          <TableCell>{formattedDate}</TableCell>
-                          <TableCell>{r.employee}</TableCell>
-                          <TableCell>{r.type}</TableCell>
-                          <TableCell align="right">{peso(r.total)}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                    {pagedOrders.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={5} align="center">
-                          No receipts in this range
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-
-              <TablePagination
-                component="div"
-                count={filteredOrders.length}
-                page={page2}
-                onPageChange={(_, p) => setPage2(p)}
-                rowsPerPage={rpp2}
-                onRowsPerPageChange={(e) => {
-                  setRpp2(parseInt(e.target.value, 10));
+                  if (range !== "custom") setRange("custom");
+                  setCustomFrom(s);
+                  setPage1(0);
                   setPage2(0);
                 }}
-                rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
-                labelRowsPerPage="Rows per page:"
+                minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
+                maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
+                shouldDisableDate={(day) => {
+                  if (!activeDaySet.size) return false;
+                  const key = day.format("YYYY-MM-DD");
+                  return !activeDaySet.has(key);
+                }}
+                slotProps={{
+                  textField: { size: "small" },
+                }}
               />
 
-              {isSmall && (
-                <Box sx={{ mt: 2 }}>
-                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <DatePicker
+                label="To"
+                views={["year", "month", "day"]}
+                format="MM/DD/YYYY"
+                value={customTo ? dayjs(customTo) : null}
+                onChange={(value) => {
+                  if (!value) {
+                    setCustomTo("");
+                    return;
+                  }
+
+                  // INTERNAL stays ISO
+                  let s = value.format("YYYY-MM-DD");
+                  const { min, max } = dateBounds;
+                  if (min && s < min) s = min;
+                  if (max && s > max) s = max;
+
+                  if (range !== "custom") setRange("custom");
+                  setCustomTo(s);
+                  setPage1(0);
+                  setPage2(0);
+                }}
+                minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
+                maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
+                shouldDisableDate={(day) => {
+                  if (!activeDaySet.size) return false;
+                  const key = day.format("YYYY-MM-DD");
+                  return !activeDaySet.has(key);
+                }}
+                slotProps={{
+                  textField: { size: "small" },
+                }}
+              />
+
+              <Box sx={{ flexGrow: 1 }} />
+
+              {/* 🔸 Export Buttons */}
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={<GridOnIcon />}
+                onClick={handleExcelExportCurrent}
+              >
+                Excel
+              </Button>
+              <Button
+                variant="contained"
+                color="error"
+                startIcon={<PictureAsPdfIcon />}
+                onClick={handlePdfExportCurrent}
+              >
+                PDF
+              </Button>
+            </Stack>
+          </Paper>
+
+          {/* ================= Sales by Category ================= */}
+          <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              {/* Left panel */}
+              <Box
+                sx={{
+                  flex: { xs: "1 1 100%", md: "0 0 40%" },
+                  minWidth: { xs: 260, md: 360 },
+                }}
+              >
+                <Typography fontWeight={700} mb={1}>
+                  Top 5 Category
+                </Typography>
+
+                <TableContainer
+                  component={Paper}
+                  elevation={0}
+                  className="scroll-x"
+                  sx={{
+                    width: "100%",
+                    borderRadius: 1,
+                    overflowX: "auto",
+                  }}
+                >
+                  <Table
+                    stickyHeader
+                    size="small"
+                    sx={{
+                      minWidth: 408,
+                      tableLayout: "fixed",
+                      ...comfyCells,
+                    }}
+                  >
+                    <colgroup>
+                      <col style={{ width: 48 }} />
+                      <col />
+                      <col style={{ width: 140 }} />
+                    </colgroup>
+
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={{ width: 48 }}>#</TableCell>
+                        <TableCell>Name</TableCell>
+                        <TableCell align="right">Net Sales</TableCell>
+                      </TableRow>
+                    </TableHead>
+
+                    <TableBody>
+                      {categoryTop5.map((r, i) => (
+                        <TableRow key={i}>
+                          <TableCell>{i + 1}</TableCell>
+                          <TableCell
+                            sx={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {r.name}
+                          </TableCell>
+                          <TableCell align="right">{peso(r.net)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {categoryTop5.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={3} align="center">
+                            No data for this range
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+
+              <Divider
+                orientation="vertical"
+                flexItem
+                sx={{ display: { xs: "none", md: "block" } }}
+              />
+
+              {/* Right panel: chart */}
+              <Box
+                sx={{
+                  flex: { xs: "1 1 100%", md: "0 0 60%" },
+                  minWidth: 300,
+                }}
+              >
+                <Typography fontWeight={700} mb={1}>
+                  Sales by Category Chart
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 2, overflow: "hidden" }}>
+                  <Box sx={{ width: "100%", height: 260 }}>
+                    <ResponsiveContainer>
+                      <LineChart
+                        data={categorySeries}
+                        margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="x"
+                          tick={{ fill: "#666", fontSize: 12 }}
+                          axisLine={{ stroke: "#ccc" }}
+                        />
+                        <YAxis
+                          tickFormatter={(v) =>
+                            `₱${v.toLocaleString(undefined, {
+                              maximumFractionDigits: 0,
+                            })}`
+                          }
+                          tick={{ fill: "#666", fontSize: 12 }}
+                          axisLine={{ stroke: "#ccc" }}
+                        />
+                        <Tooltip
+                          formatter={(value) =>
+                            `₱${Number(value).toLocaleString(undefined, {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}`
+                          }
+                          labelStyle={{ fontWeight: 600 }}
+                          contentStyle={{
+                            background: "#fff",
+                            border: "1px solid #ddd",
+                            borderRadius: 8,
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="y"
+                          stroke={theme.palette.primary.main}
+                          strokeWidth={2.5}
+                          dot={{ r: 4 }}
+                          activeDot={{ r: 6 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </Box>
+                </Paper>
+              </Box>
+            </Stack>
+          </Paper>
+
+          {/* ================= Sales by Payment Type ================= */}
+          <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              mb={1}
+              gap={2}
+              flexWrap="wrap"
+            >
+              <Typography fontWeight={700}>Sales by Payment Type</Typography>
+              <TextField
+                size="small"
+                placeholder="Search"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage1(0);
+                }}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <SearchIcon />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{ width: { xs: "100%", sm: 300 } }}
+              />
+            </Stack>
+
+            <TableContainer
+              component={Paper}
+              elevation={0}
+              className="scroll-x"
+              sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
+            >
+              <Table
+                stickyHeader
+                sx={{
+                  minWidth: { xs: 720, sm: 900, md: 1080 },
+                  ...comfyCells,
+                }}
+              >
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Payment Type</TableCell>
+                    <TableCell>Payment Transactions</TableCell>
+                    <TableCell>Refund Transactions</TableCell>
+                    <TableCell>Net Amount</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {pagedPayments.map((r) => (
+                    <TableRow key={r.type}>
+                      <TableCell>{r.type}</TableCell>
+                      <TableCell>{r.tx}</TableCell>
+                      <TableCell>{r.refundTx}</TableCell>
+                      <TableCell>{peso(r.net)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {pagedPayments.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} align="center">
+                        No results
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            <TablePagination
+              component="div"
+              count={filteredPayments.length}
+              page={page1}
+              onPageChange={(_, p) => setPage1(p)}
+              rowsPerPage={rpp1}
+              onRowsPerPageChange={(e) => {
+                setRpp1(parseInt(e.target.value, 10));
+                setPage1(0);
+              }}
+              rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
+              labelRowsPerPage="Rows per page:"
+            />
+          </Paper>
+
+          {/* ================= Best Seller ================= */}
+          <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Typography fontWeight={700} mb={1}>
+              Best Seller
+            </Typography>
+            <TableContainer
+              component={Paper}
+              elevation={0}
+              className="scroll-x"
+              sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
+            >
+              <Table
+                stickyHeader
+                sx={{
+                  minWidth: { xs: 720, sm: 900, md: 1080 },
+                  ...comfyCells,
+                }}
+              >
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Rank</TableCell>
+                    <TableCell>Item Name</TableCell>
+                    <TableCell>Total Orders</TableCell>
+                    <TableCell>Total Sales</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {bestSeller.map((r) => (
+                    <TableRow key={r.rank}>
+                      <TableCell>{r.rank}</TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Avatar
+                            variant="rounded"
+                            sx={{ width: 28, height: 28, fontSize: 12 }}
+                          >
+                            {r.name.slice(0, 1).toUpperCase()}
+                          </Avatar>
+                          <Typography>{r.name}</Typography>
+                        </Stack>
+                      </TableCell>
+                      <TableCell>{r.orders}</TableCell>
+                      <TableCell>{peso(r.sales)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {bestSeller.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} align="center">
+                        No data for this range
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
+
+          {/* ================= Latest Order ================= */}
+          {/* <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Stack direction="row" spacing={2} flexWrap="wrap" mb={2}>
+              <MetricCard
+                icon={<ReceiptLongIcon />}
+                label="All Receipts"
+                value={filteredOrders.length}
+              />
+              <MetricCard
+                icon={<PaymentsIcon />}
+                label="Sales"
+                value={filteredOrders.filter((o) => o.type === "Sale").length}
+                color="success"
+              />
+              <MetricCard
+                icon={<ReplayIcon />}
+                label="Refunds"
+                value={filteredOrders.filter((o) => o.type === "Refund").length}
+                color="error"
+              />
+            </Stack>
+
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+
+              <Box sx={{ flex: 2, minWidth: 300 }}>
+                <TableContainer
+                  component={Paper}
+                  elevation={0}
+                  className="scroll-x"
+                  sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
+                >
+                  <Table
+                    stickyHeader
+                    sx={{
+                      minWidth: { xs: 720, sm: 900, md: 1080 },
+                      ...comfyCells,
+                    }}
+                  >
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Receipt no.</TableCell>
+                        <TableCell>Date</TableCell>
+                        <TableCell>Employee</TableCell>
+                        <TableCell>Type</TableCell>
+                        <TableCell align="right">Total</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {pagedOrders.map((r) => {
+                        const dt = r.date ? new Date(r.date) : null;
+                        const formattedDate = dt
+                          ? dt.toLocaleString("en-PH", {
+                              month: "short",
+                              day: "2-digit",
+                              year: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
+                          : r.date;
+
+                        return (
+                          <TableRow
+                            key={r.id}
+                            hover
+                            onClick={() => onRowClick(r)}
+                            sx={{ cursor: "pointer" }}
+                          >
+                            <TableCell>{r.id}</TableCell>
+                            <TableCell>{formattedDate}</TableCell>
+                            <TableCell>{r.employee}</TableCell>
+                            <TableCell>{r.type}</TableCell>
+                            <TableCell align="right">{peso(r.total)}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                      {pagedOrders.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} align="center">
+                            No receipts in this range
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                <TablePagination
+                  component="div"
+                  count={filteredOrders.length}
+                  page={page2}
+                  onPageChange={(_, p) => setPage2(p)}
+                  rowsPerPage={rpp2}
+                  onRowsPerPageChange={(e) => {
+                    setRpp2(parseInt(e.target.value, 10));
+                    setPage2(0);
+                  }}
+                  rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
+                  labelRowsPerPage="Rows per page:"
+                />
+
+                {isSmall && (
+                  <Box sx={{ mt: 2 }}>
+                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                      {selectedOrder ? (
+                        <ReceiptPreview order={selectedOrder} />
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          Select a receipt to view details
+                        </Typography>
+                      )}
+                    </Paper>
+                  </Box>
+                )}
+              </Box>
+
+              {!isSmall && (
+                <Box sx={{ flex: 1, minWidth: 320 }}>
+                  <Paper
+                    variant="outlined"
+                    sx={{ p: 2, height: "100%", borderRadius: 2 }}
+                  >
                     {selectedOrder ? (
                       <ReceiptPreview order={selectedOrder} />
                     ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        Select a receipt to view details
-                      </Typography>
+                      <Box
+                        sx={{
+                          color: "text.secondary",
+                          display: "grid",
+                          placeItems: "center",
+                          height: "100%",
+                        }}
+                      >
+                        <Typography variant="body2">
+                          Select a receipt to view details
+                        </Typography>
+                      </Box>
                     )}
                   </Paper>
                 </Box>
               )}
-            </Box>
+            </Stack>
+          </Paper> */}
 
-            {!isSmall && (
-              <Box sx={{ flex: 1, minWidth: 320 }}>
-                <Paper
-                  variant="outlined"
-                  sx={{ p: 2, height: "100%", borderRadius: 2 }}
-                >
-                  {selectedOrder ? (
-                    <ReceiptPreview order={selectedOrder} />
-                  ) : (
-                    <Box
-                      sx={{
-                        color: "text.secondary",
-                        display: "grid",
-                        placeItems: "center",
-                        height: "100%",
-                      }}
-                    >
-                      <Typography variant="body2">
-                        Select a receipt to view details
-                      </Typography>
-                    </Box>
-                  )}
-                </Paper>
-              </Box>
-            )}
-          </Stack>
-        </Paper> */}
+        </LocalizationProvider>
       </Box>
-
-      {/* ================= PDF Range Dialog ================= */}
-      <Dialog
-        open={pdfDialogOpen}
-        onClose={() => !pdfLoading && setPdfDialogOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Export Sales Report (PDF)</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" mb={1.5}>
-            Choose how you want to set the date range for the PDF.
-          </Typography>
-
-          <RadioGroup
-            value={pdfMode}
-            onChange={(e) => {
-              setPdfMode(e.target.value);
-              setPdfError("");
-            }}
-          >
-            <FormControlLabel
-              value="current"
-              control={<Radio />}
-              label={
-                <Box>
-                  <Typography variant="body2" fontWeight={600}>
-                    Use current report range
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {currentRangeLabel}
-                  </Typography>
-                </Box>
-              }
-            />
-
-            <FormControlLabel
-              value="customRange"
-              control={<Radio />}
-              label={
-                <Typography variant="body2" fontWeight={600}>
-                  Choose date range for PDF
-                </Typography>
-              }
-            />
-          </RadioGroup>
-
-          {pdfMode === "customRange" && (
-            <>
-              <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
-                <InputLabel id="pdf-range-label">PDF Range</InputLabel>
-                <Select
-                  labelId="pdf-range-label"
-                  value={pdfRange}
-                  label="PDF Range"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setPdfRange(val);
-                    setPdfError("");
-                    if (val !== "custom") {
-                      setPdfFrom("");
-                      setPdfTo("");
-                    }
-                  }}
-                >
-                  <MenuItem value="days">Today</MenuItem>
-                  <MenuItem value="weeks">This Week</MenuItem>
-                  <MenuItem value="monthly">This Month</MenuItem>
-                  <MenuItem value="quarterly">This Quarter</MenuItem>
-                  <MenuItem value="yearly">This Year</MenuItem>
-                  <MenuItem value="custom">Custom Date Range</MenuItem>
-                </Select>
-              </FormControl>
-
-              {pdfRange === "custom" && (
-                <Stack direction="row" spacing={2} mt={1.5}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label="From"
-                    value={pdfFrom}
-                    onChange={(e) => setPdfFrom(e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label="To"
-                    value={pdfTo}
-                    onChange={(e) => setPdfTo(e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                </Stack>
-              )}
-            </>
-          )}
-
-          {pdfError && (
-            <FormHelperText error sx={{ mt: 1 }}>
-              {pdfError}
-            </FormHelperText>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => !pdfLoading && setPdfDialogOpen(false)}
-            disabled={pdfLoading}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={handlePdfDialogConfirm}
-            disabled={pdfLoading}
-          >
-            {pdfLoading ? "Generating..." : "Download PDF"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* ================= Excel Range Dialog ================= */}
-      <Dialog
-        open={excelDialogOpen}
-        onClose={() => !excelLoading && setExcelDialogOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Export Sales Report (Excel)</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" mb={1.5}>
-            Choose how you want to set the date range for the Excel file.
-          </Typography>
-
-          <RadioGroup
-            value={excelMode}
-            onChange={(e) => {
-              setExcelMode(e.target.value);
-              setExcelError("");
-            }}
-          >
-            <FormControlLabel
-              value="current"
-              control={<Radio />}
-              label={
-                <Box>
-                  <Typography variant="body2" fontWeight={600}>
-                    Use current report range
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {currentRangeLabel}
-                  </Typography>
-                </Box>
-              }
-            />
-
-            <FormControlLabel
-              value="customRange"
-              control={<Radio />}
-              label={
-                <Typography variant="body2" fontWeight={600}>
-                  Choose date range for Excel
-                </Typography>
-              }
-            />
-          </RadioGroup>
-
-          {excelMode === "customRange" && (
-            <>
-              <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
-                <InputLabel id="excel-range-label">Excel Range</InputLabel>
-                <Select
-                  labelId="excel-range-label"
-                  value={excelRange}
-                  label="Excel Range"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setExcelRange(val);
-                    setExcelError("");
-                    if (val !== "custom") {
-                      setExcelFrom("");
-                      setExcelTo("");
-                    }
-                  }}
-                >
-                  <MenuItem value="days">Today</MenuItem>
-                  <MenuItem value="weeks">This Week</MenuItem>
-                  <MenuItem value="monthly">This Month</MenuItem>
-                  <MenuItem value="quarterly">This Quarter</MenuItem>
-                  <MenuItem value="yearly">This Year</MenuItem>
-                  <MenuItem value="custom">Custom Date Range</MenuItem>
-                </Select>
-              </FormControl>
-
-              {excelRange === "custom" && (
-                <Stack direction="row" spacing={2} mt={1.5}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label="From"
-                    value={excelFrom}
-                    onChange={(e) => setExcelFrom(e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label="To"
-                    value={excelTo}
-                    onChange={(e) => setExcelTo(e.target.value)}
-                    InputLabelProps={{ shrink: true }}
-                  />
-                </Stack>
-              )}
-            </>
-          )}
-
-          {excelError && (
-            <FormHelperText error sx={{ mt: 1 }}>
-              {excelError}
-            </FormHelperText>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => !excelLoading && setExcelDialogOpen(false)}
-            disabled={excelLoading}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="success"
-            onClick={handleExcelDialogConfirm}
-            disabled={excelLoading}
-          >
-            {excelLoading ? "Generating..." : "Download Excel"}
-          </Button>
-        </DialogActions>
-      </Dialog>
     </>
   );
 }

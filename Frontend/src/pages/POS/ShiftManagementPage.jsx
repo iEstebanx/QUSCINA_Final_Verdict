@@ -36,6 +36,28 @@ export default function ShiftManagementPage() {
   const shift = useMemo(() => {
     if (!rawShift) return null;
 
+    // Base numbers from DB
+    const startingCash  = Number(rawShift.opening_float || 0);
+    const cashPayments  = Number(rawShift.total_cash_payments || 0);
+    const gcashPayments = Number(rawShift.total_online_payments || 0); // GCash / online
+    const cashRefunds   = Number(rawShift.total_refunds || 0);
+    const cashIn        = Number(rawShift.total_cash_in || 0);
+    const cashOut       = Number(rawShift.total_cash_out || 0);
+
+    // 1) value from DB (if you ever start populating expected_cash there)
+    const expectedFromDb =
+      rawShift.expected_cash != null ? Number(rawShift.expected_cash) : 0;
+
+    // 2) frontend-computed expected cash
+    const computedExpected =
+      startingCash + cashPayments + cashIn - cashRefunds - cashOut;
+
+    // Prefer DB value if it’s non-NaN and non-zero, otherwise use computed
+    const expectedCash =
+      !Number.isNaN(expectedFromDb) && expectedFromDb !== 0
+        ? expectedFromDb
+        : computedExpected;
+
     return {
       number: rawShift.shift_id,
       openedBy: rawShift.employee_id,
@@ -50,13 +72,13 @@ export default function ShiftManagementPage() {
         : "",
 
       // Cash drawer
-      startingCash: Number(rawShift.opening_float || 0),
-      cashPayments: Number(rawShift.total_cash_payments || 0),
-      gcashPayments: Number(rawShift.total_online_payments || 0), // treat online as GCash
-      cashRefunds: Number(rawShift.total_refunds || 0), // or split later if you add separate column
-      cashIn: Number(rawShift.total_cash_in || 0),
-      cashOut: Number(rawShift.total_cash_out || 0),
-      expectedCash: Number(rawShift.expected_cash || 0),
+      startingCash,
+      cashPayments,
+      gcashPayments,
+      cashRefunds,
+      cashIn,
+      cashOut,
+      expectedCash,
 
       // Sales summary
       grossSales: Number(rawShift.total_gross_sales || 0),
