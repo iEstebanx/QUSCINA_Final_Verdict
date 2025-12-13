@@ -53,16 +53,6 @@ const LS_REFLECTING_KEY = "currentOrderId"; // persist reflected order id
 const LS_ORDER_TYPE = "orderType"; // persist dine-in / take-out
 const LS_VOIDED_MAP = "posVoidedQtyMap"; // per-order void counts
 
-// 🔹 Build Backoffice POS shift API URL
-const shiftApi = (subPath = "") => {
-  const base = API_BASE || "";
-  const clean = subPath.startsWith("/") ? subPath : `/${subPath}`;
-
-  if (!base) return `/api/pos/shift${clean}`;
-  if (base.endsWith("/api")) return `${base}/pos/shift${clean}`;
-  return `${base}/api/pos/shift${clean}`;
-};
-
 function nowLabel() {
   const d = new Date();
   const hh = String(d.getHours() % 12 || 12);
@@ -128,6 +118,9 @@ const denominations = [
   { label: "₱1000", value: 1000 },
 ];
 
+const MIN_OPENING_FLOAT = 1_000;   // ₱1,000
+const MAX_OPENING_FLOAT = 500_000; // ₱500,000
+
 // Predefined quantity options for dropdown
 const quantityOptions = [
   { value: 0, label: "0" },
@@ -174,9 +167,35 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
     const total = calculateTotal();
 
     // Optional: block zero-opening like on Cashier side
-    if (total <= 0) {
+    if (total < MIN_OPENING_FLOAT) {
+      const formattedMin = MIN_OPENING_FLOAT.toLocaleString("en-PH", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      const formattedTotal = total.toLocaleString("en-PH", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+
       window.alert(
-        "Opening float cannot be ₱0. Please enter at least one denomination."
+        `Opening float must be at least ₱${formattedMin}. You entered ₱${formattedTotal}.`
+      );
+      return;
+    }
+
+    // 🚫 Block if opening float is too large
+    if (total > MAX_OPENING_FLOAT) {
+      const formattedMax = MAX_OPENING_FLOAT.toLocaleString("en-PH", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      const formattedTotal = total.toLocaleString("en-PH", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+
+      window.alert(
+        `Opening float cannot exceed ₱${formattedMax}. You entered ₱${formattedTotal}.`
       );
       return;
     }
@@ -282,7 +301,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
 
     if (entryMode === "manual") {
       // 🔢 Manual numeric entry
-      return
+      return (
         <TextField
           key={value}
           fullWidth
@@ -294,7 +313,8 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           value={numericValue}
           onChange={(e) => handleManualChange(value, e.target.value)}
           inputProps={{ min: 0 }}
-        />;
+        />
+      );
     }
 
     // ⚡ Quick select (dropdown) mode
@@ -452,14 +472,32 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
             Total{" "}
             <Box
               component="span"
-              sx={{
-                color: theme.palette.success.main,
-                fontSize: "1.5rem",
-              }}
+              sx={{ color: theme.palette.success.main, fontSize: "1.5rem" }}
             >
               ₱{totalAmount.toFixed(2)}
             </Box>
           </Typography>
+
+          {/* ✅ helper text right under Total */}
+          {totalAmount < MIN_OPENING_FLOAT && (
+            <Typography sx={{ mt: 1, fontSize: "0.9rem", color: theme.palette.error.main }}>
+              Minimum opening float is ₱
+              {MIN_OPENING_FLOAT.toLocaleString("en-PH", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </Typography>
+          )}
+
+          {totalAmount > MAX_OPENING_FLOAT && (
+            <Typography sx={{ mt: 0.5, fontSize: "0.9rem", color: theme.palette.error.main }}>
+              Maximum opening float is ₱
+              {MAX_OPENING_FLOAT.toLocaleString("en-PH", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </Typography>
+          )}
         </Box>
       </DialogContent>
 
@@ -477,7 +515,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           variant="contained"
           onClick={handleOpenShift}
           color="primary"
-          disabled={submitting}
+          disabled={submitting || totalAmount < MIN_OPENING_FLOAT || totalAmount > MAX_OPENING_FLOAT}
         >
           {submitting ? "Opening…" : "Open Shift"}
         </Button>

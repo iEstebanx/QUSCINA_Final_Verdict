@@ -328,7 +328,7 @@ function SidebarContent({ collapsed }) {
           />
           <NavLeaf
             to="/pos/shift-management"
-            label="Shift Management"
+            label="Shift/Cash Management"
             icon={HistoryIcon}
             collapsed={collapsed}
           />
