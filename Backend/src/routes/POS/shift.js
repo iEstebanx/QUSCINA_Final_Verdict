@@ -67,6 +67,20 @@ module.exports = function posShiftRouterFactory({ db }) {
     return req.user?.employeeId || req.user?.sub || req.user?.id || null;
   }
 
+  async function hasPendingOrdersForShift(conn, shiftId) {
+    const [rows] = await conn.execute(
+      `
+      SELECT 1
+      FROM pos_orders
+      WHERE shift_id = ?
+        AND status IN ('Pending', 'Open')
+      LIMIT 1
+      `,
+      [shiftId]
+    );
+    return rows.length > 0;
+  }
+
   async function getOpenShiftForUser(connOrDb, employeeId, terminalId) {
     const sql = `
       SELECT * FROM pos_shifts
@@ -589,6 +603,14 @@ module.exports = function posShiftRouterFactory({ db }) {
         if (!shift) throw Object.assign(new Error("Shift not found"), { status: 404 });
         if (shift.status !== "Open") throw Object.assign(new Error("Shift is not open"), { status: 409 });
 
+        const hasPending = await hasPendingOrdersForShift(conn, shiftId);
+        if (hasPending) {
+          const err = new Error("Cannot close shift while there are pending orders.");
+          err.status = 409;
+          err.code = "CANNOT_CLOSE_SHIFT_WITH_PENDING_ORDERS";
+          throw err;
+        }
+
         const { expected_cash } = await computeExpectedCash(conn, shiftId, shift.opening_float);
         const variance = Number((declared_cash - expected_cash).toFixed(2));
 
@@ -646,6 +668,15 @@ module.exports = function posShiftRouterFactory({ db }) {
     try {
       const shift = await getOpenShiftForUser(db, employeeId, terminalId);
       if (!shift?.shift_id) return res.status(404).json({ ok: false, error: "No open shift found for this terminal" });
+      
+      const hasPending = await db.tx(async (conn) => hasPendingOrdersForShift(conn, shift.shift_id));
+      if (hasPending) {
+        return res.status(409).json({
+          ok: false,
+          code: "CANNOT_CLOSE_SHIFT_WITH_PENDING_ORDERS",
+          error: "Cannot close shift while there are pending orders.",
+        });
+      }
 
       // internally call remit logic
       req.params.id = String(shift.shift_id);

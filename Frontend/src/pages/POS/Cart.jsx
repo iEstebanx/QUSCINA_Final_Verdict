@@ -694,7 +694,8 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         <DialogContent dividers>
           <Typography sx={{ whiteSpace: "pre-line" }}>{earlyDialog.message}</Typography>
 
-          <TextField
+          
+          {/* <TextField
             select
             fullWidth
             size="small"
@@ -708,7 +709,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
             <MenuItem value="early_customers">Early customers</MenuItem>
             <MenuItem value="staffing">Staffing / schedule</MenuItem>
             <MenuItem value="other">Other</MenuItem>
-          </TextField>
+          </TextField> */}
 
           <TextField
             fullWidth

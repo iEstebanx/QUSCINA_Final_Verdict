@@ -29,6 +29,9 @@ export default function ShiftManagementPage() {
   const [note, setNote] = useState("");
   const [ending, setEnding] = useState(false);
 
+  const [pendingWarnOpen, setPendingWarnOpen] = useState(false);
+  const [pendingWarnMsg, setPendingWarnMsg] = useState("");
+
   // 🔹 from ShiftContext (raw row from pos_shifts)
   const {
     isOpen,
@@ -143,15 +146,56 @@ export default function ShiftManagementPage() {
     // e.g. navigate("/pos/cash-management");
   };
 
-  const handleOpenEndDialog = () => {
-    if (!shift) return;
-    // prefill with expected cash (from DB)
-    setDeclaredCash(
-      shift.expectedCash != null && !Number.isNaN(shift.expectedCash)
-        ? String(shift.expectedCash)
-        : ""
-    );
-    setEndDialogOpen(true);
+  const handleOpenEndDialog = async () => {
+    if (!shiftId || !hasShift) return;
+
+    try {
+      const url = `/api/pos/orders/open?shiftId=${encodeURIComponent(shiftId)}`;
+      const res = await fetch(url, { credentials: "include" });
+
+      // ✅ if the check failed, DO NOT allow closing
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.error("[EndShift] pending check failed:", res.status, text);
+        setPendingWarnMsg("Pending check failed. Cannot end shift right now.");
+        setPendingWarnOpen(true);
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      // ✅ support different response shapes
+      const orders =
+        data?.orders ||
+        data?.items ||
+        data?.rows ||
+        data?.data ||
+        [];
+
+      const hasPending = (orders || []).some((o) => {
+        const s = String(o?.status || o?.order_status || "").toLowerCase();
+        return s === "pending" || s === "open";
+      });
+
+      if (hasPending) {
+        setPendingWarnMsg(
+          "You still have pending orders. Please settle them before ending the shift."
+        );
+        setPendingWarnOpen(true);
+        return;
+      }
+
+      setDeclaredCash(
+        shift.expectedCash != null && !Number.isNaN(shift.expectedCash)
+          ? String(shift.expectedCash)
+          : ""
+      );
+      setEndDialogOpen(true);
+    } catch (e) {
+      console.error(e);
+      setPendingWarnMsg("Unable to check pending orders. Please try again.");
+      setPendingWarnOpen(true);
+    }
   };
 
   const handleCloseEndDialog = () => {
@@ -536,6 +580,32 @@ export default function ShiftManagementPage() {
               "&:hover": { bgcolor: "#255d27" },
             }}
           >
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Cannot end shift while still have pending orders. */}
+      <Dialog
+        open={pendingWarnOpen}
+        onClose={() => setPendingWarnOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle
+          sx={{
+            bgcolor: "#8b5a2b",
+            color: "common.white",
+            fontWeight: 700,
+          }}
+        >
+          Cannot End Shift
+        </DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: "#fdf1df" }}>
+          <Typography>{pendingWarnMsg}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: "#fdf1df" }}>
+          <Button variant="contained" onClick={() => setPendingWarnOpen(false)}>
             OK
           </Button>
         </DialogActions>
