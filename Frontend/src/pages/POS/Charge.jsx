@@ -243,6 +243,14 @@ export default function Charge() {
   const [gcashRef, setGcashRef] = useState("");
   const [gcashRefErr, setGcashRefErr] = useState("");
 
+  const [changeWarnOpen, setChangeWarnOpen] = useState(false);
+  const [changeWarn, setChangeWarn] = useState({
+    required: 0,
+    drawerCashBefore: 0,
+    cashReceivedThis: 0,
+    available: 0,
+  });
+
   const totalDue = useMemo(() => {
     const sub = items.reduce(
       (s, i) => s + (i.price || 0) * (i.quantity ?? 1),
@@ -353,6 +361,28 @@ export default function Charge() {
 
   const [isPosting, setIsPosting] = useState(false);
 
+  // Back button lock flag (AppHeader reads this)
+  const lockBack = useMemo(() => {
+    // single: lock after successful sale (paid screen)
+    if (mode === "single" && step === "paid") return true;
+
+    // split: lock after first payment is paid
+    if (mode === "split" && slot1Charged) return true;
+
+    return false;
+  }, [mode, step, slot1Charged]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(params);
+
+    if (lockBack) next.set("backlock", "1");
+    else next.delete("backlock");
+
+    if (next.toString() !== params.toString()) {
+      setParams(next, { replace: true });
+    }
+  }, [lockBack, params, setParams]);
+
   // Reset slot states when switching modes
   useEffect(() => {
     if (mode === "split") {
@@ -366,49 +396,54 @@ export default function Charge() {
   const paid1 = Number(amount1) || 0;
   const paid2 = Number(amount2) || 0;
 
-  const confirmed1 = slot1Charged ? paid1 : 0;
-  const confirmed2 = slot2Charged ? paid2 : 0;
-  const remainingSplit = Math.max(0, totalDue - confirmed1 - confirmed2);
+  const singleShort = mode === "single" && paid1 > 0 && paid1 < totalDue;
 
-  const singleShort = paid1 > 0 && paid1 < totalDue;
+  const [paidSoFar, setPaidSoFar] = useState(0);
 
-  const remainingBefore1 = Math.max(
-    0,
-    totalDue - (slot2Charged ? paid2 : 0)
-  );
-  const remainingBefore2 = Math.max(
-    0,
-    totalDue - (slot1Charged ? paid1 : 0)
-  );
+  const remainingDue = Math.max(0, totalDue - paidSoFar);
+
+  // due before confirming each slot (split)
+  const remainingBefore1 = remainingDue;
+  const remainingBefore2 = remainingDue; // because paidSoFar updates after slot1 success
+
+  const remainingSplit = remainingDue;
+
+  const fullyPaid = paidSoFar >= totalDue;
+  const saleLocked = mode === "split" && fullyPaid;
 
   const confirmCash = confirmSlot === 1 ? paid1 : paid2;
-  const confirmChange =
-    mode === "single"
-      ? Math.max(0, confirmCash - totalDue)
-      : Math.max(
-          0,
-          confirmCash -
-            (confirmSlot === 1 ? remainingBefore1 : remainingBefore2)
-        );
 
-  const minFor1 = slot2Charged ? remainingBefore1 : 0;
-  const minFor2 = slot1Charged ? remainingBefore2 : 0;
+  const dueBeforeThisPayment =
+    mode === "single"
+      ? totalDue
+      : confirmSlot === 1
+      ? remainingBefore1
+      : remainingBefore2;
+
+  const confirmChange = Math.max(0, confirmCash - dueBeforeThisPayment);
+
+  // minimum required amounts
+  const minFor1 = 0;
+  const minFor2 = slot1Charged ? remainingDue : 0;
 
   const slot1Short = minFor1 > 0 && paid1 > 0 && paid1 < minFor1;
   const slot2Short = minFor2 > 0 && paid2 > 0 && paid2 < minFor2;
 
   const topBarRight =
-    step === "charge" && mode === "split"
-      ? `Remaining ${PHP(remainingSplit)}`
-      : "";
-
-  const fullyPaid = confirmed1 + confirmed2 >= totalDue;
-  const saleLocked = mode === "split" && fullyPaid;
+    step === "charge" && mode === "split" ? `Remaining ${PHP(remainingSplit)}` : "";
 
   const resetToMenu = () => {
     try {
       localStorage.removeItem("currentOrderId");
     } catch {}
+
+    // unlock back when starting a new sale
+    try {
+      const next = new URLSearchParams(params);
+      next.delete("backlock");
+      setParams(next, { replace: true });
+    } catch {}
+
     nav("/pos/menu", { replace: true });
     setTimeout(() => {
       clearDiscounts();
@@ -469,11 +504,9 @@ export default function Charge() {
 
     setIsPosting(true);
     try {
-      const newConfirmed1 = isSlot1 ? paid1 : confirmed1;
-      const newConfirmed2 = !isSlot1 ? paid2 : confirmed2;
-      const totalPaidSoFar = newConfirmed1 + newConfirmed2;
-      const willBeFullyPaid =
-        newConfirmed1 + newConfirmed2 >= totalDue;
+      const paidBeforeThis = paidSoFar;
+      const willBeFullyPaid = paidBeforeThis + paidThis >= totalDue;
+      const totalPaidSoFar = paidBeforeThis;
 
       const payments = [
         {
@@ -521,10 +554,20 @@ export default function Charge() {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok === false) {
-        throw new Error(
-          data?.error || `Checkout failed (${res.status})`
-        );
+        if (res.status === 409 && data?.code === "INSUFFICIENT_CHANGE") {
+          setChangeWarn({
+            required: Number(data.requiredChange) || 0,
+            drawerCashBefore: Number(data.drawerCashBefore) || 0,
+            cashReceivedThis: Number(data.cashReceivedThis) || 0,
+            available: Number(data.availableCashForChange) || 0,
+          });
+          setChangeWarnOpen(true);
+          return;
+        }
+        throw new Error(data?.error || `Checkout failed (${res.status})`);
       }
+
+      setPaidSoFar(paidBeforeThis + paidThis);
 
       if (data.orderId) {
         setActiveOrderId(data.orderId);
@@ -1197,6 +1240,63 @@ export default function Charge() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* NEW: Insufficient Change Dialog */}
+      <Dialog
+        open={changeWarnOpen}
+        onClose={() => setChangeWarnOpen(false)}
+        PaperProps={{ sx: { minWidth: 420, borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, textAlign: "center" }}>
+          Insufficient Cash for Change
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Typography sx={{ textAlign: "center", opacity: 0.9 }}>
+              You don’t have enough cash in the drawer to give change for this cash payment.
+            </Typography>
+
+              <Box sx={{ mt: 1 }}>
+                <Box sx={{ display: "flex", justifyContent: "space-between", py: 0.5 }}>
+                  <Typography sx={{ fontWeight: 700 }}>Required change</Typography>
+                  <Typography sx={{ fontWeight: 800 }}>{PHP(changeWarn.required)}</Typography>
+                </Box>
+
+                <Box sx={{ display: "flex", justifyContent: "space-between", py: 0.5 }}>
+                  <Typography sx={{ fontWeight: 700 }}>Cash in drawer (before)</Typography>
+                  <Typography sx={{ fontWeight: 800 }}>{PHP(changeWarn.drawerCashBefore)}</Typography>
+                </Box>
+
+                <Box sx={{ display: "flex", justifyContent: "space-between", py: 0.5 }}>
+                  <Typography sx={{ fontWeight: 700 }}>Cash received (this payment)</Typography>
+                  <Typography sx={{ fontWeight: 800 }}>{PHP(changeWarn.cashReceivedThis)}</Typography>
+                </Box>
+
+                {/* optional */}
+                <Box sx={{ display: "flex", justifyContent: "space-between", py: 0.5 }}>
+                  <Typography sx={{ fontWeight: 700 }}>Total available for change</Typography>
+                  <Typography sx={{ fontWeight: 800 }}>{PHP(changeWarn.available)}</Typography>
+                </Box>
+              </Box>
+
+            <Typography variant="body2" sx={{ opacity: 0.8, textAlign: "center" }}>
+              Do a <strong>Cash In</strong> (or use another payment method) then try again.
+            </Typography>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2.5, py: 2 }}>
+          <Button
+            variant="contained"
+            onClick={() => setChangeWarnOpen(false)}
+            sx={{ fontWeight: 800 }}
+          >
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 }

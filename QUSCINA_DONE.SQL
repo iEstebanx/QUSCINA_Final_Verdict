@@ -487,7 +487,7 @@ CREATE TABLE IF NOT EXISTS pos_shifts (
   opened_early    TINYINT(1) NOT NULL DEFAULT 0 AFTER scheduled_end,
   early_minutes   INT NOT NULL DEFAULT 0 AFTER opened_early,
   early_reason    VARCHAR(255) NULL AFTER early_minutes,
-  early_note      VARCHAR(255) NULL AFTER early_reason;
+  early_note      VARCHAR(255) NULL AFTER early_reason,
 
   PRIMARY KEY (shift_id),
   KEY ix_shift_employee (employee_id, status),

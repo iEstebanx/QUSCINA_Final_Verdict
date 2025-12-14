@@ -153,6 +153,159 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
     };
   }
 
+  // ---- cash change helpers (Backoffice POS) ----
+  async function computeExpectedCashForShift(shiftId) {
+    // Goal: estimate cash currently in drawer BEFORE this request is applied.
+    // Uses:
+    // - opening float (or denom sum fallback)
+    // - net cash moves (cash in - cash out)
+    // - net cash sales (cash payments - cash refunds)
+    //
+    // NOTE: adjust table/column names if yours differ.
+
+    // 1) opening float (fallback to denom sum if opening_float is null/0)
+    const shiftRows = asArray(
+      await db.query(
+        `
+        SELECT opening_float
+        FROM pos_shifts
+        WHERE shift_id = ?
+        LIMIT 1
+        `,
+        [shiftId]
+      )
+    );
+
+    let opening = shiftRows[0] ? safeNumber(shiftRows[0].opening_float, 0) : 0;
+
+    if (!opening) {
+      // optional denom fallback (if you have pos_shift_denoms)
+      try {
+        const denomRows = asArray(
+          await db.query(
+            `
+            SELECT IFNULL(SUM(denom * qty), 0) AS denom_total
+            FROM pos_shift_denoms
+            WHERE shift_id = ?
+            `,
+            [shiftId]
+          )
+        );
+        opening = denomRows[0] ? safeNumber(denomRows[0].denom_total, 0) : 0;
+      } catch {
+        // ignore if denom table doesn't exist in backoffice db
+      }
+    }
+
+    // 2) cash moves net (cash in - cash out)
+    // Adjust these CASE checks to match your pos_cash_moves schema.
+    let cashMovesNet = 0;
+    try {
+      const moveRows = asArray(
+        await db.query(
+          `
+          SELECT IFNULL(SUM(
+            CASE
+              WHEN LOWER(move_type) IN ('cash_in','in') THEN amount
+              WHEN LOWER(move_type) IN ('cash_out','out') THEN -amount
+              ELSE 0
+            END
+          ), 0) AS net_moves
+          FROM pos_cash_moves
+          WHERE shift_id = ?
+          `,
+          [shiftId]
+        )
+      );
+      cashMovesNet = moveRows[0] ? safeNumber(moveRows[0].net_moves, 0) : 0;
+    } catch {
+      // ignore if you don't track cash moves here
+    }
+
+    // 3) net cash from payments (cash payments - cash refunds)
+    const payRows = asArray(
+      await db.query(
+        `
+        SELECT IFNULL(SUM(
+          CASE
+            WHEN LOWER(method_name) LIKE '%cash%' AND is_refund = 0 THEN amount
+            WHEN LOWER(method_name) LIKE '%cash%' AND is_refund = 1 THEN -amount
+            ELSE 0
+          END
+        ), 0) AS net_cash_sales
+        FROM pos_order_payments
+        WHERE shift_id = ?
+        `,
+        [shiftId]
+      )
+    );
+
+    const netCashSales = payRows[0] ? safeNumber(payRows[0].net_cash_sales, 0) : 0;
+
+    return round2(opening + cashMovesNet + netCashSales);
+  }
+
+  function extractCashReceived(payments = []) {
+    // If your frontend only sends 1 payment per request (like Cashier), this is simple.
+    // If multiple payments are sent, we sum cash ones.
+    return round2(
+      (payments || []).reduce((sum, p) => {
+        const method = String(p?.methodName || "");
+        const amt = safeNumber(p?.amount, 0);
+        if (!amt) return sum;
+        return method.toLowerCase().includes("cash") ? sum + amt : sum;
+      }, 0)
+    );
+  }
+
+  async function assertEnoughCashForChange({
+    shiftId,
+    totalDue,
+    totalPaidSoFar,
+    payments,
+    isFinalPayment,
+    mode,
+  }) {
+    // Only enforce for CASH payments (and only when cash received creates change).
+    const cashReceived = extractCashReceived(payments);
+    if (cashReceived <= 0) return;
+
+    const prevPaid = safeNumber(totalPaidSoFar, 0);
+    const due = safeNumber(totalDue, 0);
+
+    // Remaining due BEFORE this payment is applied
+    const remaining = Math.max(0, due - prevPaid);
+
+    // Required change for THIS request (same logic your frontend uses)
+    const requiredChange = Math.max(0, cashReceived - remaining);
+
+    // If no change is needed, no need to block
+    if (requiredChange <= 0) return;
+
+    // (Optional) If you only want to enforce on final slot, uncomment:
+    // if (String(mode) === "split" && !isFinalPayment) return;
+
+    const drawerBefore = await computeExpectedCashForShift(shiftId);
+
+    // Only cash already in drawer BEFORE taking this payment
+    const availableCash = round2(drawerBefore);
+
+    if (availableCash + 0.0001 < requiredChange) {
+      const err = new Error("INSUFFICIENT_CHANGE");
+      err.httpStatus = 409;
+      err.code = "INSUFFICIENT_CHANGE";
+
+      // already existing
+      err.requiredChange = round2(requiredChange);
+      err.availableCash = round2(availableCash);
+
+      // ✅ ADD THESE (so frontend can show the real drawer cash vs tendered cash)
+      err.drawerCashBefore = round2(drawerBefore);
+      err.cashReceivedThis = round2(cashReceived);
+
+      throw err;
+    }
+  }
 
   // ==================================================
   // 3) VERIFY REFUND PIN (Backoffice POS)
@@ -375,46 +528,6 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
         return { orderId: newOrderId, orderNo: allocated };
       });
-
-      // Items
-      for (const it of items) {
-        const qty = safeNumber(it.qty ?? it.quantity, 1);
-        const price = safeNumber(it.price, 0);
-        const lineTotal = qty * price;
-
-        await conn.query(
-          `
-          INSERT INTO pos_order_items
-            (order_id, item_id, item_name, item_price, qty, line_total)
-          VALUES (?, ?, ?, ?, ?, ?)
-          `,
-          [
-            orderId,
-            it.id || null,
-            it.name || "",
-            price,
-            qty,
-            lineTotal,
-          ]
-        );
-      }
-
-      // Discounts
-      for (const d of discounts) {
-        const pct = safeNumber(d.percent, 0);
-        if (!pct) continue;
-
-        const amount = (totals.gross_amount * pct) / 100;
-
-        await conn.query(
-          `
-          INSERT INTO pos_order_discounts
-            (order_id, name, percent, amount)
-          VALUES (?, ?, ?, ?)
-          `,
-          [orderId, d.name || "Discount", pct, amount]
-        );
-      }
 
       await logOrderAudit({
         app,
@@ -1683,7 +1796,7 @@ router.post("/charge", async (req, res) => {
           `
           SELECT IFNULL(SUM(amount), 0) AS paid_so_far
           FROM pos_order_payments
-          WHERE order_id = ?
+          WHERE order_id = ? AND is_refund = 0
           `,
           [orderId]
         )
@@ -1723,6 +1836,15 @@ router.post("/charge", async (req, res) => {
         error: "Total payments are less than net amount",
       });
     }
+
+    await assertEnoughCashForChange({
+      shiftId,
+      totalDue: totals.net_amount,
+      totalPaidSoFar: safeNumber(totalPaidSoFar, 0),
+      payments,
+      isFinalPayment: !!isFinalPayment,
+      mode,
+    });
 
     let finalOrderId = orderId || null;
     let allocatedOrderNo = null;
@@ -1970,6 +2092,20 @@ router.post("/charge", async (req, res) => {
     });
   } catch (e) {
     console.error("[Backoffice POS orders/charge] failed:", e);
+
+    if (e?.code === "INSUFFICIENT_CHANGE") {
+      return res.status(409).json({
+        ok: false,
+        code: "INSUFFICIENT_CHANGE",
+        requiredChange: Number(e.requiredChange) || 0,
+
+        drawerCashBefore: Number(e.drawerCashBefore) || 0,
+        cashReceivedThis: Number(e.cashReceivedThis) || 0,
+        availableCashForChange: Number(e.availableCash) || 0,
+
+        error: "Insufficient cash for change",
+      });
+    }
 
     const {
       shiftId,

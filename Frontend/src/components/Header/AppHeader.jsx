@@ -31,7 +31,7 @@ export default function AppHeader({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
 
   const { hasShift } = useShift() || {};
 
@@ -39,6 +39,23 @@ export default function AppHeader({
   const isPosOrdersPage = location.pathname === "/pos/orders";
   const isPosChargePage = location.pathname === "/pos/charge";
   const isPosRefundPage = location.pathname === "/pos/refund";
+
+  // --- Split flags via query params (same idea as Cashier POS) ---
+  const splitOn = params.get("split") === "1";
+  const splitLocked = params.get("splitlock") === "1";
+
+  const backLocked = params.get("backlock") === "1";
+
+  const toggleSplit = () => {
+    const next = new URLSearchParams(params);
+    if (splitOn) {
+      next.delete("split");
+      next.delete("splitlock");
+    } else {
+      next.set("split", "1");
+    }
+    setParams(next, { replace: true });
+  };
 
   // Pages that should be "full width" and hide breadcrumbs
   const isPosFocusedPage = isPosChargePage || isPosRefundPage;
@@ -141,75 +158,99 @@ export default function AppHeader({
         }),
       })}
     >
-      <Toolbar sx={{ minHeight: APPBAR_HEIGHT, gap: 2 }}>
-        {/* Hamburger OR Back (Charge / Refund) */}
-        {isPosChargePage || isPosRefundPage ? (
-          <IconButton
-            edge="start"
-            aria-label="Back"
-            onClick={() =>
-              navigate(isPosRefundPage ? "/pos/orders" : "/pos/menu")
-            }
-            sx={{ mr: 1 }}
-          >
-            <ArrowBackIcon />
-          </IconButton>
-        ) : (
-          <IconButton
-            edge="start"
-            aria-label="Toggle sidebar"
-            onClick={onToggle}
-            sx={{ mr: 1 }}
-          >
-            <MenuIcon />
-          </IconButton>
-        )}
-
-        {/* Breadcrumbs (hidden on Charge + Refund) */}
-        {!isPosFocusedPage && (
-          <Breadcrumbs
-            aria-label="breadcrumb"
-            sx={{
-              flexShrink: 1,
-              minWidth: 0,
-              "& ol": {
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              },
-              display: { xs: "none", sm: "flex" },
-            }}
-          >
-            <Link
-              component={RouterLink}
-              underline="hover"
-              color="inherit"
-              to="/dashboard"
+      <Toolbar
+        sx={{
+          minHeight: APPBAR_HEIGHT,
+          display: "grid",
+          gridTemplateColumns: "auto 1fr auto",
+          alignItems: "center",
+          gap: 2,
+        }}
+      >
+        {/* LEFT CLUSTER */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+          {isPosChargePage || isPosRefundPage ? (
+            isPosChargePage && backLocked ? (
+              // hide back button completely when locked
+              <Box sx={{ width: 40 }} />
+            ) : (
+              <IconButton
+                edge="start"
+                aria-label="Back"
+                onClick={() => navigate(isPosRefundPage ? "/pos/orders" : "/pos/menu")}
+                sx={{ mr: 0 }}
+              >
+                <ArrowBackIcon />
+              </IconButton>
+            )
+          ) : (
+            <IconButton
+              edge="start"
+              aria-label="Toggle sidebar"
+              onClick={onToggle}
+              sx={{ mr: 0 }}
             >
-              Home
-            </Link>
-            {crumbs}
-          </Breadcrumbs>
-        )}
+              <MenuIcon />
+            </IconButton>
+          )}
 
-        <Box sx={{ flexGrow: 1 }} />
+          {/* Breadcrumbs (hidden on Charge + Refund) */}
+          {!isPosFocusedPage && (
+            <Breadcrumbs
+              aria-label="breadcrumb"
+              sx={{
+                flexShrink: 1,
+                minWidth: 0,
+                "& ol": {
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                },
+                display: { xs: "none", sm: "flex" },
+              }}
+            >
+              <Link component={RouterLink} underline="hover" color="inherit" to="/dashboard">
+                Home
+              </Link>
+              {crumbs}
+            </Breadcrumbs>
+          )}
+        </Box>
 
-        {/* POS Orders → Refund button */}
-        {isPosOrdersPage && (
-          <Button
-            variant="contained"
-            color="primary"
-            size="small"
-            disabled={!selectedOrderId || !hasShift} // 🔹 disable if no shift
-            onClick={handleRefundClick}
-            sx={{
-              textTransform: "none",
-              fontWeight: 600,
-            }}
-          >
-            Refund
-          </Button>
-        )}
+        {/* CENTER (SPLIT) */}
+        <Box sx={{ display: "flex", justifyContent: "center" }}>
+          {isPosChargePage && !splitOn && !splitLocked && (
+            <Button
+              onClick={toggleSplit}
+              variant="outlined"
+              size="small"
+              sx={{
+                textTransform: "none",
+                fontWeight: 700,
+                px: 2.5,
+                borderRadius: 1.5,
+              }}
+            >
+              SPLIT
+            </Button>
+          )}
+        </Box>
+
+        {/* RIGHT CLUSTER */}
+        <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+          {isPosOrdersPage && (
+            <Button
+              variant="contained"
+              color="primary"
+              size="small"
+              disabled={!selectedOrderId || !hasShift}
+              onClick={handleRefundClick}
+              sx={{ textTransform: "none", fontWeight: 600 }}
+            >
+              Refund
+            </Button>
+          )}
+        </Box>
       </Toolbar>
     </AppBar>
   );
