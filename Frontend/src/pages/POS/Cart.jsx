@@ -104,6 +104,38 @@ const ordersApi = (subPath = "") => {
   return `${base}/api/pos/orders${clean}`;
 };
 
+const EARLY_OPEN_WINDOW_MINUTES = 60;
+
+const SHIFT_TEMPLATES = [
+  { code: "SHIFT_1", name: "First Shift", start: "08:00", end: "15:00" },
+  { code: "SHIFT_2", name: "Second Shift", start: "15:00", end: "22:00" },
+];
+
+function parseHHMMtoTodayDate(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  const d = new Date();
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
+}
+
+function minutesDiff(a, b) {
+  return Math.floor((a.getTime() - b.getTime()) / 60000);
+}
+
+function suggestShift(now = new Date()) {
+  const windows = SHIFT_TEMPLATES.map((t) => ({
+    ...t,
+    startDate: parseHHMMtoTodayDate(t.start),
+    endDate: parseHHMMtoTodayDate(t.end),
+  }));
+
+  const inside = windows.find((w) => now >= w.startDate && now < w.endDate);
+  if (inside) return inside;
+
+  const upcoming = windows.find((w) => now < w.startDate);
+  return upcoming || windows[windows.length - 1];
+}
+
 /* --------------------- FloatingShiftModal (Backoffice) --------------------- */
 
 const denominations = [
@@ -133,11 +165,41 @@ const quantityOptions = [
   { value: 100, label: "100" },
 ];
 
-function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshLatestShift, openShift }) {
-  const [quantities, setQuantities] = useState({});
-  const [entryMode, setEntryMode] = useState("quick"); // 'quick' | 'manual'
-  const [submitting, setSubmitting] = useState(false);
+function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshLatestShift, openShift, }) {
   const theme = useTheme();
+
+  // ✅ Keep "now" fresh while the dialog is open (shift suggestion updates)
+  const [nowTick, setNowTick] = useState(() => new Date());
+
+  useEffect(() => {
+    if (!open) return;
+    setNowTick(new Date()); // refresh immediately on open
+    const id = setInterval(() => setNowTick(new Date()), 30_000); // every 30s
+    return () => clearInterval(id);
+  }, [open]);
+
+  // ✅ Suggested shift based on current time
+  const suggested = useMemo(() => suggestShift(nowTick), [nowTick]);
+
+  // (optional) keep selectedShift in sync (even though dropdown is disabled)
+  const [selectedShift, setSelectedShift] = useState(() => suggestShift(new Date()));
+  useEffect(() => {
+    if (!open) return;
+    setSelectedShift(suggested);
+  }, [open, suggested]);
+
+  const [earlyDialog, setEarlyDialog] = useState({
+    open: false,
+    message: "",
+    earlyMinutes: 0,
+  });
+  const [earlyReason, setEarlyReason] = useState("");
+  const [earlyNote, setEarlyNote] = useState("");
+  const [pendingOpenPayload, setPendingOpenPayload] = useState(null);
+
+  const [quantities, setQuantities] = useState({});
+  const [entryMode, setEntryMode] = useState("quick");
+  const [submitting, setSubmitting] = useState(false);
 
   const [conflict, setConflict] = useState(null);
   const [conflictOpen, setConflictOpen] = useState(false);
@@ -166,7 +228,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
   const handleOpenShift = async () => {
     const total = calculateTotal();
 
-    // Optional: block zero-opening like on Cashier side
+    // ✅ Block if opening float too small
     if (total < MIN_OPENING_FLOAT) {
       const formattedMin = MIN_OPENING_FLOAT.toLocaleString("en-PH", {
         minimumFractionDigits: 2,
@@ -183,7 +245,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
       return;
     }
 
-    // 🚫 Block if opening float is too large
+    // ✅ Block if opening float too large
     if (total > MAX_OPENING_FLOAT) {
       const formattedMax = MAX_OPENING_FLOAT.toLocaleString("en-PH", {
         minimumFractionDigits: 2,
@@ -208,13 +270,47 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
 
     setSubmitting(true);
     try {
-      // ✅ Use ShiftContext.openShift (this no longer shows snackbar)
-      const shift = await openShift({
+      const now = new Date();
+
+      // ✅ MUST use suggested shift (not user-selectable)
+      const shiftStart = parseHHMMtoTodayDate(suggested.start);
+
+      const earlyMinutes = Math.max(0, minutesDiff(shiftStart, now));
+      const isTooEarly = earlyMinutes > EARLY_OPEN_WINDOW_MINUTES;
+
+      const payload = {
         terminal_id: tid,
         opening_float: total,
         denominations: denoms,
         note: "",
-      });
+
+        // ✅ lock to suggested shift
+        shift_code: suggested.code,
+        shift_name: suggested.name,
+        scheduled_start: suggested.start,
+        scheduled_end: suggested.end,
+
+        // ✅ early open metadata
+        opened_early: earlyMinutes > 0 ? 1 : 0,
+        early_minutes: earlyMinutes,
+        early_reason: earlyReason || null,
+        early_note: earlyNote || null,
+      };
+
+      if (isTooEarly) {
+        setPendingOpenPayload(payload);
+        setEarlyDialog({
+          open: true,
+          earlyMinutes,
+          message:
+            `You are opening ${suggested.name} about ${earlyMinutes} minutes early.\n` +
+            `This will be recorded in the shift log. Continue?`,
+        });
+        setSubmitting(false);
+        return;
+      }
+
+      const shift = await openShift(payload);
 
       if (typeof refreshLatestShift === "function") {
         await refreshLatestShift();
@@ -226,37 +322,23 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
     } catch (err) {
       console.error("[Backoffice POS] open shift failed", err);
 
-      // Nice dialog for all shift-related conflicts
-      if (
-        err.status === 409 ||
-        (err.code && String(err.code).startsWith("SHIFT_"))
-      ) {
+      if (err.status === 409 || (err.code && String(err.code).startsWith("SHIFT_"))) {
         let message = err.message || "Failed to open shift.";
         let cTerminalId = tid;
         let cEmployeeName = null;
         let cEmployeeId = null;
 
-        // Case 1: held by another terminal (Cashier or other)
-        if (
-          err.code === "SHIFT_HELD_BY_OTHER_TERMINAL" &&
-          err.holder
-        ) {
+        if (err.code === "SHIFT_HELD_BY_OTHER_TERMINAL" && err.holder) {
           cTerminalId = err.holder.terminal_id || tid || "another terminal";
-
           cEmployeeName =
             err.holder.employee_name ||
             err.holder.employee_username ||
             err.holder.employee_email ||
-            (err.holder.employee_id
-              ? `Employee #${err.holder.employee_id}`
-              : "another user");
-
+            (err.holder.employee_id ? `Employee #${err.holder.employee_id}` : "another user");
           cEmployeeId = err.holder.employee_id || null;
 
           message = `A shift is already open on ${cTerminalId} for ${cEmployeeName}. You can’t open another shift while that terminal’s shift is still open. Please ask them to remit/close their shift first.`;
-        }
-        // Case 2: same terminal / already open for this user
-        else if (
+        } else if (
           err.code === "SHIFT_ALREADY_OPEN_SAME_TERMINAL" ||
           err.code === "SHIFT_ALREADY_OPEN" ||
           err.message === "Shift already open"
@@ -276,7 +358,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         return;
       }
 
-      // Other unexpected errors → simple alert
       window.alert(err.message || "Failed to open shift");
     } finally {
       setSubmitting(false);
@@ -300,7 +381,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         : 0;
 
     if (entryMode === "manual") {
-      // 🔢 Manual numeric entry
       return (
         <TextField
           key={value}
@@ -317,17 +397,11 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
       );
     }
 
-    // ⚡ Quick select (dropdown) mode
-    const hasPreset = quantityOptions.some(
-      (opt) => opt.value === numericValue
-    );
+    const hasPreset = quantityOptions.some((opt) => opt.value === numericValue);
 
     const options =
       !hasPreset && numericValue !== 0
-        ? [
-            { value: numericValue, label: `Custom (${numericValue})` },
-            ...quantityOptions,
-          ]
+        ? [{ value: numericValue, label: `Custom (${numericValue})` }, ...quantityOptions]
         : quantityOptions;
 
     return (
@@ -338,9 +412,7 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         label={label}
         sx={{ minWidth: 140 }}
         value={numericValue}
-        onChange={(e) =>
-          handleDropdownChange(value, Number(e.target.value))
-        }
+        onChange={(e) => handleDropdownChange(value, Number(e.target.value))}
         size="small"
         variant="outlined"
       >
@@ -396,7 +468,64 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           Select quantity for each denomination using presets or enter manually.
         </Typography>
 
-        {/* 🔘 Entry mode toggle */}
+        <Box sx={{ mb: 2 }}>
+          <Paper
+            variant="outlined"
+            sx={{
+              px: 1.5,
+              py: 1.1,
+              borderRadius: 1.5,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 1,
+              bgcolor: alpha(theme.palette.text.primary, 0.03),
+              borderColor: alpha(theme.palette.text.primary, 0.12),
+            }}
+          >
+            {/* Shift name + time inline */}
+            <Box
+              sx={{
+                minWidth: 0,
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                flexWrap: "wrap",
+              }}
+            >
+              <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                {suggested.name}
+              </Typography>
+
+              <Typography
+                variant="body2"
+                sx={{
+                  opacity: 0.75,
+                  lineHeight: 1.2,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ({suggested.start}–{suggested.end})
+              </Typography>
+            </Box>
+
+            <Chip
+              size="small"
+              label="Auto"
+              variant="outlined"
+              sx={{
+                fontWeight: 700,
+                bgcolor: alpha(theme.palette.success.main, 0.12),
+                borderColor: alpha(theme.palette.success.main, 0.35),
+              }}
+            />
+          </Paper>
+
+          <Typography sx={{ mt: 0.75, fontSize: 12, opacity: 0.8 }}>
+            Based on current time.
+          </Typography>
+        </Box>
+
         <Box sx={{ display: "flex", justifyContent: "center", mb: 2 }}>
           <ToggleButtonGroup
             color="primary"
@@ -412,7 +541,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           </ToggleButtonGroup>
         </Box>
 
-        {/* Two-column layout */}
         <Box
           sx={{
             mt: 1,
@@ -422,7 +550,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
             gap: 2,
           }}
         >
-          {/* Coins */}
           <Paper
             variant="outlined"
             sx={{
@@ -444,7 +571,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
             </Stack>
           </Paper>
 
-          {/* Bills */}
           <Paper
             variant="outlined"
             sx={{
@@ -478,7 +604,6 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
             </Box>
           </Typography>
 
-          {/* ✅ helper text right under Total */}
           {totalAmount < MIN_OPENING_FLOAT && (
             <Typography sx={{ mt: 1, fontSize: "0.9rem", color: theme.palette.error.main }}>
               Minimum opening float is ₱
@@ -521,12 +646,10 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
         </Button>
       </DialogActions>
 
-      {/* 🔴 Conflict dialog: cannot open shift */}
+      {/* 🔴 Conflict dialog */}
       <Dialog
         open={conflictOpen}
-        onClose={() => {
-          setConflictOpen(false);
-        }}
+        onClose={() => setConflictOpen(false)}
         fullWidth
         maxWidth="xs"
       >
@@ -537,15 +660,13 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
               "A shift is already open. You can’t open another shift until the current one is remitted/closed."}
           </Typography>
 
-          {/* Optional extra detail line */}
           {conflict?.terminalId && (
             <Typography variant="body2" sx={{ opacity: 0.8 }}>
               Terminal: <strong>{conflict.terminalId}</strong>
               {conflict?.employeeName && (
                 <>
                   {" "}
-                  · Current holder:{" "}
-                  <strong>{conflict.employeeName}</strong>
+                  · Current holder: <strong>{conflict.employeeName}</strong>
                   {conflict.employeeId ? ` (ID: ${conflict.employeeId})` : ""}
                 </>
               )}
@@ -553,15 +674,97 @@ function FloatingShiftModal({ open, onClose, onShiftOpened, terminalId, refreshL
           )}
         </DialogContent>
         <DialogActions>
-          <Button
-            onClick={() => setConflictOpen(false)}
-            variant="contained"
-          >
+          <Button onClick={() => setConflictOpen(false)} variant="contained">
             OK
           </Button>
         </DialogActions>
       </Dialog>
 
+      {/* 🟠 Early open dialog */}
+      <Dialog
+        open={earlyDialog.open}
+        onClose={() => {
+          setEarlyDialog({ open: false, message: "", earlyMinutes: 0 });
+          setPendingOpenPayload(null);
+        }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Open Shift Early?</DialogTitle>
+        <DialogContent dividers>
+          <Typography sx={{ whiteSpace: "pre-line" }}>{earlyDialog.message}</Typography>
+
+          <TextField
+            select
+            fullWidth
+            size="small"
+            label="Reason (optional)"
+            value={earlyReason}
+            onChange={(e) => setEarlyReason(e.target.value)}
+            sx={{ mt: 2 }}
+          >
+            <MenuItem value="">None</MenuItem>
+            <MenuItem value="prep">Prep / setup</MenuItem>
+            <MenuItem value="early_customers">Early customers</MenuItem>
+            <MenuItem value="staffing">Staffing / schedule</MenuItem>
+            <MenuItem value="other">Other</MenuItem>
+          </TextField>
+
+          <TextField
+            fullWidth
+            size="small"
+            label="Note (optional)"
+            value={earlyNote}
+            onChange={(e) => setEarlyNote(e.target.value)}
+            sx={{ mt: 2 }}
+            inputProps={{ maxLength: 255 }}
+          />
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setEarlyDialog({ open: false, message: "", earlyMinutes: 0 });
+              setPendingOpenPayload(null);
+            }}
+          >
+            Cancel
+          </Button>
+
+          <Button
+            variant="contained"
+            onClick={async () => {
+              if (!pendingOpenPayload) return;
+              setSubmitting(true);
+              try {
+                const payload = {
+                  ...pendingOpenPayload,
+                  early_reason: earlyReason || null,
+                  early_note: earlyNote || null,
+                };
+                await openShift(payload);
+
+                setEarlyDialog({ open: false, message: "", earlyMinutes: 0 });
+                setPendingOpenPayload(null);
+
+                if (typeof refreshLatestShift === "function") {
+                  await refreshLatestShift();
+                }
+                if (typeof onShiftOpened === "function") {
+                  onShiftOpened(null);
+                }
+              } catch (err) {
+                console.error("[Backoffice POS] open shift failed", err);
+                window.alert(err?.message || "Failed to open shift");
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }
@@ -1120,6 +1323,7 @@ const terminalId = "TERMINAL-1";
 
     let orderId = null;
     let netAmount = 0;
+    let data = {};
 
     try {
       const res = await fetch(ordersApi("/pending"), {
@@ -1129,7 +1333,7 @@ const terminalId = "TERMINAL-1";
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json().catch(() => ({}));
+      data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || `Failed to save pending (${res.status})`);
       }
@@ -1155,6 +1359,7 @@ const terminalId = "TERMINAL-1";
 
     const order = {
       id: orderId,
+      orderNo: data?.summary?.orderNo ?? data?.summary?.order_no ?? null,
       status: "pending",
       source: "Backoffice POS",
       employee: employeeId,
@@ -1235,6 +1440,7 @@ const terminalId = "TERMINAL-1";
     // ✅ Update local snapshot to match backend
     const updated = {
       id: currentOrderId,
+      orderNo: updatedSummary?.orderNo ?? updatedSummary?.order_no ?? baseOrder.orderNo ?? null,
       status: "pending",
       source: "Backoffice POS",
       employee: employeeId,
@@ -1324,19 +1530,58 @@ const terminalId = "TERMINAL-1";
   }, [openOrders, search, sortKey, sortDir]);
 
   const openSummary = (order) => {
-    setSummaryOrder(order);
+    // close the list dialog first so nothing can change selection behind
+    setOpenOrdersDlg(false);
+
+    // detach reference so future openOrders updates won't affect this object
+    const safe = typeof structuredClone === "function"
+      ? structuredClone(order)
+      : JSON.parse(JSON.stringify(order));
+
+    setSummaryOrder(safe);
     blurActive();
   };
   const closeSummary = () => setSummaryOrder(null);
 
-  const restoreToCart = () => {
-    if (!summaryOrder) return;
+  const restoreToCart = (order) => {
+    if (!order) return;
 
+    const idStr = String(order.id);
+
+    // ✅ Guard: if you're already reflecting this exact order, do nothing
+    if (currentOrderId && String(currentOrderId) === idStr) {
+      setSummaryOrder(null);
+      return;
+    }
+
+    // ✅ Always start clean
     clearCart();
     clearDiscounts();
-    summaryOrder.items.forEach((it) => {
-      const qty = it.qty ?? 1;
-      for (let k = 0; k < qty; k++) {
+
+    // ✅ Aggregate by item id (in case backend returns duplicates rows)
+    const agg = new Map();
+    (order.items || []).forEach((it) => {
+      const key = String(it.id);
+      const qty = Number(it.qty ?? it.quantity ?? 1) || 0;
+      if (qty <= 0) return;
+
+      const prev = agg.get(key);
+      if (!prev) {
+        agg.set(key, {
+          id: it.id,
+          name: it.name,
+          price: it.price,
+          image: it.image,
+          qty,
+        });
+      } else {
+        prev.qty += qty;
+      }
+    });
+
+    // ✅ Restore once per item (using qty loop)
+    agg.forEach((it) => {
+      for (let k = 0; k < it.qty; k++) {
         addItem({
           id: it.id,
           name: it.name,
@@ -1346,23 +1591,22 @@ const terminalId = "TERMINAL-1";
       }
     });
 
-    if (Array.isArray(summaryOrder.discounts)) {
-      summaryOrder.discounts.forEach((d) =>
+    // ✅ Restore discounts
+    if (Array.isArray(order.discounts)) {
+      order.discounts.forEach((d) =>
         applyDiscount(d.name ?? "Discount", d.percent ?? 0)
       );
     }
 
+    // ✅ Lock base quantities based on aggregated totals
     const base = {};
-    summaryOrder.items.forEach((it) => {
-      const qty = it.qty ?? 1;
-      base[it.id] = (base[it.id] || 0) + qty;
+    agg.forEach((it) => {
+      base[it.id] = it.qty;
     });
+
     setLockedBaseQty(base);
-    setReflecting(summaryOrder.id);
-    setCurrentOrderId(summaryOrder.id);
-    localStorage.setItem(LS_REFLECTING_KEY, summaryOrder.id);
+    setReflecting(idStr);
     setSummaryOrder(null);
-    setOpenOrdersDlg(false);
   };
 
   console.log("Current shiftId:", shiftId);
@@ -1386,6 +1630,7 @@ const terminalId = "TERMINAL-1";
         const mapped = (data.orders || []).map((o) => ({
           id: String(o.id),
           status: o.status,
+          orderNo: o.orderNo ?? o.order_no ?? null,
           source: o.source || "Backoffice POS",
           employee: o.employee,
           time: o.time,
@@ -2558,9 +2803,7 @@ const terminalId = "TERMINAL-1";
               >
                 <Box>
                   <Typography sx={{ fontWeight: 700 }}>
-                    {`Table #${o.table} – ${new Date(
-                      o.time
-                    ).toLocaleTimeString([], {
+                    {`#${o.orderNo ?? o.id} • Table #${o.table} – ${new Date(o.time).toLocaleTimeString([], {
                       hour: "numeric",
                       minute: "2-digit",
                     })}`}
@@ -2684,14 +2927,10 @@ const terminalId = "TERMINAL-1";
         <DialogContent dividers>
           {summaryOrder && (
             <Stack spacing={1}>
-              <Row
-                label="Customer"
-                value={summaryOrder.customer}
-              />
-              <Row
-                label="Table"
-                value={summaryOrder.table}
-              />
+              <Row label="Order No" value={`#${summaryOrder.orderNo ?? summaryOrder.id}`}/>
+
+              <Row label="Customer" value={summaryOrder.customer} />
+              <Row label="Table" value={summaryOrder.table} />
               <Row
                 label="Time"
                 value={new Date(
@@ -2724,7 +2963,7 @@ const terminalId = "TERMINAL-1";
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
           <Button onClick={closeSummary}>Cancel</Button>
-          <Button variant="contained" onClick={restoreToCart}>
+          <Button variant="contained" onClick={() => restoreToCart(summaryOrder)} disabled={!summaryOrder}>
             Confirm
           </Button>
         </DialogActions>

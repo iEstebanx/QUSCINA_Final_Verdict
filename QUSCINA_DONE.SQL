@@ -478,6 +478,16 @@ CREATE TABLE IF NOT EXISTS pos_shifts (
 
   created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  next_order_no INT NOT NULL DEFAULT 1,
+
+  shift_code      VARCHAR(20) NULL AFTER opening_note,
+  shift_name      VARCHAR(60) NULL AFTER shift_code,
+  scheduled_start TIME NULL AFTER shift_name,
+  scheduled_end   TIME NULL AFTER scheduled_start,
+  opened_early    TINYINT(1) NOT NULL DEFAULT 0 AFTER scheduled_end,
+  early_minutes   INT NOT NULL DEFAULT 0 AFTER opened_early,
+  early_reason    VARCHAR(255) NULL AFTER early_minutes,
+  early_note      VARCHAR(255) NULL AFTER early_reason;
 
   PRIMARY KEY (shift_id),
   KEY ix_shift_employee (employee_id, status),
@@ -486,6 +496,9 @@ CREATE TABLE IF NOT EXISTS pos_shifts (
     FOREIGN KEY (employee_id) REFERENCES employees(employee_id)
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX ix_shift_terminal_status_opened
+  ON pos_shifts (terminal_id, status, opened_at);
 
 -- ------------------------------------------------------------
 -- POS SHIFT DENOMINATIONS
@@ -582,11 +595,15 @@ CREATE TABLE IF NOT EXISTS pos_orders (
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
+  order_no INT NULL,
 
   PRIMARY KEY (order_id),
 
   KEY ix_orders_shift_status (shift_id, status),
   KEY ix_orders_table_status (table_no, status),
+  KEY ix_orders_shift_order_no (shift_id, order_no),
+
+  UNIQUE KEY ux_orders_shift_order_no (shift_id, order_no),
 
   CONSTRAINT fk_orders_shift
     FOREIGN KEY (shift_id) REFERENCES pos_shifts(shift_id)

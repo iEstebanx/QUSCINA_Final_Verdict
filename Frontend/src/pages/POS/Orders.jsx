@@ -69,7 +69,7 @@ export default function POSOrdersPage() {
   const sidebarSelectedText = t.palette.getContrastText(sidebarSelectedBg);
 
   // 🔹 NEW: get current open shift from ShiftContext
-  const { hasShift, shiftId: currentShiftId } = useShift() || {};
+  const { hasShift, shiftId: currentShiftId, shiftNo: currentShiftNo } = useShift() || {};
   const shiftId = hasShift && currentShiftId ? Number(currentShiftId) : 0;
 
   useEffect(() => {
@@ -101,25 +101,56 @@ export default function POSOrdersPage() {
 
         const mapped = (data.orders || []).map((o) => {
           const dt = o.closedAt ? new Date(o.closedAt) : new Date();
+
           const orderTypeCode =
             String(o.orderType || "").toLowerCase() === "take-out" ? "TO" : "DI";
 
-          const receiptId = `#${o.shiftId}_${orderTypeCode}-${o.id}`;
+          // tolerate different backend key names
+          const shiftCodeRaw = o.shiftCode || o.shift_code || "";
+          const shiftLabel =
+            (shiftCodeRaw
+              ? String(shiftCodeRaw).toUpperCase().replace("SHIFT_", "S")
+              : "") ||
+            currentShiftNo || // ✅ fallback to current open shift (S1/S2)
+            "S?";
 
-          // 🔍 Try to infer refunded item from items + refund amount
-          const inferred = inferRefundItem(o.items || [], o.refundAmount || 0);
-          const refundItemName = inferred?.name || "";
-          const refundQty = inferred?.qty || 0;
+          const orderNo = o.orderNo ?? o.order_no ?? o.id;
+
+          // ✅ Cashier-style receipt id
+          const receiptId = `#${shiftLabel}_${orderTypeCode}-${orderNo}`;
+
+          // ✅ Prefer real refund breakdown (Cashier-style)
+          const refundedItems = Array.isArray(o.refundedItems)
+            ? o.refundedItems
+            : Array.isArray(o.refunded_items)
+            ? o.refunded_items
+            : [];
+
+          let refundedTotal =
+            Number(o.refundedTotal ?? o.refunded_total ?? 0) ||
+            Number(o.refundAmount ?? o.refund_amount ?? 0) ||
+            0;
+
+          // Optional fallback: infer a single refunded item if backend still only sends refundAmount
+          if (refundedTotal > 0 && refundedItems.length === 0) {
+            const inferred = inferRefundItem(o.items || [], refundedTotal);
+            if (inferred) {
+              refundedItems.push({
+                name: inferred.name,
+                qty: inferred.qty,
+                amount: Number((Number(o.items?.find((x) => x.name === inferred.name)?.price || 0) * inferred.qty).toFixed(2)),
+              });
+            }
+          }
 
           return {
             id: o.id,
+            orderNo,
             shiftId: o.shiftId,
             status: o.status,
             receiptId,
             amount: o.netAmount,
-            refundAmount: o.refundAmount || 0,
-            refundItemName,
-            refundQty,
+
             timeLabel: dt.toLocaleTimeString([], {
               hour: "numeric",
               minute: "2-digit",
@@ -129,6 +160,11 @@ export default function POSOrdersPage() {
             items: o.items || [],
             payment: o.paymentSummary || "Unknown",
             datetimeLabel: dt.toLocaleString(),
+
+            // ✅ NEW (match Cashier)
+            refundedItems,
+            refundedTotal,
+
             raw: o,
           };
         });
@@ -193,20 +229,14 @@ export default function POSOrdersPage() {
     });
   };
 
-  const statusLabel = (status, refundAmount = 0) => {
-    if (!status) return "—";
-    const s = String(status).toLowerCase();
+  const statusLabel = (status, refundedTotal = 0) => {
+    const s = String(status || "").toLowerCase();
 
     if (s === "refunded") return "Refunded";
-
-    if (s === "paid" && refundAmount > 0) {
-      // still "paid" but with a refund
-      return "Paid (Refunded)";
-    }
-
+    if (refundedTotal > 0) return "Paid (Partially Refunded)";
     if (s === "paid") return "Paid";
     if (s === "voided") return "Voided";
-    return status;
+    return status || "—";
   };
 
   const orderTypeLabel = (selectedReceipt?.raw?.orderType || "Order")
@@ -267,7 +297,7 @@ export default function POSOrdersPage() {
               {receipts.map((receipt) => {
                 const isSelected = selectedReceipt?.id === receipt.id;
                 const isRefunded =
-                  receipt.status === "refunded" || receipt.refundAmount > 0;
+                  receipt.status === "refunded" || receipt.refundedTotal > 0;
 
                 return (
                   <Box key={receipt.id}>
@@ -314,6 +344,15 @@ export default function POSOrdersPage() {
                           <Typography fontSize="0.875rem">
                             {receipt.timeLabel}
                           </Typography>
+
+                          {receipt.refundedTotal > 0 && (
+                            <Typography
+                              fontSize="0.75rem"
+                              sx={{ color: t.palette.error.main, mt: 0.25 }}
+                            >
+                              Refund {PHP(receipt.refundedTotal)}
+                            </Typography>
+                          )}
 
                           {isRefunded && (
                             <Typography
@@ -408,10 +447,7 @@ export default function POSOrdersPage() {
                 />
                 <Detail
                   label="Status:"
-                  value={statusLabel(
-                    selectedReceipt.status,
-                    selectedReceipt.refundAmount
-                  )}
+                  value={statusLabel(selectedReceipt.status, selectedReceipt.refundedTotal)}
                 />
               </Stack>
 
@@ -456,25 +492,36 @@ export default function POSOrdersPage() {
                   value={PHP(selectedReceipt.amount)}
                 />
 
-                {selectedReceipt.refundAmount > 0 &&
-                  selectedReceipt.refundItemName && (
-                    <Detail
-                      label="Item refunded:"
-                      value={`${selectedReceipt.refundItemName}${
-                        selectedReceipt.refundQty
-                          ? ` x${selectedReceipt.refundQty}`
-                          : ""
-                      }`}
-                      color={t.palette.error.main}
-                    />
-                  )}
+                {selectedReceipt.refundedTotal > 0 && (
+                  <>
+                    <Divider sx={{ my: 1.5 }} />
 
-                {selectedReceipt.refundAmount > 0 && (
-                  <Detail
-                    label="Refunded:"
-                    value={`- ${PHP(selectedReceipt.refundAmount)}`}
-                    color={t.palette.error.main}
-                  />
+                    <Typography fontWeight="bold" color="error" mb={1}>
+                      Refunds
+                    </Typography>
+
+                    {(selectedReceipt.refundedItems || []).map((rItem, idx) => (
+                      <Box key={idx} mb={0.5}>
+                        <Stack direction="row" justifyContent="space-between">
+                          <Typography color="error">
+                            {rItem.name} x {rItem.qty}
+                          </Typography>
+                          <Typography fontWeight="bold" color="error">
+                            {PHP(rItem.amount || 0)}
+                          </Typography>
+                        </Stack>
+                      </Box>
+                    ))}
+
+                    <Stack direction="row" justifyContent="space-between" mt={1}>
+                      <Typography fontWeight="bold" color="error">
+                        Total Refunded
+                      </Typography>
+                      <Typography fontWeight="bold" color="error">
+                        {PHP(selectedReceipt.refundedTotal)}
+                      </Typography>
+                    </Stack>
+                  </>
                 )}
 
                 <Detail

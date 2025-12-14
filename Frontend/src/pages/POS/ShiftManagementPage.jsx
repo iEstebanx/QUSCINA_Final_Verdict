@@ -1,5 +1,5 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/ShiftManagementPage.jsx
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   Box,
   Paper,
@@ -30,36 +30,84 @@ export default function ShiftManagementPage() {
   const [ending, setEnding] = useState(false);
 
   // 🔹 from ShiftContext (raw row from pos_shifts)
-  const { shift: rawShift, clearShift, refreshLatestShift } = useShift();
+  const {
+    isOpen,
+    data: rawShift,
+    shiftId,
+    shiftNo,
+    loading: shiftLoading,
+    error: shiftError,
+    getSummary,
+    remitShift,
+    refreshCurrentOpen,
+    clearShift,
+  } = useShift();
+  
+  const [summary, setSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
 
-  // 🔹 Map DB row → UI fields
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSummary = async () => {
+      if (!isOpen || !shiftId) {
+        setSummary(null);
+        setSummaryError("");
+        setSummaryLoading(false);
+        return;
+      }
+
+      setSummaryLoading(true);
+      setSummaryError("");
+      try {
+        const data = await getSummary(shiftId);
+        if (!cancelled) setSummary(data);
+      } catch (e) {
+        if (!cancelled) setSummaryError(e.message || "Failed to load shift summary");
+      } finally {
+        if (!cancelled) setSummaryLoading(false);
+      }
+    };
+
+    loadSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, shiftId, getSummary]);
+
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
   const shift = useMemo(() => {
     if (!rawShift) return null;
 
-    // Base numbers from DB
-    const startingCash  = Number(rawShift.opening_float || 0);
-    const cashPayments  = Number(rawShift.total_cash_payments || 0);
-    const gcashPayments = Number(rawShift.total_online_payments || 0); // GCash / online
-    const cashRefunds   = Number(rawShift.total_refunds || 0);
-    const cashIn        = Number(rawShift.total_cash_in || 0);
-    const cashOut       = Number(rawShift.total_cash_out || 0);
+    // summary = whole API response
+    const cd = summary?.cash_drawer || {};
+    const ss = summary?.sales_summary || {};
 
-    // 1) value from DB (if you ever start populating expected_cash there)
-    const expectedFromDb =
-      rawShift.expected_cash != null ? Number(rawShift.expected_cash) : 0;
+    // Cash Drawer (from cash_drawer)
+    const startingCash  = num(cd.opening_float ?? rawShift.opening_float);
+    const cashPayments  = num(cd.cash_payments);
+    const gcashPayments = num(ss.online);        // <-- from sales_summary.online
+    const cashRefunds   = num(cd.cash_refunds);  // already includes refund_cash_moves in your backend calc
+    const cashIn        = num(cd.cash_in);
+    const cashOut       = num(cd.cash_out);
+    const expectedCash  = num(cd.expected_cash) || (startingCash + cashPayments + cashIn - cashRefunds - cashOut);
 
-    // 2) frontend-computed expected cash
-    const computedExpected =
-      startingCash + cashPayments + cashIn - cashRefunds - cashOut;
+    // Sales Summary (from sales_summary)
+    const grossSales = num(ss.gross_sales);
+    const refunds    = num(ss.refunds);
+    const discounts  = num(ss.discounts);
 
-    // Prefer DB value if it’s non-NaN and non-zero, otherwise use computed
-    const expectedCash =
-      !Number.isNaN(expectedFromDb) && expectedFromDb !== 0
-        ? expectedFromDb
-        : computedExpected;
+    const shiftLabel =
+      (rawShift.shift_code
+        ? String(rawShift.shift_code).toUpperCase().replace("SHIFT_", "S")
+        : "") ||
+      shiftNo ||
+      (rawShift.shift_id ? `S${rawShift.shift_id}` : "S?");
 
     return {
-      number: rawShift.shift_id,
+      numberLabel: shiftLabel,
       openedBy: rawShift.employee_id,
       openedAt: rawShift.opened_at
         ? new Date(rawShift.opened_at).toLocaleString("en-PH", {
@@ -71,7 +119,6 @@ export default function ShiftManagementPage() {
           })
         : "",
 
-      // Cash drawer
       startingCash,
       cashPayments,
       gcashPayments,
@@ -80,12 +127,11 @@ export default function ShiftManagementPage() {
       cashOut,
       expectedCash,
 
-      // Sales summary
-      grossSales: Number(rawShift.total_gross_sales || 0),
-      refunds: Number(rawShift.total_refunds || 0),
-      discounts: Number(rawShift.total_discounts || 0),
+      grossSales,
+      refunds,
+      discounts,
     };
-  }, [rawShift]);
+  }, [rawShift, summary, shiftNo]);
 
   const hasShift = !!shift;
 
@@ -114,49 +160,30 @@ export default function ShiftManagementPage() {
   };
 
   const handleConfirmEndShift = async () => {
+    if (!shiftId) return;
+
     try {
       setEnding(true);
 
-      const payload = {
-        declared_cash: declaredCash ? Number(declaredCash) : undefined,
-        note: note || undefined,
-      };
+      const declared =
+        declaredCash === "" ? shift?.expectedCash : Number(declaredCash || 0);
 
-      const resp = await fetch("/api/pos/shift/close", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(payload),
+      const updatedShift = await remitShift({
+        shift_id: shiftId,
+        declared_cash: declared,
+        closing_note: note || undefined,
       });
 
-      const data = await resp.json().catch(() => ({}));
+      if (!updatedShift) throw new Error("Failed to end shift");
 
-      if (!resp.ok || !data.ok) {
-        throw new Error(data.error || "Failed to end shift");
-      }
+      clearShift?.();
+      localStorage.removeItem("openOrders");
+      localStorage.removeItem("currentOrderId");
 
-      // 🔹 Clear frontend shift + cart state (no more spammed shiftId in Cart)
-      try {
-        if (typeof clearShift === "function") {
-          clearShift();
-        }
-
-        // Clear POS-related localStorage so Cart starts clean
-        localStorage.removeItem("openOrders");
-        localStorage.removeItem("currentOrderId");
-        // If you also want to reset type:
-        // localStorage.removeItem("orderType");
-      } catch (e) {
-        console.warn("[ShiftManagementPage] local cleanup failed", e);
-      }
-
-      // 🔹 Sync with backend (now there should be no open shift)
-      if (typeof refreshLatestShift === "function") {
-        await refreshLatestShift();
-      }
+      await refreshCurrentOpen?.();
 
       setEndDialogOpen(false);
-      setSuccessDialogOpen(true); // 🔹 nice success dialog instead of ugly alert
+      setSuccessDialogOpen(true);
     } catch (err) {
       console.error("[ShiftManagementPage] end shift failed:", err);
       window.alert(err.message || "Failed to end shift");
@@ -276,7 +303,7 @@ export default function ShiftManagementPage() {
             <Box>
               <Typography variant="body1" fontWeight={600}>
                 {hasShift
-                  ? `Shift Number ${shift.number}`
+                  ? `Shift Number ${shift.numberLabel}`
                   : "No open shift detected"}
               </Typography>
               {hasShift && (
@@ -293,6 +320,18 @@ export default function ShiftManagementPage() {
           </Stack>
 
           <Divider sx={{ mb: 2 }} />
+
+          {(shiftLoading || summaryLoading) && (
+            <Typography variant="body2" sx={{ mb: 2, opacity: 0.8 }}>
+              Loading shift data…
+            </Typography>
+          )}
+
+          {(shiftError || summaryError) && (
+            <Typography variant="body2" color="error" sx={{ mb: 2 }}>
+              {shiftError || summaryError}
+            </Typography>
+          )}
 
           {hasShift ? (
             <>

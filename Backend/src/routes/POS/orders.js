@@ -63,6 +63,66 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
     return rows[0];
   }
 
+  async function allocateNextOrderNoTx(conn, shiftId) {
+    const rows = asArray(
+      await conn.query(
+        `
+        SELECT next_order_no
+        FROM pos_shifts
+        WHERE shift_id = ?
+        FOR UPDATE
+        `,
+        [shiftId]
+      )
+    );
+
+    if (!rows.length) {
+      const err = new Error("Shift not found for order number allocation");
+      err.code = "SHIFT_NOT_FOUND";
+      throw err;
+    }
+
+    const orderNo = Number(rows[0].next_order_no) || 1;
+
+    await conn.query(
+      `
+      UPDATE pos_shifts
+      SET next_order_no = next_order_no + 1
+      WHERE shift_id = ?
+      `,
+      [shiftId]
+    );
+
+    return orderNo;
+  }
+
+  async function withTx(fn) {
+    // Works for mysql2 pool (getConnection) AND for direct db connection fallback
+    const conn = typeof db.getConnection === "function" ? await db.getConnection() : db;
+
+    const canTx =
+      conn &&
+      typeof conn.beginTransaction === "function" &&
+      typeof conn.commit === "function" &&
+      typeof conn.rollback === "function";
+
+    try {
+      if (canTx) await conn.beginTransaction();
+      const out = await fn(conn);
+      if (canTx) await conn.commit();
+      return out;
+    } catch (e) {
+      try {
+        if (canTx) await conn.rollback();
+      } catch {}
+      throw e;
+    } finally {
+      try {
+        if (conn && typeof conn.release === "function") conn.release();
+      } catch {}
+    }
+  }
+
   const safeNumber = (n, fallback = 0) => {
     const v = Number(n);
     return Number.isFinite(v) ? v : fallback;
@@ -247,33 +307,74 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
       const totals = computeTotals(items, discounts);
 
-      const result = await conn.query(
-        `
-        INSERT INTO pos_orders
-          (shift_id, terminal_id, status, order_type, source,
-           customer_name, table_no,
-           gross_amount, discount_amount, net_amount, tax_amount,
-           created_by, opened_at)
-        VALUES
-          (?, ?, 'pending', ?, 'Backoffice POS',
-           ?, ?,
-           ?, ?, ?, 0.00,
-           ?, NOW())
-        `,
-        [
-          shiftId,
-          terminalId,
-          orderType,
-          customerName || "Walk-in",
-          tableNo || null,
-          totals.gross_amount,
-          totals.discount_amount,
-          totals.net_amount,
-          employeeId,
-        ]
-      );
+      const { orderId, orderNo } = await withTx(async (tx) => {
+        const allocated = await allocateNextOrderNoTx(tx, shiftId);
 
-      const orderId = result.insertId;
+        const insertRes = await tx.query(
+          `
+          INSERT INTO pos_orders
+            (shift_id, order_no, terminal_id, status, order_type, source,
+            customer_name, table_no,
+            gross_amount, discount_amount, net_amount, tax_amount,
+            created_by, opened_at)
+          VALUES
+            (?, ?, ?, 'pending', ?, 'Backoffice POS',
+            ?, ?,
+            ?, ?, ?, 0.00,
+            ?, NOW())
+          `,
+          [
+            shiftId,
+            allocated,
+            terminalId,
+            orderType,
+            customerName || "Walk-in",
+            tableNo || null,
+            totals.gross_amount,
+            totals.discount_amount,
+            totals.net_amount,
+            employeeId,
+          ]
+        );
+
+        const packet = Array.isArray(insertRes) ? insertRes[0] : insertRes;
+        const newOrderId = packet.insertId;
+
+        // insert items inside tx
+        for (const it of items) {
+          const qty = safeNumber(it.qty ?? it.quantity, 1);
+          const price = safeNumber(it.price, 0);
+          const lineTotal = qty * price;
+
+          await tx.query(
+            `
+            INSERT INTO pos_order_items
+              (order_id, item_id, item_name, item_price, qty, line_total)
+            VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [newOrderId, it.id || null, it.name || "", price, qty, lineTotal]
+          );
+        }
+
+        // insert discounts inside tx
+        for (const d of discounts) {
+          const pct = safeNumber(d.percent, 0);
+          if (!pct) continue;
+
+          const amount = (totals.gross_amount * pct) / 100;
+
+          await tx.query(
+            `
+            INSERT INTO pos_order_discounts
+              (order_id, name, percent, amount)
+            VALUES (?, ?, ?, ?)
+            `,
+            [newOrderId, d.name || "Discount", pct, amount]
+          );
+        }
+
+        return { orderId: newOrderId, orderNo: allocated };
+      });
 
       // Items
       for (const it of items) {
@@ -335,8 +436,10 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
       return res.json({
         ok: true,
         orderId,
+        orderNo,
         summary: {
           id: orderId,
+          orderNo,
           status: "pending",
           customer: customerName || "Walk-in",
           table: tableNo || null,
@@ -617,6 +720,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           `
           SELECT
             o.order_id,
+            o.order_no,
             o.shift_id,
             o.terminal_id,
             o.status,
@@ -746,6 +850,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
       const orders = headers.map((h) => ({
         id: String(h.order_id),
+        orderNo: h.order_no ?? null,
         status: h.status,
         source: h.source || APP,
         employee: employeeById.get(h.created_by) || `#${h.created_by}`,
@@ -795,6 +900,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           `
           SELECT
             o.order_id,
+            o.order_no,
             o.shift_id,
             o.terminal_id,
             o.status,
@@ -924,6 +1030,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
         return {
           id: o.order_id,
+          orderNo: o.order_no ?? null,
           shiftId: o.shift_id,
           status: o.status,
           orderType: o.order_type,
@@ -969,6 +1076,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           `
           SELECT
             o.order_id,
+            o.order_no,
             o.shift_id,
             o.terminal_id,
             o.status,
@@ -1053,6 +1161,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
       const order = {
         id: o.order_id,
+        orderNo: o.order_no ?? null,
         shiftId: o.shift_id,
         terminalId: o.terminal_id,
         status: o.status,
@@ -1616,6 +1725,7 @@ router.post("/charge", async (req, res) => {
     }
 
     let finalOrderId = orderId || null;
+    let allocatedOrderNo = null;
 
     if (!finalOrderId) {
       // New order directly from Charge (no pending ticket)
@@ -1624,39 +1734,44 @@ router.post("/charge", async (req, res) => {
       const closedExpr =
         !isSplit || isFinalPayment ? "NOW()" : "NULL";
 
-      const insertResult = await conn.query(
-        `
-        INSERT INTO pos_orders
-          (shift_id, terminal_id, status, order_type, source,
-           customer_name, table_no,
-           gross_amount, discount_amount, net_amount, tax_amount,
-           opened_at, closed_at,
-           created_by)
-        VALUES
-          (?, ?, ?, ?, 'Backoffice POS',
-           ?, ?,
-           ?, ?, ?, 0.00,
-           NOW(), ${closedExpr},
-           ?)
-        `,
-        [
-          shiftId,
-          terminalId,
-          statusForInsert,
-          orderType,
-          customerName || "Walk-in",
-          tableNo || null,
-          totals.gross_amount,
-          totals.discount_amount,
-          totals.net_amount,
-          employeeId,
-        ]
-      );
+      const created = await withTx(async (tx) => {
+        allocatedOrderNo = await allocateNextOrderNoTx(tx, shiftId);
 
-      const insertPacket = Array.isArray(insertResult)
-        ? insertResult[0]
-        : insertResult;
-      finalOrderId = insertPacket.insertId;
+        const insertResult = await tx.query(
+          `
+          INSERT INTO pos_orders
+            (shift_id, order_no, terminal_id, status, order_type, source,
+             customer_name, table_no,
+             gross_amount, discount_amount, net_amount, tax_amount,
+             opened_at, closed_at,
+             created_by)
+          VALUES
+            (?, ?, ?, ?, ?, 'Backoffice POS',
+             ?, ?,
+             ?, ?, ?, 0.00,
+             NOW(), ${closedExpr},
+             ?)
+          `,
+          [
+            shiftId,
+            allocatedOrderNo,
+            terminalId,
+            statusForInsert,
+            orderType,
+            customerName || "Walk-in",
+            tableNo || null,
+            totals.gross_amount,
+            totals.discount_amount,
+            totals.net_amount,
+            employeeId,
+          ]
+        );
+
+        const packet = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+        return packet.insertId;
+      });
+
+      finalOrderId = created;
     } else {
       // Existing pending / open ticket
       const statusForUpdate =
@@ -1850,6 +1965,7 @@ router.post("/charge", async (req, res) => {
     return res.json({
       ok: true,
       orderId: finalOrderId,
+      orderNo: allocatedOrderNo || null,
       totals,
     });
   } catch (e) {
@@ -1904,6 +2020,7 @@ router.post("/charge", async (req, res) => {
           `
           SELECT
             o.order_id,
+            o.order_no,
             o.shift_id,
             o.status,
             o.order_type,
@@ -1993,6 +2110,7 @@ router.post("/charge", async (req, res) => {
         ok: true,
         order: {
           id: o.order_id,
+          orderNo: o.order_no ?? null,
           shiftId: o.shift_id,
           status: o.status,
           orderType: o.order_type,

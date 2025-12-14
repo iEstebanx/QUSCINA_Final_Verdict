@@ -1,4 +1,4 @@
-// Frontend/src/App.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/App.jsx
 import { BrowserRouter } from "react-router-dom";
 import AppRoutes from "./routes/AppRoutes";
 import { AuthProvider } from "./context/AuthContext";
@@ -10,17 +10,17 @@ import { ShiftProvider } from "@/context/ShiftContext";
 export default function App() {
   return (
     <BrowserRouter>
-      <ShiftProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <ShiftProvider>
           <AlertProvider>
             <AdminProvider>
               <ConfirmProvider>
-                  <AppRoutes />
+                <AppRoutes />
               </ConfirmProvider>
             </AdminProvider>
           </AlertProvider>
-        </AuthProvider>
-      </ShiftProvider>
+        </ShiftProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

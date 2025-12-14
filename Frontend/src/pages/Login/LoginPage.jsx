@@ -70,11 +70,10 @@ export default function LoginPage() {
   const [idError, setIdError] = useState("");
   const [pwError, setPwError] = useState("");
 
-  const { login } = useAuth();
+  const { login, user, ready } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const alert = useAlert();
-  const { user, ready } = useAuth();
   const theme = useTheme();
 
   // --------- Forgot Password dialog state ---------
@@ -133,14 +132,26 @@ export default function LoginPage() {
   // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
 
+  const didRedirectRef = useRef(false);
+
   useEffect(() => {
-    if (ready && user) {
-      const dest = (loc.state?.from?.pathname && loc.state.from.pathname !== "/")
+    if (!ready) return;
+    if (!user) return;
+
+    // prevent infinite bouncing / double-run
+    if (didRedirectRef.current) return;
+
+    const dest =
+      (loc.state?.from?.pathname && loc.state.from.pathname !== "/")
         ? loc.state.from.pathname
         : "/dashboard";
-      nav(dest, { replace: true });
-    }
-  }, [ready, user]); 
+
+    // if we're already there, don't navigate
+    if (loc.pathname === dest) return;
+
+    didRedirectRef.current = true;
+    nav(dest, { replace: true });
+  }, [ready, user, nav, loc.pathname, loc.state]);
 
   // Focus first empty OTP box when step opens
   useEffect(() => {

@@ -1,28 +1,54 @@
 // QUSCINA_BACKOFFICE/Frontend/src/context/ShiftContext.jsx
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
 import PropTypes from "prop-types";
 import { API_BASE } from "@/utils/apiBase";
+import { useAuth } from "@/context/AuthContext";
 
-// Helper to build Backoffice POS shift API URL
+/** Helper: terminal id storage */
+function getTerminalId() {
+  return localStorage.getItem("terminal_id") || "TERMINAL-1";
+}
+
+/** Join API_BASE + path safely */
+function join(base, path) {
+  return `${String(base || "").replace(/\/+$/, "")}/${String(path || "").replace(
+    /^\/+/,
+    ""
+  )}`;
+}
+
+/** Backoffice shift API URL builder */
 const shiftApi = (subPath = "") => {
   const base = API_BASE || "";
   const clean = subPath.startsWith("/") ? subPath : `/${subPath}`;
 
   // Local dev: backend proxied under /api
   if (!base) return `/api/pos/shift${clean}`;
-  if (base.endsWith("/api")) return `${base}/pos/shift${clean}`;
-  return `${base}/api/pos/shift${clean}`;
+  if (base.endsWith("/api")) return join(base, `pos/shift${clean}`);
+  return join(base, `api/pos/shift${clean}`);
 };
 
 const ShiftContext = createContext(null);
 
-/** Generic JSON fetch that preserves backend error message/code/holder */
+/** Generic JSON fetch with credentials + good error passthrough */
 async function fetchJSON(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const isGet = method === "GET";
+
   const res = await fetch(url, {
     credentials: "include",
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isGet ? {} : { "Content-Type": "application/json" }),
+      "X-App": "backoffice",
       ...(options.headers || {}),
     },
   });
@@ -35,7 +61,6 @@ async function fetchJSON(url, options = {}) {
   }
 
   const isError = !res.ok || data?.ok === false;
-
   if (isError) {
     const msg = data?.error || `Request failed (${res.status})`;
     const err = new Error(msg);
@@ -49,65 +74,109 @@ async function fetchJSON(url, options = {}) {
   return data;
 }
 
+/** Persist latest shift metadata (header fallbacks) */
+function persistShiftMeta(shift) {
+  if (shift?.shift_id) localStorage.setItem("last_shift_id", String(shift.shift_id));
+  if (shift?.shift_code) localStorage.setItem("last_shift_code", String(shift.shift_code));
+  if (shift?.shift_name) localStorage.setItem("last_shift_name", String(shift.shift_name));
+  if (shift?.opened_at) localStorage.setItem("last_shift_opened_at", String(shift.opened_at));
+}
+
+/** Clear shift metadata */
+function clearShiftMeta() {
+  localStorage.removeItem("last_shift_id");
+  localStorage.removeItem("last_shift_code");
+  localStorage.removeItem("last_shift_name");
+  localStorage.removeItem("last_shift_opened_at");
+}
+
 export function ShiftProvider({ children }) {
-  const [state, setState] = useState({
+  const [shiftState, setShiftState] = useState({
+    isOpen: false,
     loading: false,
+    data: null, // raw row from pos_shifts
     error: null,
-    shift: null, // raw row from pos_shifts
-    detected: false, // did we find an open shift
   });
 
-  const refreshLatestShift = async () => {
-    setState((s) => ({ ...s, loading: true, error: null }));
+  const { ready, token, user, logout } = useAuth();
+
+  // avoids “login warnings” during very first auto-refresh
+  const initialRefreshDoneRef = useRef(false);
+
+  /** GET current open shift for this user+terminal */
+  const refreshCurrentOpen = useCallback(async () => {
+    const terminalId = getTerminalId();
+    setShiftState((s) => ({ ...s, loading: true, error: null }));
+
     try {
-      const url = shiftApi("/latest-open");
-      const data = await fetchJSON(url, {
-        method: "GET",
-      });
+      const data = await fetchJSON(
+        shiftApi(`/me/open?terminal_id=${encodeURIComponent(terminalId)}`),
+        {
+          method: "GET",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      );
 
-      const shift = data.shift || null;
+      const shift = data?.shift || null;
 
-      setState({
+      if (shift?.shift_id) persistShiftMeta(shift);
+      if (!shift) clearShiftMeta();
+
+      setShiftState({
+        isOpen: Boolean(shift && String(shift.status) === "Open"),
         loading: false,
+        data: shift,
         error: null,
-        shift,
-        detected: Boolean(shift),
       });
 
       return shift;
     } catch (err) {
-      console.error("[Backoffice POS] Failed to load latest shift:", err);
-      setState({
-        loading: false,
-        error: err.message || "Failed to load latest open shift",
-        shift: null,
-        detected: false,
-      });
+      setShiftState((s) => ({ ...s, loading: false }));
+
+      if (err.status === 401) {
+        // session/token is invalid even if qd_user exists in storage
+        try {
+          await logout(); // clears user/token + storage
+        } catch {}
+
+        clearShiftMeta();
+
+        setShiftState({
+          isOpen: false,
+          loading: false,
+          data: null,
+          error: null, // don't spam errors on login page
+        });
+
+        return null;
+      } else {
+        setShiftState((s) => ({
+          ...s,
+          error: err.message || "Failed to load current shift.",
+        }));
+      }
+
       return null;
+    } finally {
+      initialRefreshDoneRef.current = true;
     }
-  };
+  }, [token, logout]);
 
-  const clearShift = () => {
-    setState({
-      loading: false,
-      error: null,
-      shift: null,
-      detected: false,
-    });
-  };
+  /** GET summary for a shift */
+  const getSummary = useCallback(async (shift_id) => {
+    const id = Number(
+      shift_id || shiftState?.data?.shift_id || localStorage.getItem("last_shift_id")
+    );
+    if (!id) throw new Error("No shift to summarize.");
 
-  /**
-   * Open a POS shift from Backoffice.
-   * NOTE: No snackbar here – caller (e.g. FloatingShiftModal) should catch
-   * the error and show its own dialog. For conflicts, backend already sends
-   * a friendly message in err.message.
-   */
-  const openShift = async (payload) => {
-    // 🚫 If we already know there is an open shift, do NOT open another
-    if (
-      state.shift &&
-      String(state.shift.status || "").toLowerCase() === "open"
-    ) {
+    const data = await fetchJSON(shiftApi(`/${id}/summary`), { method: "GET" });
+    return data;
+  }, [shiftState?.data?.shift_id]);
+
+  /** Open shift */
+  const openShift = useCallback(async (payload) => {
+    // block client-side if we already know it's open
+    if (shiftState?.data && String(shiftState.data.status) === "Open") {
       const err = new Error("Shift already open");
       err.code = "SHIFT_ALREADY_OPEN";
       throw err;
@@ -118,35 +187,34 @@ export function ShiftProvider({ children }) {
         ? payload
         : { opening_float: Number(payload || 0) };
 
-    const terminalId =
-      typeof asObj.terminal_id === "string" && asObj.terminal_id.trim()
-        ? asObj.terminal_id.trim()
-        : "TERMINAL-1";
+    const terminalId = asObj?.terminal_id ?? getTerminalId();
 
-    const denoms = Array.isArray(asObj.denominations)
-      ? asObj.denominations
-      : [];
-
+    const denoms = Array.isArray(asObj?.denominations) ? asObj.denominations : [];
     const sanitizedDenoms = denoms
       .map((d) => ({
         denom_value: Number(d?.denom_value),
         qty: Number.isFinite(Number(d?.qty)) ? Number(d.qty) : 0,
       }))
-      .filter(
-        (d) =>
-          Number.isFinite(d.denom_value) &&
-          d.denom_value >= 0 &&
-          d.qty >= 0
-      );
+      .filter((d) => Number.isFinite(d.denom_value) && d.denom_value >= 0 && d.qty >= 0);
 
     const body = {
-      terminal_id: terminalId,
-      opening_float: Number(asObj.opening_float ?? 0),
+      terminal_id: String(terminalId),
+      opening_float: Number(asObj?.opening_float ?? 0),
       denominations: sanitizedDenoms,
-      note: typeof asObj.note === "string" ? asObj.note : undefined,
+      note: typeof asObj?.note === "string" ? asObj.note : undefined,
+
+      // ✅ shift template metadata (same as cashier)
+      shift_code: asObj?.shift_code ? String(asObj.shift_code) : undefined,
+      shift_name: asObj?.shift_name ? String(asObj.shift_name) : undefined,
+      scheduled_start: asObj?.scheduled_start ? String(asObj.scheduled_start) : undefined,
+      scheduled_end: asObj?.scheduled_end ? String(asObj.scheduled_end) : undefined,
+      opened_early: Number(asObj?.opened_early ?? 0),
+      early_minutes: Number(asObj?.early_minutes ?? 0),
+      early_reason: asObj?.early_reason != null ? String(asObj.early_reason) : null,
+      early_note: asObj?.early_note != null ? String(asObj.early_note) : null,
     };
 
-    setState((s) => ({ ...s, loading: true }));
+    setShiftState((s) => ({ ...s, loading: true, error: null }));
 
     try {
       const data = await fetchJSON(shiftApi("/open"), {
@@ -154,52 +222,146 @@ export function ShiftProvider({ children }) {
         body: JSON.stringify(body),
       });
 
-      const shift = data.shift || null;
+      const shift = data?.shift || null;
 
-      setState({
+      if (shift?.shift_id) persistShiftMeta(shift);
+      setShiftState({
+        isOpen: true,
         loading: false,
+        data: shift,
         error: null,
-        shift,
-        detected: Boolean(shift),
       });
 
       return shift;
     } catch (err) {
-      // Don’t show any snackbar/toast here – UI will show dialog using err.message
-      console.error("[Backoffice POS] Failed to open shift:", err);
-      setState((s) => ({
-        ...s,
-        loading: false,
-        // keep error in state if some component wants to read it,
-        // but the main UX will be controlled by the calling dialog
-        error: err.message || "Failed to open shift",
-      }));
+      setShiftState((s) => ({ ...s, loading: false, error: err.message || "Failed to open shift" }));
       throw err;
     }
-  };
+  }, [shiftState?.data]);
 
-  // Auto load latest shift once on mount
-  useEffect(() => {
-    refreshLatestShift();
+  /** Cash drawer move */
+  const cashMove = useCallback(async (args) => {
+    const body = {
+      shift_id: Number(args?.shift_id),
+      type: String(args?.type),
+      amount: Number(args?.amount),
+      reason: args?.reason || undefined,
+      denominations: Array.isArray(args?.denominations)
+        ? args.denominations.map((d) => ({
+            denom_value: Number(d?.denom_value),
+            qty: Number(d?.qty) || 0,
+          }))
+        : [],
+    };
+
+    if (!body.shift_id || !body.type || !Number.isFinite(body.amount) || body.amount <= 0) {
+      throw new Error("Invalid cash move payload");
+    }
+
+    try {
+      return await fetchJSON(shiftApi("/cash-move"), {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // match cashier behavior: let CashModal show inline for INSUFFICIENT_CASH
+      throw err;
+    }
   }, []);
+
+  /** Remit / close shift */
+  const remitShift = useCallback(async ({ shift_id, declared_cash, closing_note }) => {
+    const id = Number(
+      shift_id || shiftState?.data?.shift_id || localStorage.getItem("last_shift_id")
+    );
+    if (!id) throw new Error("No shift to remit.");
+
+    const body = {
+      declared_cash: Number(declared_cash ?? 0),
+      closing_note: closing_note || undefined,
+    };
+
+    const data = await fetchJSON(shiftApi(`/${id}/remit`), {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    const shift = data?.shift || null;
+
+    // After remit, shift is no longer open
+    setShiftState({
+      isOpen: false,
+      loading: false,
+      data: shift,
+      error: null,
+    });
+
+    clearShiftMeta();
+    return shift;
+  }, [shiftState?.data?.shift_id]);
+
+  /** List cash moves */
+  const listCashMoves = useCallback(async (shift_id) => {
+    const id = Number(
+      shift_id || shiftState?.data?.shift_id || localStorage.getItem("last_shift_id")
+    );
+    if (!id) throw new Error("No shift to list moves for.");
+
+    return await fetchJSON(shiftApi(`/${id}/cash-moves`), { method: "GET" });
+  }, [shiftState?.data?.shift_id]);
+
+  /** Local-only clear (compat) */
+  const clearShift = useCallback(() => {
+    setShiftState({ isOpen: false, loading: false, data: null, error: null });
+    clearShiftMeta();
+  }, []);
+
+  // auto refresh on mount
+  useEffect(() => {
+    if (!ready) return;     // wait for AuthContext bootstrap
+    if (!user) return;      // not logged in, don't call /me/open
+    refreshCurrentOpen();
+  }, [ready, user, refreshCurrentOpen]);
 
   const value = useMemo(
     () => ({
-      ...state,
-      hasShift: state.detected && !!state.shift,
-      shiftId: state.shift?.shift_id ?? null,
-      terminalId: state.shift?.terminal_id ?? null,
-      employeeId: state.shift?.employee_id ?? null,
-      refreshLatestShift,
-      openShift, // exposed so Backoffice POS modal can call it
+      shift: shiftState, // { isOpen, loading, data, error }
+
+      isOpen: shiftState.isOpen,
+      loading: shiftState.loading,
+      error: shiftState.error,
+      data: shiftState.data,
+
+      hasShift: Boolean(shiftState.data),
+      shiftId: shiftState.data?.shift_id ?? null,
+
+      shiftCode:
+        shiftState.data?.shift_code ??
+        localStorage.getItem("last_shift_code") ??
+        null,
+
+      shiftNo:
+        (shiftState.data?.shift_code
+          ? String(shiftState.data.shift_code).toUpperCase().replace("SHIFT_", "S")
+          : localStorage.getItem("last_shift_code")
+          ? String(localStorage.getItem("last_shift_code")).toUpperCase().replace("SHIFT_", "S")
+          : null),
+      
+      terminalId: shiftState.data?.terminal_id ?? null,
+      employeeId: shiftState.data?.employee_id ?? null,
+
+      refreshCurrentOpen,
+      getSummary,
+      openShift,
+      cashMove,
+      remitShift,
+      listCashMoves,
       clearShift,
     }),
-    [state, refreshLatestShift, openShift]
+    [shiftState, refreshCurrentOpen, getSummary, openShift, cashMove, remitShift, listCashMoves, clearShift]
   );
 
-  return (
-    <ShiftContext.Provider value={value}>{children}</ShiftContext.Provider>
-  );
+  return <ShiftContext.Provider value={value}>{children}</ShiftContext.Provider>;
 }
 
 ShiftProvider.propTypes = {
@@ -208,11 +370,8 @@ ShiftProvider.propTypes = {
 
 export function useShift() {
   const ctx = useContext(ShiftContext);
-  if (!ctx) {
-    throw new Error("useShift must be used inside <ShiftProvider>");
-  }
+  if (!ctx) throw new Error("useShift must be used inside <ShiftProvider>");
   return ctx;
 }
 
-// optional default export
 export default ShiftContext;
