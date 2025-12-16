@@ -637,6 +637,10 @@ CREATE TABLE IF NOT EXISTS pos_order_items (
 
   created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+  discount_name VARCHAR(100) NULL,
+  discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0;
+
   PRIMARY KEY (id),
   KEY ix_order_items_order (order_id),
 

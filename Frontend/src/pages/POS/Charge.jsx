@@ -54,16 +54,21 @@ function LeftSummary({ orderType }) {
   const items = cart.items || [];
   const discounts = cart.discounts || [];
 
+  // ✅ use what CartContext already computes
+  const itemDisc = Number(cart.itemDiscountAmount || 0);
+
   const subtotal = items.reduce(
-    (s, i) => s + (i.price || 0) * (i.quantity ?? 1),
+    (s, i) => s + (Number(i.price) || 0) * (i.quantity ?? 1),
     0
   );
-  const totalPct = discounts.reduce(
-    (a, d) => a + (Number(d?.percent) || 0),
-    0
-  );
-  const discountAmt = (subtotal * Math.max(0, totalPct)) / 100;
-  const total = Math.max(0, subtotal - discountAmt);
+
+  // ✅ order-level percent (same logic style you used elsewhere)
+  const orderPct = discounts.reduce((a, d) => a + (Number(d?.percent) || 0), 0);
+
+  const afterItem = Math.max(0, subtotal - itemDisc);
+  const orderDisc = (afterItem * Math.max(0, orderPct)) / 100;
+
+  const total = Math.max(0, subtotal - itemDisc - orderDisc);
 
   return (
     <Box
@@ -89,15 +94,14 @@ function LeftSummary({ orderType }) {
           fontWeight: 700,
         }}
       />
-      <Typography
-        variant="subtitle2"
-        sx={{ mt: 2, mb: 0.5, opacity: 0.9 }}
-      >
+
+      <Typography variant="subtitle2" sx={{ mt: 2, mb: 0.5, opacity: 0.9 }}>
         Recipient:
       </Typography>
       <Typography variant="h6" sx={{ mb: 1 }}>
         Rey
       </Typography>
+
       <Typography variant="subtitle2" sx={{ opacity: 0.9 }}>
         Date:
       </Typography>
@@ -107,34 +111,55 @@ function LeftSummary({ orderType }) {
 
       <Divider sx={{ my: 1, borderColor: alpha("#fff", 0.25) }} />
 
-      {/* Scrollable list of items + discounts */}
-      <Stack
-        spacing={1}
-        sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5 }}
-      >
-        {items.map((i) => (
-          <Box
-            key={i.id}
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "1fr auto",
-              gap: 1,
-            }}
-          >
-            <Typography sx={{ fontWeight: 600 }}>
-              {i.name}
-              <Typography
-                component="span"
-                sx={{ opacity: 0.85, ml: 0.5 }}
+      <Stack spacing={1} sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5 }}>
+        {items.map((i) => {
+          const qty = i.quantity ?? 1;
+          const price = Number(i.price) || 0;
+          const lineGross = price * qty;
+
+          const disc = cart.itemDiscounts?.[String(i.id)];
+          const pct = disc ? Math.max(0, Number(disc.percent) || 0) : 0;
+          const discAmt = (lineGross * pct) / 100;
+
+          return (
+            <Box key={i.id}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto",
+                  gap: 1,
+                }}
               >
-                x {i.quantity ?? 1}
-              </Typography>
-            </Typography>
-            <Typography sx={{ fontWeight: 700 }}>
-              {PHP((i.price || 0) * (i.quantity ?? 1))}
-            </Typography>
-          </Box>
-        ))}
+                <Typography sx={{ fontWeight: 600 }}>
+                  {i.name}
+                  <Typography component="span" sx={{ opacity: 0.85, ml: 0.5 }}>
+                    x {qty}
+                  </Typography>
+                </Typography>
+                <Typography sx={{ fontWeight: 700 }}>{PHP(lineGross)}</Typography>
+              </Box>
+
+              {disc && pct > 0 && (
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    pl: 2,
+                    mt: 0.25,
+                  }}
+                >
+                  <Typography variant="body2" sx={{ opacity: 0.85 }}>
+                    − {disc.name} ({pct}%)
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    − {PHP(discAmt)}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+          );
+        })}
+
         {discounts.length > 0 && (
           <>
             <Divider
@@ -145,21 +170,10 @@ function LeftSummary({ orderType }) {
               }}
             />
             {discounts.map((d, idx) => (
-              <Box
-                key={idx}
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                }}
-              >
-                <Typography sx={{ fontWeight: 600 }}>
-                  {d.name}
-                </Typography>
+              <Box key={idx} sx={{ display: "grid", gridTemplateColumns: "1fr auto" }}>
+                <Typography sx={{ fontWeight: 600 }}>{d.name}</Typography>
                 <Typography sx={{ fontWeight: 700 }}>
-                  -{" "}
-                  {PHP(
-                    (subtotal * (Number(d?.percent) || 0)) / 100
-                  )}
+                  - {PHP((subtotal * (Number(d?.percent) || 0)) / 100)}
                 </Typography>
               </Box>
             ))}
@@ -170,8 +184,8 @@ function LeftSummary({ orderType }) {
       <Divider sx={{ my: 1, borderColor: alpha("#fff", 0.25) }} />
 
       <Stack spacing={0.5}>
-        <Row label="Sub Total" value={PHP(subtotal)} />
-        <Row label="Discounts" value={`-${PHP(discountAmt)}`} />
+        <Row label="Order Discounts" value={`-${PHP(orderDisc)}`} />
+        <Row label="Item Discounts" value={`-${PHP(itemDisc)}`} />
         <Row label="Total" value={PHP(total)} bold />
       </Stack>
     </Box>
@@ -202,8 +216,13 @@ export default function Charge() {
   const cart = useCart() || {};
   const items = cart.items || [];
   const discounts = cart.discounts || [];
+
+  const itemDiscounts = cart.itemDiscounts || {};
+  const itemDiscountAmount = cart.itemDiscountAmount || 0;
+
   const clearCart = cart.clearCart || (() => {});
   const clearDiscounts = cart.clearDiscounts || (() => {});
+  const clearItemDiscounts = cart.clearItemDiscounts || (() => {});
 
   const { shift } = useShift();
   const { user } = useAuth();
@@ -253,17 +272,19 @@ export default function Charge() {
 
   const totalDue = useMemo(() => {
     const sub = items.reduce(
-      (s, i) => s + (i.price || 0) * (i.quantity ?? 1),
+      (s, i) => s + (Number(i.price) || 0) * (i.quantity ?? 1),
       0
     );
-    const pct = discounts.reduce(
-      (a, d) => a + (Number(d?.percent) || 0),
-      0
-    );
-    const disc = (sub * Math.max(0, pct)) / 100;
-    return Math.max(0, sub - disc);
-  }, [items, discounts]);
 
+    const itemDisc = Number(itemDiscountAmount) || 0;
+
+    const pct = discounts.reduce((a, d) => a + (Number(d?.percent) || 0), 0);
+
+    const afterItem = Math.max(0, sub - itemDisc);
+    const orderDisc = (afterItem * Math.max(0, pct)) / 100;
+
+    return Math.max(0, sub - itemDisc - orderDisc);
+  }, [items, discounts, itemDiscountAmount]);
 
   // Split mode via query param (?split=1) – same idea as Cashier
   const splitOn = params.get("split") === "1";
@@ -447,6 +468,7 @@ export default function Charge() {
     nav("/pos/menu", { replace: true });
     setTimeout(() => {
       clearDiscounts();
+      clearItemDiscounts();
       clearCart();
     }, 0);
   };
@@ -528,12 +550,25 @@ export default function Charge() {
         orderType,
         customerName,
         tableNo,
-        items: items.map((i) => ({
-          id: i.id,
-          name: i.name,
-          price: i.price,
-          qty: i.quantity ?? 1,
-        })),
+        items: items.map((i) => {
+          const qty = i.quantity ?? 1;
+          const price = Number(i.price) || 0;
+          const lineGross = price * qty;
+
+          const disc = itemDiscounts?.[String(i.id)];
+          const pct = disc ? Math.max(0, Number(disc.percent) || 0) : 0;
+          const dAmt = (lineGross * pct) / 100;
+
+          return {
+            id: i.id,
+            name: i.name,
+            price,
+            qty,
+            discountName: disc?.name || null,
+            discountPercent: pct,
+            discountAmount: dAmt,
+          };
+        }),
         discounts: discounts.map((d) => ({
           name: d.name,
           percent: Number(d.percent) || 0,

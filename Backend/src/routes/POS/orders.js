@@ -132,24 +132,42 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
     Math.round((Number(n) || 0) * 100) / 100;
 
   function computeTotals(items = [], discounts = []) {
-    const gross = items.reduce((sum, it) => {
+    // gross
+    const gross = (items || []).reduce((sum, it) => {
       const qty = safeNumber(it.qty ?? it.quantity, 1);
       const price = safeNumber(it.price, 0);
       return sum + qty * price;
     }, 0);
 
-    const totalPct = discounts.reduce(
-      (sum, d) => sum + safeNumber(d.percent, 0),
+    // ✅ per-item discount (supports discountPercent + discount_percent)
+    const itemDiscount = (items || []).reduce((sum, it) => {
+      const qty = safeNumber(it.qty ?? it.quantity, 1);
+      const price = safeNumber(it.price, 0);
+      const pct = Math.max(
+        0,
+        safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0)
+      );
+      const lineGross = qty * price;
+      return sum + (lineGross * pct) / 100;
+    }, 0);
+
+    // ✅ optional order-level discount AFTER item discounts
+    const totalPct = (discounts || []).reduce(
+      (sum, d) => sum + Math.max(0, safeNumber(d.percent, 0)),
       0
     );
 
-    const discountAmount = gross * (totalPct / 100);
-    const net = gross - discountAmount;
+    const afterItemDiscount = Math.max(0, gross - itemDiscount);
+    const orderDiscount = (afterItemDiscount * totalPct) / 100;
+
+    const discountAmount = itemDiscount + orderDiscount;
+    const net = Math.max(0, gross - discountAmount);
 
     return {
       gross_amount: round2(gross),
       discount_amount: round2(discountAmount),
       net_amount: round2(net),
+      tax_amount: 0,
     };
   }
 
@@ -497,24 +515,52 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         for (const it of items) {
           const qty = safeNumber(it.qty ?? it.quantity, 1);
           const price = safeNumber(it.price, 0);
-          const lineTotal = qty * price;
+          const lineGross = qty * price;
+
+          // ✅ HERE
+          const pct = Math.max(
+            0,
+            safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0)
+          );
+          const dAmt = (lineGross * pct) / 100;
 
           await tx.query(
             `
             INSERT INTO pos_order_items
-              (order_id, item_id, item_name, item_price, qty, line_total)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (order_id, item_id, item_name, item_price, qty, line_total,
+              discount_name, discount_percent, discount_amount)
+            VALUES (?, ?, ?, ?, ?, ?,
+                    ?, ?, ?)
             `,
-            [newOrderId, it.id || null, it.name || "", price, qty, lineTotal]
+            [
+              newOrderId,
+              it.id || null,
+              it.name || "",
+              price,
+              qty,
+              lineGross,
+              it.discountName || it.discount_name || null,
+              pct,
+              round2(dAmt),
+            ]
           );
         }
+
+        const itemDiscountTotal = (items || []).reduce((sum, it) => {
+          const qty = safeNumber(it.qty ?? it.quantity, 1);
+          const price = safeNumber(it.price, 0);
+          const pct = Math.max(0, safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0));
+          return sum + ((qty * price) * pct) / 100;
+        }, 0);
+
+        const afterItemDiscount = Math.max(0, totals.gross_amount - itemDiscountTotal);
 
         // insert discounts inside tx
         for (const d of discounts) {
           const pct = safeNumber(d.percent, 0);
           if (!pct) continue;
 
-          const amount = (totals.gross_amount * pct) / 100;
+          const amount = round2((afterItemDiscount * pct) / 100);
 
           await tx.query(
             `
@@ -720,13 +766,22 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
       for (const it of items) {
         const qty = safeNumber(it.qty ?? it.quantity, 1);
         const price = safeNumber(it.price, 0);
-        const lineTotal = qty * price;
+        const lineGross = qty * price;
+
+        // ✅ HERE
+        const pct = Math.max(
+          0,
+          safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0)
+        );
+        const dAmt = (lineGross * pct) / 100;
 
         await conn.query(
           `
           INSERT INTO pos_order_items
-            (order_id, item_id, item_name, item_price, qty, line_total)
-          VALUES (?, ?, ?, ?, ?, ?)
+            (order_id, item_id, item_name, item_price, qty, line_total,
+            discount_name, discount_percent, discount_amount)
+          VALUES (?, ?, ?, ?, ?, ?,
+                  ?, ?, ?)
           `,
           [
             orderId,
@@ -734,15 +789,28 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
             it.name || "",
             price,
             qty,
-            lineTotal,
+            lineGross,
+            it.discountName || it.discount_name || null,
+            pct,
+            round2(dAmt),
           ]
         );
       }
 
+      const itemDiscountTotal = (items || []).reduce((sum, it) => {
+        const qty = safeNumber(it.qty ?? it.quantity, 1);
+        const price = safeNumber(it.price, 0);
+        const pct = Math.max(0, safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0));
+        return sum + ((qty * price) * pct) / 100;
+      }, 0);
+
+      const afterItemDiscount = Math.max(0, totals.gross_amount - itemDiscountTotal);
+
       for (const d of discounts) {
         const pct = safeNumber(d.percent, 0);
         if (!pct) continue;
-        const amount = (totals.gross_amount * pct) / 100;
+
+        const amount = (afterItemDiscount * pct) / 100;
 
         await conn.query(
           `
@@ -873,7 +941,10 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
             item_price,
             qty,
             voided_qty,
-            line_total
+            line_total,
+            discount_name,
+            discount_percent,
+            discount_amount
           FROM pos_order_items
           WHERE order_id IN (${inPlaceholders})
           `,
@@ -946,6 +1017,9 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           price: Number(r.item_price || 0),
           qty: remainingQty,
           image: null,
+          discountName: r.discount_name || null,
+          discountPercent: Number(r.discount_percent || 0),
+          discountAmount: Number(r.discount_amount || 0),
         });
       });
 
@@ -977,6 +1051,9 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           price: it.price,
           qty: it.qty,
           image: it.image,
+          discountName: it.discountName || null,
+          discountPercent: Number(it.discountPercent || 0),
+          discountAmount: Number(it.discountAmount || 0),
         })),
         discounts: discountsByOrder.get(h.order_id) || [],
       }));
@@ -1054,7 +1131,10 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
             oi.item_name,
             oi.item_price,
             oi.qty,
-            oi.line_total
+            oi.line_total,
+            oi.discount_name,
+            oi.discount_percent,
+            oi.discount_amount
           FROM pos_order_items oi
           WHERE oi.order_id IN (${inPlaceholders})
           ORDER BY oi.order_id, oi.item_id
@@ -1074,6 +1154,9 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
           name: r.item_name,
           price: safeNumber(r.item_price, 0),
           qty: safeNumber(r.qty, 1),
+          discountName: r.discount_name || null,
+          discountPercent: safeNumber(r.discount_percent, 0),
+          discountAmount: safeNumber(r.discount_amount, 0),
         });
       }
 
@@ -1227,7 +1310,10 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
             oi.item_name,
             oi.item_price,
             oi.qty,
-            oi.line_total
+            oi.line_total,
+            oi.discount_name,
+            oi.discount_percent,
+            oi.discount_amount
           FROM pos_order_items oi
           WHERE oi.order_id = ?
           ORDER BY oi.order_id, oi.item_id
@@ -1242,6 +1328,9 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         price: safeNumber(r.item_price, 0),
         qty: safeNumber(r.qty, 1),
         lineTotal: safeNumber(r.line_total, 0),
+        discountName: r.discount_name || null,
+        discountPercent: safeNumber(r.discount_percent, 0),
+        discountAmount: safeNumber(r.discount_amount, 0),
       }));
 
       // payments
@@ -1607,7 +1696,15 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         });
       }
 
-      const amount = reqQty * Number(it.item_price || 0);
+      const baseAfterItem = Math.max(0, totals.gross_amount - (items || []).reduce((sum, it) => {
+        const qty = safeNumber(it.qty ?? it.quantity, 1);
+        const price = safeNumber(it.price, 0);
+        const lineGross = qty * price;
+        const p = Math.max(0, safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0));
+        return sum + (lineGross * p) / 100;
+      }, 0));
+
+      const amount = (baseAfterItem * pct) / 100;
 
       // 3) Update voided_qty for that line
       await db.query(
@@ -1619,11 +1716,10 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         [reqQty, orderId, it.item_id]
       );
 
-      // 4) Recompute totals based on remaining (non-voided) qty
       const totalsRows = asArray(
         await db.query(
           `
-          SELECT qty, voided_qty, item_price
+          SELECT qty, voided_qty, item_price, discount_percent
           FROM pos_order_items
           WHERE order_id = ?
           `,
@@ -1631,21 +1727,32 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         )
       );
 
-      let gross = 0;
-      for (const r of totalsRows) {
-        const validQty =
-          Number(r.qty || 0) - Number(r.voided_qty || 0);
-        if (validQty > 0) {
-          gross += validQty * Number(r.item_price || 0);
-        }
-      }
+      // order-level discounts (optional)
+      const discRows = asArray(
+        await db.query(
+          `
+          SELECT percent
+          FROM pos_order_discounts
+          WHERE order_id = ?
+          `,
+          [orderId]
+        )
+      );
 
-      // Same as your previous behavior: ignore discounts here
-      const discount = 0;
-      const net = gross - discount;
+      // build "virtual cart" based on remaining qty
+      const itemsForTotals = totalsRows.map((r) => ({
+        price: safeNumber(r.item_price, 0),
+        qty: Math.max(0, safeNumber(r.qty, 0) - safeNumber(r.voided_qty, 0)),
+        discountPercent: safeNumber(r.discount_percent, 0),
+      }));
+
+      const discountsForTotals = discRows.map((d) => ({
+        percent: safeNumber(d.percent, 0),
+      }));
+
+      const totals = computeTotals(itemsForTotals, discountsForTotals);
 
       // IMPORTANT: DO NOT CHANGE STATUS HERE.
-      // We only adjust amounts. Order stays paid/open/pending.
       const newStatus = order.status;
 
       await db.query(
@@ -1657,7 +1764,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
             status = ?
         WHERE order_id = ?
         `,
-        [gross, discount, net, newStatus, orderId]
+        [totals.gross_amount, totals.discount_amount, totals.net_amount, newStatus, orderId]
       );
 
       // 5) Audit log (no order-level void)
@@ -1682,7 +1789,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         ok: true,
         orderId,
         voidAmount: amount,
-        newNet: net,
+        newNet: totals.net_amount,
         status: newStatus,
       });
     } catch (e) {
@@ -1948,13 +2055,22 @@ router.post("/charge", async (req, res) => {
       for (const it of items) {
         const qty = safeNumber(it.qty ?? it.quantity, 1);
         const price = safeNumber(it.price, 0);
-        const lineTotal = qty * price;
+        const lineGross = qty * price;
+
+        // ✅ HERE
+        const pct = Math.max(
+          0,
+          safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0)
+        );
+        const dAmt = (lineGross * pct) / 100;
 
         await conn.query(
           `
           INSERT INTO pos_order_items
-            (order_id, item_id, item_name, item_price, qty, line_total)
-          VALUES (?, ?, ?, ?, ?, ?)
+            (order_id, item_id, item_name, item_price, qty, line_total,
+            discount_name, discount_percent, discount_amount)
+          VALUES (?, ?, ?, ?, ?, ?,
+                  ?, ?, ?)
           `,
           [
             finalOrderId,
@@ -1962,15 +2078,28 @@ router.post("/charge", async (req, res) => {
             it.name || "",
             price,
             qty,
-            lineTotal,
+            lineGross,
+            it.discountName || it.discount_name || null,
+            pct,
+            round2(dAmt),
           ]
         );
       }
 
+      const itemDiscountTotal = (items || []).reduce((sum, it) => {
+        const qty = safeNumber(it.qty ?? it.quantity, 1);
+        const price = safeNumber(it.price, 0);
+        const pct = Math.max(0, safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0));
+        return sum + ((qty * price) * pct) / 100;
+      }, 0);
+
+      const afterItem = Math.max(0, totals.gross_amount - itemDiscountTotal);
+
       for (const d of discounts) {
         const pct = safeNumber(d.percent, 0);
         if (!pct) continue;
-        const amount = (totals.gross_amount * pct) / 100;
+
+        const amount = round2((afterItem * pct) / 100);
 
         await conn.query(
           `
@@ -2196,7 +2325,10 @@ router.post("/charge", async (req, res) => {
             item_name,
             item_price,
             qty,
-            line_total
+            line_total,
+            discount_name,
+            discount_percent,
+            discount_amount
           FROM pos_order_items
           WHERE order_id = ?
           ORDER BY id ASC
@@ -2230,6 +2362,9 @@ router.post("/charge", async (req, res) => {
         price: Number(r.item_price) || 0,
         qty: Number(r.qty) || 1,
         lineTotal: Number(r.line_total) || 0,
+        discountName: r.discount_name || null,
+        discountPercent: Number(r.discount_percent || 0),
+        discountAmount: Number(r.discount_amount || 0),
       }));
 
       const mappedPays = payRows.map((p) => ({

@@ -1,3 +1,4 @@
+// QUSCINA_BACKOFFICE/Frontend/src/pages/POS/RefundPage.jsx
 import { useEffect, useState, useRef } from "react";
 import {
   Box,
@@ -33,18 +34,31 @@ const ordersApi = (subPath = "") => {
 };
 
 // helpers for PHP formatting
-const lineTotal = (item) =>
-  item ? `₱ ${(Number(item.qty || 0) * Number(item.price || 0)).toFixed(2)}` : "-";
+const safeNum = (n, fb = 0) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fb;
+};
+const round2 = (n) => Math.round(safeNum(n) * 100) / 100;
 
-const listTotal = (items) =>
-  items && items.length
-    ? `₱ ${items
-        .reduce(
-          (sum, it) => sum + Number(it.qty || 0) * Number(it.price || 0),
-          0
-        )
-        .toFixed(2)}`
-    : "-";
+const PHP = (n) => `₱ ${round2(n).toFixed(2)}`;
+
+// net-aware totals (uses unitNet if present; falls back to price)
+const lineTotal = (item) => {
+  if (!item) return "-";
+  const qty = safeNum(item.qty, 0);
+  const unit = safeNum(item.unitNet ?? item.price, 0);
+  return PHP(qty * unit);
+};
+
+const listTotal = (items) => {
+  if (!items || !items.length) return "-";
+  const total = items.reduce((sum, it) => {
+    const qty = safeNum(it.qty, 0);
+    const unit = safeNum(it.unitNet ?? it.price, 0);
+    return sum + qty * unit;
+  }, 0);
+  return PHP(total);
+};
 
 export default function RefundPage() {
   const navigate = useNavigate();
@@ -115,19 +129,104 @@ export default function RefundPage() {
   useEffect(() => {
     if (!order || !order.items || !order.items.length) return;
 
-    const available = order.items
+    // 1) Build base lines (gross + item discount)
+    const baseLines = order.items
       .map((it) => {
-        const qty = Number(it.remainingQty ?? it.qty ?? it.quantity ?? 1);
-        const price = Number(it.price ?? it.item_price ?? 0);
+        const name = it.name ?? it.item_name ?? "Item";
+        const qty = safeNum(it.remainingQty ?? it.qty ?? it.quantity ?? 1, 0);
+        const price = safeNum(it.price ?? it.item_price ?? 0, 0);
+        if (qty <= 0 || price <= 0) {
+          // still allow zero-price items if you want, but refund amount would be 0
+        }
+
+        const lineGross = qty * price;
+
+        const pct = Math.max(
+          0,
+          safeNum(
+            it.discountPercent ??
+              it.itemDiscountPercent ??
+              it.discount_percent ??
+              it.item_discount_percent ??
+              0,
+            0
+          )
+        );
+
+        const storedItemDisc = safeNum(
+          it.discountAmount ??
+            it.itemDiscountAmount ??
+            it.discount_amount ??
+            it.item_discount_amount ??
+            0,
+          0
+        );
+
+        const itemDisc = storedItemDisc > 0 ? storedItemDisc : (lineGross * pct) / 100;
+        const afterItem = Math.max(0, lineGross - itemDisc);
+
+        const dName =
+          it.discountName ||
+          it.itemDiscountName ||
+          it.discount_name ||
+          it.item_discount_name ||
+          null;
+
         return {
-          name: it.name,
+          name,
           qty,
           price,
+
+          // keep discount info for UI (optional)
+          discountName: dName,
+          discountPercent: pct,
+          itemDiscountAmount: round2(Math.min(lineGross, Math.max(0, itemDisc))),
+
+          // internal
+          _lineGross: round2(lineGross),
+          _afterItem: round2(afterItem),
         };
       })
-      .filter((it) => it.qty > 0);
+      .filter((x) => x.qty > 0);
 
-    setRefundItems(available);
+    // 2) Compute order-level discount total from header
+    const headerDisc = safeNum(
+      order.discountAmount ?? order.discount_amount ?? 0,
+      0
+    );
+
+    const sumItemDisc = baseLines.reduce((s, x) => s + safeNum(x.itemDiscountAmount, 0), 0);
+    const orderDiscTotal = Math.max(0, headerDisc - sumItemDisc);
+
+    // 3) Allocate order-level discount proportionally (based on afterItem)
+    const totalAfterItem = baseLines.reduce((s, x) => s + safeNum(x._afterItem, 0), 0);
+
+    let allocatedSoFar = 0;
+    const linesWithNet = baseLines.map((x, idx) => {
+      let alloc = 0;
+
+      if (orderDiscTotal > 0 && totalAfterItem > 0) {
+        if (idx === baseLines.length - 1) {
+          // last line gets the remainder to avoid rounding drift
+          alloc = round2(orderDiscTotal - allocatedSoFar);
+        } else {
+          alloc = round2(orderDiscTotal * (safeNum(x._afterItem, 0) / totalAfterItem));
+          allocatedSoFar = round2(allocatedSoFar + alloc);
+        }
+      }
+
+      const lineNet = round2(Math.max(0, safeNum(x._afterItem, 0) - alloc));
+      const unitNet = x.qty > 0 ? round2(lineNet / x.qty) : 0;
+
+      return {
+        ...x,
+        orderDiscountAlloc: alloc, // optional, for display
+        lineNet,
+        unitNet,
+      };
+    });
+
+    setRefundItems(linesWithNet);
     setCancelItem(null);
   }, [order]);
 
@@ -258,8 +357,9 @@ export default function RefundPage() {
         return;
       }
 
-      const amount =
-        Number(cancelItem.qty || 0) * Number(cancelItem.price || 0);
+      const amount = round2(
+        safeNum(cancelItem.qty, 0) * safeNum(cancelItem.unitNet ?? cancelItem.price, 0)
+      );
       if (!amount || amount <= 0) {
         setPinError("Invalid refund amount.");
         setIsPinChecking(false);
@@ -369,9 +469,17 @@ export default function RefundPage() {
                   },
                 })}
               >
-                <span>
-                  {it.name} x {it.qty}
-                </span>
+                <Box sx={{ display: "flex", flexDirection: "column" }}>
+                  <span>{it.name} x {it.qty}</span>
+
+                  {(it.discountPercent > 0 || it.itemDiscountAmount > 0) && (
+                    <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                      {it.discountName || "Item Discount"}
+                      {it.discountPercent ? ` (${it.discountPercent}%)` : ""} — -{PHP(it.itemDiscountAmount)}
+                    </Typography>
+                  )}
+                </Box>
+
                 <span>{lineTotal(it)}</span>
               </Box>
             ))

@@ -789,11 +789,21 @@ export default function Cart() {
     applyDiscount,
     activeDiscount,
 
+    itemDiscounts,
+    setItemDiscount,
+    clearItemDiscounts,
+    itemDiscountAmount,
+
     // totals + view
     subtotal,
     discountAmount,
     viewMode,
   } = useCart();
+
+  useEffect(() => {
+    clearDiscounts();
+    clearItemDiscounts();
+  }, []);
 
 // 🔹 Backoffice auth
 const { user } = useAuth();
@@ -900,6 +910,31 @@ const terminalId = "TERMINAL-1";
       if (liveQty !== baseQty) return true;
     }
 
+    // --- per-item discounts signature check ---
+    const normItemDisc = (arr) =>
+      (arr || [])
+        .map((it) => {
+          const pct = Number(it.discountPercent ?? it.discount_percent ?? 0) || 0;
+          const nm = String(it.discountName ?? it.discount_name ?? "");
+          return `${String(it.id)}:${nm}:${pct}`;
+        })
+        .sort()
+        .join("|");
+
+    const baseItemDiscSig = normItemDisc(original.items || []);
+
+    const liveItemDiscSig = (items || [])
+      .map((it) => {
+        const disc = itemDiscounts[String(it.id)];
+        const pct = Number(disc?.percent) || 0;
+        const nm = String(disc?.name || "");
+        return `${String(it.id)}:${nm}:${pct}`;
+      })
+      .sort()
+      .join("|");
+
+    if (baseItemDiscSig !== liveItemDiscSig) return true;
+
     const norm = (arr) =>
       (arr || [])
         .map((d) => `${d.name ?? ""}:${Number(d.percent) || 0}`)
@@ -911,7 +946,7 @@ const terminalId = "TERMINAL-1";
     if (baseDiscountSig !== liveDiscountSig) return true;
 
     return false;
-  }, [isReflectingExisting, currentOrderId, openOrders, items, discounts]);
+  }, [isReflectingExisting, currentOrderId, openOrders, items, discounts, itemDiscounts]);
 
   const t = useTheme();
 
@@ -988,7 +1023,7 @@ const terminalId = "TERMINAL-1";
     openSafely(setVoidItemDialogOpen);
   };
 
-  const total = Math.max(0, subtotal - discountAmount); // no VAT, just net total
+  const total = Math.max(0, subtotal - discountAmount - itemDiscountAmount);
 
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
   const [pinDigits, setPinDigits] = useState(Array(6).fill(""));
@@ -1051,14 +1086,15 @@ const terminalId = "TERMINAL-1";
 
         const data = await res.json();
 
-        const options = data
-          .filter((d) => d.isActive)
-          .filter((d) => d.type === "percent" && d.scope === "order")
+        const options = (data || [])
+          .filter((d) => Number(d.isActive) === 1)
+          .filter((d) => d.type === "percent" && (d.scope === "order" || d.scope === "item"))
           .map((d) => ({
             id: d.id,
             code: d.code,
             name: d.name,
             percent: Number(d.value),
+            scope: d.scope,
           }));
 
         if (!cancelled) setDiscountChoices(options);
@@ -1148,14 +1184,52 @@ const terminalId = "TERMINAL-1";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerKey, setPickerKey] = useState("");
 
+  const [pickerTarget, setPickerTarget] = useState({ type: "order", itemId: null }); 
+
+  // 🔹 Filter discounts by picker target (order vs item)
+  const pickerOptions = useMemo(() => {
+    const itemScoped = discountChoices.filter((d) => d.scope === "item");
+    const orderScoped = discountChoices.filter((d) => d.scope === "order");
+
+    if (pickerTarget.type === "item") {
+      // ✅ If DB has no item discounts, still show order discounts as fallback
+      return itemScoped.length ? itemScoped : orderScoped;
+    }
+
+    // order picker
+    return orderScoped;
+  }, [pickerTarget.type, pickerTarget.itemId, discountChoices]);
+
   const openDiscountPicker = () => {
     if (!discountChoices.length || discountLoadError) return;
+
+    setPickerTarget({ type: "order", itemId: null });
 
     const hit = activeDiscount
       ? discountChoices.find(
           (opt) =>
+            opt.scope === "order" &&
             opt.name === activeDiscount.name &&
             Number(opt.percent) === Number(activeDiscount.percent)
+        )
+      : null;
+
+    setPickerKey(hit ? hit.code || String(hit.id) : "");
+    openSafely(setPickerOpen);
+  };
+
+  const openItemDiscountPicker = (itemId) => {
+    if (!discountChoices.length || discountLoadError) return;
+
+    setPickerTarget({ type: "item", itemId: String(itemId) });
+
+    const existing = itemDiscounts[String(itemId)];
+    const hit = existing
+      ? discountChoices.find(
+          (opt) =>
+            opt.scope === "item" &&
+            opt.name === existing.name &&
+            Number(opt.percent) === Number(existing.percent)
         )
       : null;
 
@@ -1166,10 +1240,17 @@ const terminalId = "TERMINAL-1";
   const closeDiscountPicker = () => setPickerOpen(false);
 
   const applyPickedDiscount = () => {
+    // allow clearing by selecting "None"
     if (!pickerKey) {
+      if (pickerTarget.type === "item" && pickerTarget.itemId) {
+        setItemDiscount(pickerTarget.itemId, null);
+      } else {
+        clearDiscounts();
+      }
       setPickerOpen(false);
       return;
     }
+
     const opt = discountChoices.find(
       (opt) => (opt.code || String(opt.id)) === pickerKey
     );
@@ -1177,7 +1258,15 @@ const terminalId = "TERMINAL-1";
       setPickerOpen(false);
       return;
     }
-    applyDiscount(opt.name, opt.percent);
+
+    if (pickerTarget.type === "item" && pickerTarget.itemId) {
+      // item-scope only
+      setItemDiscount(pickerTarget.itemId, opt);
+    } else {
+      // order-scope only
+      applyDiscount(opt.name, opt.percent);
+    }
+
     setPickerOpen(false);
   };
 
@@ -1220,8 +1309,9 @@ const terminalId = "TERMINAL-1";
   };
   const cancelNewOrder = () => setNewOrderConfirmOpen(false);
   const confirmNewOrder = () => {
-    clearCart();
     clearDiscounts();
+    clearItemDiscounts();
+    clearCart();
     setReflecting(null);
     setLockedBaseQty({});
     setNewOrderConfirmOpen(false);
@@ -1233,8 +1323,9 @@ const terminalId = "TERMINAL-1";
     setEditingIndex(-1);
 
     // Only clears local cart; no more order-level voids
-    clearCart();
     clearDiscounts();
+    clearItemDiscounts();
+    clearCart();
     setReflecting(null);
     setLockedBaseQty({});
     setConfirmOpen(false);
@@ -1310,12 +1401,23 @@ const terminalId = "TERMINAL-1";
       orderType,
       customerName: name,
       tableNo: table,
-      items: items.map((i) => ({
-        id: i.id,
-        name: i.name,
-        price: i.price,
-        qty: i.quantity ?? 1,
-      })),
+      items: items.map((i) => {
+        const qty = Number(i.quantity ?? 1) || 1;
+        const price = Number(i.price || 0) || 0;
+        const disc = itemDiscounts[String(i.id)];
+        const pct = Number(disc?.percent) || 0;
+        const discAmt = (price * qty * pct) / 100;
+
+        return {
+          id: i.id,
+          name: i.name,
+          price,
+          qty,
+          discountName: disc?.name || null,
+          discountPercent: pct || 0,
+          discountAmount: discAmt || 0,
+        };
+      }),
       discounts: discounts.map((d) => ({
         name: d.name,
         percent: Number(d.percent) || 0,
@@ -1375,6 +1477,7 @@ const terminalId = "TERMINAL-1";
     setOpenOrders((prev) => [order, ...prev]);
 
     clearDiscounts();
+    clearItemDiscounts();
     clearCart();
     setReflecting(null);
     setLockedBaseQty({});
@@ -1399,12 +1502,23 @@ const terminalId = "TERMINAL-1";
       orderType,
       customerName: baseOrder.customer || "Walk-in",
       tableNo: baseOrder.table || null,
-      items: items.map((i) => ({
-        id: i.id,
-        name: i.name,
-        price: i.price,
-        qty: i.quantity ?? 1,
-      })),
+      items: items.map((i) => {
+        const qty = Number(i.quantity ?? 1) || 1;
+        const price = Number(i.price || 0) || 0;
+        const disc = itemDiscounts[String(i.id)];
+        const pct = Number(disc?.percent) || 0;
+        const discAmt = (price * qty * pct) / 100;
+
+        return {
+          id: i.id,
+          name: i.name,
+          price,
+          qty,
+          discountName: disc?.name || null,
+          discountPercent: pct || 0,
+          discountAmount: discAmt || 0,
+        };
+      }),
       discounts: discounts.map((d) => ({
         name: d.name,
         percent: Number(d.percent) || 0,
@@ -1549,17 +1663,18 @@ const terminalId = "TERMINAL-1";
 
     const idStr = String(order.id);
 
-    // ✅ Guard: if you're already reflecting this exact order, do nothing
+    // Guard: if you're already reflecting this exact order, do nothing
     if (currentOrderId && String(currentOrderId) === idStr) {
       setSummaryOrder(null);
       return;
     }
 
-    // ✅ Always start clean
+    // Always start clean
     clearCart();
     clearDiscounts();
+    clearItemDiscounts();
 
-    // ✅ Aggregate by item id (in case backend returns duplicates rows)
+    // Aggregate by item id (in case backend returns duplicates rows)
     const agg = new Map();
     (order.items || []).forEach((it) => {
       const key = String(it.id);
@@ -1580,7 +1695,7 @@ const terminalId = "TERMINAL-1";
       }
     });
 
-    // ✅ Restore once per item (using qty loop)
+    // Restore once per item (using qty loop)
     agg.forEach((it) => {
       for (let k = 0; k < it.qty; k++) {
         addItem({
@@ -1592,12 +1707,22 @@ const terminalId = "TERMINAL-1";
       }
     });
 
-    // ✅ Restore discounts
+    // Restore discounts
     if (Array.isArray(order.discounts)) {
       order.discounts.forEach((d) =>
         applyDiscount(d.name ?? "Discount", d.percent ?? 0)
       );
     }
+
+    // Restore per-item discounts (if present on order.items)
+    clearItemDiscounts();
+    (order.items || []).forEach((it) => {
+      const pct = Number(it.discountPercent ?? it.discount_percent ?? 0) || 0;
+      const name = it.discountName ?? it.discount_name ?? null;
+      if (pct > 0 && name) {
+        setItemDiscount(String(it.id), { name, percent: pct, scope: "item" });
+      }
+    });
 
     // ✅ Lock base quantities based on aggregated totals
     const base = {};
@@ -1690,7 +1815,7 @@ const terminalId = "TERMINAL-1";
       discounts: updatedDiscounts,
       amount,
     };
-  }, [isReflectingExisting, currentOrderId, openOrders, items, discounts]);
+  }, [isReflectingExisting, currentOrderId, openOrders, items, discounts, itemDiscounts]);
 
   const handleConfirmSaveUpdated = () => {
     saveUpdatedTicket();
@@ -1699,6 +1824,7 @@ const terminalId = "TERMINAL-1";
 
     clearCart();
     clearDiscounts();
+    clearItemDiscounts();
     setReflecting(null);
     setLockedBaseQty({});
     setSaveConfirmOpen(false);
@@ -2008,6 +2134,29 @@ const terminalId = "TERMINAL-1";
                       </Typography>
                     </Typography>
 
+                    {(() => {
+                      const itemDisc = itemDiscounts[String(item.id)];
+                      const itemDiscLabel = itemDisc?.percent
+                        ? `${itemDisc.name} (${Number(itemDisc.percent) || 0}%)`
+                        : "Item discount";
+
+                      return (
+                        <Chip
+                          size="small"
+                          variant={itemDisc?.percent ? "filled" : "outlined"}
+                          label={itemDiscLabel}
+                          onClick={() => openItemDiscountPicker(item.id)}
+                          sx={{
+                            mt: 0.75,
+                            alignSelf: "flex-start",
+                            fontWeight: 700,
+                            bgcolor: itemDisc?.percent ? alpha(t.palette.success.main, 0.14) : "transparent",
+                            borderColor: alpha(t.palette.text.primary, 0.18),
+                          }}
+                        />
+                      );
+                    })()}
+
                     {/* Bottom row: Void button (left) + qty pill (right) */}
                     <Box
                       sx={{
@@ -2171,6 +2320,29 @@ const terminalId = "TERMINAL-1";
                     </Typography>
                   </Typography>
 
+                  {(() => {
+                    const itemDisc = itemDiscounts[String(item.id)];
+                    const itemDiscLabel = itemDisc?.percent
+                      ? `${itemDisc.name} (${Number(itemDisc.percent) || 0}%)`
+                      : "Item discount";
+
+                    return (
+                      <Chip
+                        size="small"
+                        variant={itemDisc?.percent ? "filled" : "outlined"}
+                        label={itemDiscLabel}
+                        onClick={() => openItemDiscountPicker(item.id)}
+                        sx={{
+                          mt: 0.75,
+                          alignSelf: "flex-start",
+                          fontWeight: 700,
+                          bgcolor: itemDisc?.percent ? alpha(t.palette.success.main, 0.14) : "transparent",
+                          borderColor: alpha(t.palette.text.primary, 0.18),
+                        }}
+                      />
+                    );
+                  })()}
+
                   {/* Bottom row: Void button (left) + qty pill (right) */}
                   <Box
                     sx={{
@@ -2292,56 +2464,13 @@ const terminalId = "TERMINAL-1";
         }}
       >
         <Row label="Sub Total" value={PHP(subtotal)} />
-        {/* Interactive Discount Card (no border, no icon) */}
-        <Box
-          onClick={openDiscountPicker}
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            py: 1,
-            px: 1.5,
-            mb: 1,
-            backgroundColor: alpha(sidebarContrast, 0.08),
-            borderRadius: 1,
-            cursor:
-              discountChoices.length && !discountLoadError
-                ? "pointer"
-                : "default",
-            "&:hover":
-              discountChoices.length && !discountLoadError
-                ? {
-                    backgroundColor: softAccentStrong,
-                    transform: "translateY(-1px)",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                  }
-                : {},
-            transition: "all 0.2s ease",
-            opacity:
-              discountChoices.length && !discountLoadError ? 1 : 0.6,
-          }}
-        >
-          <Typography sx={{ fontWeight: 600, color: sidebarContrast }}>
-            Discounts{" "}
-            {discountSuffix && (
-              <Typography
-                component="span"
-                sx={{
-                  ml: 0.5,
-                  fontSize: "0.85em",
-                  color: sidebarContrast,
-                  fontWeight: 600,
-                }}
-              >
-                {discountSuffix}
-              </Typography>
-            )}
-          </Typography>
 
-          <Typography sx={{ fontWeight: 700 }}>
-            -{PHP(discountAmount)}
-          </Typography>
-        </Box>
+        <Row label="Item Discounts" value={`-${PHP(itemDiscountAmount)}`} />
+        {/* Discounts (read-only) */}
+        <Row
+          label={`Discounts ${discountSuffix ? ` ${discountSuffix}` : ""}`}
+          value={`-${PHP(discountAmount)}`}
+        />
 
         <Divider
           sx={{
@@ -2475,7 +2604,7 @@ const terminalId = "TERMINAL-1";
                         : "Select discount";
                     }}
                   >
-                    {discountChoices.map((opt) => (
+                    {pickerOptions.map((opt) => (
                       <MenuItem
                         key={opt.id ?? opt.code}
                         value={opt.code || String(opt.id)}
@@ -2849,71 +2978,6 @@ const terminalId = "TERMINAL-1";
         </DialogActions>
       </Dialog>
 
-      {/* Quick Discount Picker (from summary label) */}
-      <Dialog
-        open={pickerOpen}
-        onClose={closeDiscountPicker}
-        PaperProps={{ sx: { minWidth: 340 } }}
-      >
-        <DialogTitle>Choose Discount</DialogTitle>
-        <DialogContent dividers sx={{ pt: 1.5 }}>
-          {loadingDiscounts && (
-            <Typography variant="body2" sx={{ mb: 1 }}>
-              Loading discounts…
-            </Typography>
-          )}
-
-          {discountLoadError && (
-            <Typography
-              variant="body2"
-              color="error"
-              sx={{ mb: 1 }}
-            >
-              {discountLoadError}
-            </Typography>
-          )}
-
-          {!loadingDiscounts && !discountLoadError && (
-            <FormControl fullWidth size="small">
-              <Select
-                value={pickerKey}
-                onChange={(e) => setPickerKey(e.target.value)}
-                displayEmpty
-                renderValue={(v) => {
-                  if (!v) return "Select discount";
-                  const opt = discountChoices.find(
-                    (opt) =>
-                      (opt.code || String(opt.id)) === v
-                  );
-                  return opt
-                    ? `${opt.name} (${opt.percent}%)`
-                    : "Select discount";
-                }}
-              >
-                {discountChoices.map((opt) => (
-                  <MenuItem
-                    key={opt.id ?? opt.code}
-                    value={opt.code || String(opt.id)}
-                  >
-                    {opt.name} ({opt.percent}%)
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-        </DialogContent>
-        <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button onClick={closeDiscountPicker}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={applyPickedDiscount}
-            disabled={!pickerKey}
-          >
-            Apply
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       {/* Order Summary */}
       <Dialog
         open={Boolean(summaryOrder)}
@@ -3209,6 +3273,65 @@ const terminalId = "TERMINAL-1";
         </DialogActions>
       </Dialog>
 
+      {/* ✅ Discount Picker (Order or Item) */}
+      <Dialog
+        open={pickerOpen}
+        onClose={closeDiscountPicker}
+        PaperProps={{ sx: { minWidth: 360 } }}
+      >
+        <DialogTitle>
+          {pickerTarget.type === "item" ? "Item Discount" : "Order Discount"}
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ pt: 1.5 }}>
+          {loadingDiscounts ? (
+            <Typography variant="body2" sx={{ opacity: 0.75 }}>
+              Loading discounts…
+            </Typography>
+          ) : discountLoadError ? (
+            <Typography variant="body2" color="error">
+              {discountLoadError}
+            </Typography>
+          ) : (
+            <FormControl fullWidth size="small">
+              <Select
+                value={pickerKey}
+                onChange={(e) => setPickerKey(e.target.value)}
+                displayEmpty
+                renderValue={(v) => {
+                  if (!v) return "None";
+                  const opt = discountChoices.find(
+                    (d) => (d.code || String(d.id)) === v
+                  );
+                  return opt ? `${opt.name} (${opt.percent}%)` : "Select discount";
+                }}
+              >
+                <MenuItem value="">
+                  <em>None</em>
+                </MenuItem>
+
+                {pickerOptions.map((opt) => (
+                  <MenuItem key={opt.id ?? opt.code} value={opt.code || String(opt.id)}>
+                    {opt.name} ({opt.percent}%)
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={closeDiscountPicker}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={applyPickedDiscount}
+            disabled={loadingDiscounts || !!discountLoadError}
+          >
+            Apply
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Approval PIN Dialog */}
       <Dialog
         open={pinDialogOpen}
@@ -3365,6 +3488,8 @@ const terminalId = "TERMINAL-1";
                 });
 
                 const data = await res.json();
+                console.log("DISCOUNTS RAW:", data);
+                console.log("DISCOUNT OPTIONS:", options);
 
                 if (!data.ok) {
                   setPinError(data.error || "Invalid PIN");
