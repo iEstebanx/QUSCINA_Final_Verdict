@@ -1,5 +1,6 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/ShiftManagementPage.jsx
 import { useEffect, useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Box,
   Paper,
@@ -22,6 +23,7 @@ import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 const PHP = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
 export default function ShiftManagementPage() {
+  const navigate = useNavigate();
   // 🔹 dialogs & form state
   const [endDialogOpen, setEndDialogOpen] = useState(false);
   const [successDialogOpen, setSuccessDialogOpen] = useState(false);
@@ -142,8 +144,7 @@ export default function ShiftManagementPage() {
     // completely ignore clicks if no open shift
     if (!hasShift) return;
 
-    // TODO: wire to your Cash In/Out / Cash Management page or dialog
-    // e.g. navigate("/pos/cash-management");
+    navigate("/pos/cash-management");
   };
 
   const handleOpenEndDialog = async () => {

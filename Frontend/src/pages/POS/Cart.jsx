@@ -1454,6 +1454,19 @@ const terminalId = "TERMINAL-1";
               0
             ) /
               100);
+
+      // ✅ KOT PRINT GOES HERE
+      if (orderId) {
+        try {
+          window.open(
+            `/pos/print/kitchen/${encodeURIComponent(orderId)}`,
+            "_blank",
+            "noopener,noreferrer"
+          );
+        } catch (e) {
+          console.warn("Failed to open KOT print window:", e);
+        }
+      }
     } catch (err) {
       console.error("[Cart] savePendingOrder failed", err);
       window.alert(err.message || "Failed to save pending order");

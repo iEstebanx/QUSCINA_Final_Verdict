@@ -1,4 +1,4 @@
-// Frontend/src/routes/AppRoutes.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/routes/AppRoutes.jsx
 import { Routes, Route, Navigate } from "react-router-dom";
 import MainLayout from "../layouts/MainLayout";
 import EmptyLayout from "../layouts/EmptyLayout";
@@ -17,12 +17,16 @@ import ItemlistPage from "@/pages/ItemList/ItemlistPage.jsx";
 import ReportsPage from "../pages/Reports/ReportsPage";
 import InventoryHistoryPage from "@/pages/Reports/InventoryHistoryPage.jsx";
 
-// 🔹 NEW POS pages
+// POS
 import POSMenuPage from "@/pages/POS/Menu.jsx";
 import POSOrdersPage from "@/pages/POS/Orders.jsx";
 import POSChargePage from "@/pages/POS/Charge.jsx";
 import POSRefundPage from "@/pages/POS/RefundPage.jsx";
 import ShiftManagementPage from "@/pages/POS/ShiftManagementPage.jsx";
+import CashManagementPage from "@/pages/POS/CashManagementPage.jsx";
+// POS > Print
+import KitchenPrintWrapper from "@/pages/POS/Print/KitchenPrintWrapper";
+import ReceiptPrintWrapper from "@/pages/POS/Print/ReceiptPrintWrapper.jsx";
 
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
@@ -39,6 +43,9 @@ import AuditTrailPage from "@/pages/AuditTrail/AuditTrailPage.jsx";
 export default function AppRoutes() {
   return (
     <Routes>
+      <Route path="/pos/print/:orderId" element={<ReceiptPrintWrapper />} />
+      <Route path="/pos/print/kitchen/:orderId" element={<KitchenPrintWrapper />} />
+
       {/* Public */}
       <Route element={<EmptyLayout />}>
         <Route path="/" element={<LoginPage />} />
@@ -123,6 +130,7 @@ export default function AppRoutes() {
           <Route path="/pos/menu" element={<POSMenuPage />} />
           <Route path="/pos/orders" element={<POSOrdersPage />} />
           <Route path="/pos/shift-management" element={<ShiftManagementPage />} />
+          <Route path="/pos/cash-management" element={<CashManagementPage />} />
           <Route path="/pos/refund" element={<POSRefundPage />} />
           <Route path="/pos/charge" element={<POSChargePage />} />
         </Route>

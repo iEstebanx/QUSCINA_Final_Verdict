@@ -39,6 +39,7 @@ export default function AppHeader({
   const isPosOrdersPage = location.pathname === "/pos/orders";
   const isPosChargePage = location.pathname === "/pos/charge";
   const isPosRefundPage = location.pathname === "/pos/refund";
+  const isPosCashManagementPage = location.pathname === "/pos/cash-management";
 
   // --- Split flags via query params (same idea as Cashier POS) ---
   const splitOn = params.get("split") === "1";
@@ -58,7 +59,7 @@ export default function AppHeader({
   };
 
   // Pages that should be "full width" and hide breadcrumbs
-  const isPosFocusedPage = isPosChargePage || isPosRefundPage;
+  const isPosFocusedPage = isPosChargePage || isPosRefundPage || isPosCashManagementPage;
 
   const labelMap = {
     "": "Home",
@@ -169,7 +170,7 @@ export default function AppHeader({
       >
         {/* LEFT CLUSTER */}
         <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-          {isPosChargePage || isPosRefundPage ? (
+          {isPosChargePage || isPosRefundPage || isPosCashManagementPage ? (
             isPosChargePage && backLocked ? (
               // hide back button completely when locked
               <Box sx={{ width: 40 }} />
@@ -177,7 +178,10 @@ export default function AppHeader({
               <IconButton
                 edge="start"
                 aria-label="Back"
-                onClick={() => navigate(isPosRefundPage ? "/pos/orders" : "/pos/menu")}
+                onClick={() => {
+                  if (isPosCashManagementPage) return navigate("/pos/shift-management");
+                  return navigate(isPosRefundPage ? "/pos/orders" : "/pos/menu");
+                }}
                 sx={{ mr: 0 }}
               >
                 <ArrowBackIcon />

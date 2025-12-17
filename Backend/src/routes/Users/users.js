@@ -257,7 +257,7 @@ module.exports = ({ db } = {}) => {
         return res.status(400).json({ error: "password must be at least 8 chars" });
       }
 
-      if (roleNorm !== "Chef" && !pinProvided) {
+      if (roleNorm === "Cashier" && !pinProvided) {
         return res.status(400).json({ error: "pin must be 6 digits" });
       }
 

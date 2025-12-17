@@ -1,0 +1,300 @@
+/* QUSCINA_BACKOFFICE/Frontend/src/pages/POS/Print/PrintReceipt.css */
+
+/* --- Page / print setup (80mm thermal) --- */
+@page {
+  size: 80mm auto;
+  margin: 0;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: #fff;
+}
+
+/* Force consistent sizing in print */
+* {
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* --- Root receipt wrapper --- */
+.receipt {
+  width: 80mm;
+  max-width: 80mm;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.25;
+  color: #000;
+}
+
+/* Hide anything not needed on print */
+.no-print {
+  display: none !important;
+}
+
+/* --- Header --- */
+.receipt__header {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.receipt__logo {
+  display: block;
+  margin: 0 auto 6px;
+  max-width: 46mm;
+  max-height: 18mm;
+  object-fit: contain;
+}
+
+.receipt__store {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.receipt__sub {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.95;
+}
+
+/* --- Meta lines (order info) --- */
+.receipt__meta {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meta-row .k {
+  opacity: 0.9;
+}
+
+.meta-row .v {
+  text-align: right;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50mm;
+}
+
+/* --- Dividers (thermal friendly) --- */
+.hr {
+  border: 0;
+  border-top: 1px dashed #000;
+  margin: 8px 0;
+}
+
+.hr--thin {
+  margin: 6px 0;
+  border-top-style: dotted;
+}
+
+/* --- Items table --- */
+.items {
+  margin-top: 4px;
+}
+
+.item {
+  margin: 6px 0;
+}
+
+.item__top {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.item__name {
+  font-weight: 800;
+  word-break: break-word;
+}
+
+.item__price {
+  text-align: right;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.item__sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.item__sub .muted {
+  opacity: 0.85;
+}
+
+.item__sub .right {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Discount line under an item */
+.item__discount {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  margin-top: 2px;
+  padding-left: 10px;
+  font-size: 11px;
+}
+
+.item__discount .label {
+  opacity: 0.9;
+}
+
+.item__discount .amt {
+  text-align: right;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Optional: show original then discounted (strike-through) */
+.strike {
+  text-decoration: line-through;
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+/* --- Totals --- */
+.totals {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.total-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 3px 0;
+}
+
+.total-row .label {
+  font-weight: 700;
+}
+
+.total-row .value {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.total-row--grand {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #000;
+  font-size: 14px;
+}
+
+.total-row--grand .label,
+.total-row--grand .value {
+  font-weight: 900;
+}
+
+/* --- Payments --- */
+.payments {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.pay-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 0;
+}
+
+.pay-row .label {
+  opacity: 0.95;
+}
+
+.pay-row .value {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pay-row .small {
+  font-weight: 700;
+  opacity: 0.9;
+  margin-left: 6px;
+}
+
+/* Change line */
+.change {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #000;
+  font-size: 12px;
+}
+
+/* --- Footer --- */
+.receipt__footer {
+  text-align: center;
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.receipt__footer .thanks {
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.receipt__footer .note {
+  margin-top: 2px;
+  opacity: 0.9;
+}
+
+/* --- Utility helpers --- */
+.center {
+  text-align: center;
+}
+
+.right {
+  text-align: right;
+}
+
+.muted {
+  opacity: 0.85;
+}
+
+/* --- Print-only tweaks --- */
+@media print {
+  .receipt {
+    /* reduce chance of extra bottom whitespace */
+    padding-bottom: 6px;
+  }
+
+  /* Sometimes browsers add headers/footers; user must disable in print dialog */
+  body {
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* safety: never allow images to overflow receipt width */
+.receipt img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* map old class names just in case you still have them somewhere */
+.logo {
+  max-width: 46mm;
+  max-height: 18mm;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto 6px;
+}

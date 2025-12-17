@@ -216,8 +216,8 @@ export default function UserManagementPage() {
   const [errors, setErrors] = useState({});
 
   // 👉 Role-based requirements
-  const needsPassword = form.role !== "Cashier"; // Admin, Manager, Cashier
-  const needsPin = true;
+  const needsPassword = form.role === "Admin" || form.role === "Manager";
+  const needsPin = form.role === "Cashier";  
 
   useEffect(() => {
     setErrors((prev) => ({
@@ -541,6 +541,7 @@ export default function UserManagementPage() {
   }
 
   function openPinDialog() {
+    if (form.role !== "Cashier") return;
     blurActive();
     setPinDialogMode(isEditingExisting ? "change" : "set");
     setPinError("");

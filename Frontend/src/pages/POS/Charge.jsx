@@ -608,6 +608,14 @@ export default function Charge() {
         setActiveOrderId(data.orderId);
       }
 
+      if (willBeFullyPaid && data.orderId) {
+        window.open(
+          `/pos/print/${data.orderId}`,
+          "_blank",
+          "width=420,height=600"
+        );
+      }
+
       // Original flow
       handleCharge(slot);
 
