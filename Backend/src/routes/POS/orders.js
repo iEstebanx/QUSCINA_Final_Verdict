@@ -1641,7 +1641,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
       const orderRows = asArray(
         await db.query(
           `
-          SELECT order_id, shift_id, status
+          SELECT order_id, shift_id, status, gross_amount, discount_amount, net_amount
           FROM pos_orders
           WHERE order_id = ?
           LIMIT 1
@@ -1696,16 +1696,6 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         });
       }
 
-      const baseAfterItem = Math.max(0, totals.gross_amount - (items || []).reduce((sum, it) => {
-        const qty = safeNumber(it.qty ?? it.quantity, 1);
-        const price = safeNumber(it.price, 0);
-        const lineGross = qty * price;
-        const p = Math.max(0, safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0));
-        return sum + (lineGross * p) / 100;
-      }, 0));
-
-      const amount = (baseAfterItem * pct) / 100;
-
       // 3) Update voided_qty for that line
       await db.query(
         `
@@ -1752,6 +1742,13 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
       const totals = computeTotals(itemsForTotals, discountsForTotals);
 
+      const oldNet = safeNumber(order.net_amount, 0);
+
+      // correct void amount = reduction in net after recompute
+      const voidAmount = round2(
+        Math.max(0, oldNet - safeNumber(totals.net_amount, 0))
+      );
+
       // IMPORTANT: DO NOT CHANGE STATUS HERE.
       const newStatus = order.status;
 
@@ -1778,9 +1775,9 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         extra: {
           itemId,
           qty: reqQty,
-          amount,
+          amount: voidAmount,
           reason: reason || "",
-          newStatus,         // will be same as old
+          newStatus,
         },
         req,
       });
@@ -1788,7 +1785,7 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
       return res.json({
         ok: true,
         orderId,
-        voidAmount: amount,
+        voidAmount: voidAmount,
         newNet: totals.net_amount,
         status: newStatus,
       });

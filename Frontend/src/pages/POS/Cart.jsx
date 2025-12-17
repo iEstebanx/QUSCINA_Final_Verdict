@@ -1401,9 +1401,73 @@ const terminalId = "TERMINAL-1";
   const [nameTouched, setNameTouched] = useState(false);
   const [tableTouched, setTableTouched] = useState(false);
 
+  const [showAllTables, setShowAllTables] = useState(false);
+
+  const TABLE_COUNT = 20;
+
+  const getTableCount = () => {
+    const n = Number(TABLE_COUNT);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+
+  const occupiedTables = useMemo(() => {
+    const occ = new Set();
+
+    (openOrders || []).forEach((o) => {
+      const st = String(o?.status || "").toLowerCase();
+      const tb = String(o?.table ?? o?.tableNo ?? "").trim();
+      if (!tb) return;
+      if (st === "pending" || st === "open") occ.add(tb);
+    });
+
+    // numeric sort "1,2,10" correctly
+    return Array.from(occ).sort((a, b) => Number(a) - Number(b));
+  }, [openOrders]);
+
+  const availableTableNumbers = useMemo(() => {
+    const count = getTableCount();
+    const occ = new Set(occupiedTables);
+
+    return Array.from({ length: count }, (_, i) => String(i + 1)).filter((n) => !occ.has(n));
+  }, [occupiedTables]);
+
+  // ✅ For "Occupied (latest)" preview (tableNo + customer + time)
+  const occupiedLatest = useMemo(() => {
+    const rows = (openOrders || [])
+      .map((o) => {
+        const st = String(o?.status || "").toLowerCase();
+        if (st !== "pending" && st !== "open") return null;
+
+        const tbRaw = o?.table ?? o?.tableNo ?? o?.table_no ?? "";
+        const tb = String(tbRaw).trim();
+        if (!tb) return null;
+
+        const cust = String(o?.customer ?? o?.customerName ?? "—").trim() || "—";
+
+        const dt = o?.time ? new Date(o.time) : null;
+        const timeLabel =
+          dt && !Number.isNaN(dt.getTime())
+            ? dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+            : "";
+
+        return {
+          tableNo: tb,
+          customer: cust,
+          time: timeLabel,
+          ts: dt ? dt.getTime() : 0,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.ts - a.ts); // latest first
+
+    return rows;
+  }, [openOrders]);
+
+
   const openPendingDialog = () => {
     setCustName("");
     setTableNo("");
+    setShowAllTables(false);
     openSafely(setPendingOpen);
   };
 
@@ -1422,19 +1486,19 @@ const terminalId = "TERMINAL-1";
   })();
 
   const tableError = (() => {
-    const tb = tableNo.trim();
-    if (!tb) return "Table number is required";
-    if (!/^[0-9]+$/.test(tb)) return "Digits only (no spaces / letters)";
+    if (String(orderType).toLowerCase() !== "dine-in") return "";
+
+    const tb = String(tableNo || "").trim();
+    if (!tb) return "Please select a table";
+
+    if (occupiedTables.includes(tb)) return "Selected table is occupied";
 
     const hasPendingSameTable = openOrders.some(
       (o) =>
-        (o?.status ?? "pending") === "pending" &&
-        String(o.table || "") === tb
+        String(o?.status ?? "pending").toLowerCase() === "pending" &&
+        String(o?.table || "") === tb
     );
-
-    if (hasPendingSameTable) {
-      return "This table already has a pending order";
-    }
+    if (hasPendingSameTable) return "This table already has a pending order";
 
     return "";
   })();
@@ -2947,21 +3011,22 @@ const terminalId = "TERMINAL-1";
       <Dialog
         open={pendingOpen}
         onClose={closePendingDialog}
-        PaperProps={{ sx: { minWidth: 400 } }}
+        PaperProps={{
+          sx: {
+            minWidth: 420,
+            maxWidth: 520,
+            width: "92vw",
+            maxHeight: "80vh",
+            display: "flex",
+            flexDirection: "column",
+          },
+        }}
       >
-        <DialogTitle sx={{ display: "flex", alignItems: "center" }}>
-          <Typography
-            variant="h6"
-            component="span"
-            sx={{ flex: 1 }}
-          >
-            Customer Name
+       <DialogTitle sx={{ display: "flex", alignItems: "center" }}>
+          <Typography variant="h6" component="span" sx={{ flex: 1, fontWeight: 900 }}>
+            Save Order
           </Typography>
-          <Typography
-            variant="subtitle2"
-            component="span"
-            sx={{ opacity: 0.8 }}
-          >
+          <Typography variant="subtitle2" component="span" sx={{ opacity: 0.8 }}>
             {nowLabel()}
           </Typography>
         </DialogTitle>
@@ -2990,31 +3055,172 @@ const terminalId = "TERMINAL-1";
             }}
           />
 
-          <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
-            Table Number
-          </Typography>
-          <TextField
-            fullWidth
-            placeholder="e.g. 12"
-            value={tableNo}
-            onChange={(e) => {
-              const raw = e.target.value;
-              const digits = raw.replace(/\D/g, "");
-              const limited = digits.slice(0, 3);
-              setTableNo(limited);
-            }}
-            onBlur={() => setTableTouched(true)}
-            error={tableTouched && Boolean(tableError)}
-            helperText={tableError || " "}
-            InputProps={{
-              sx: {
-                bgcolor: alpha(t.palette.common.white, 0.7),
-                borderRadius: 1,
-              },
-              inputMode: "numeric",
-              pattern: "[0-9]*",
-            }}
-          />
+          {/* TABLE AVAILABILITY (Cashier-style) */}
+          {String(orderType).toLowerCase() === "dine-in" && (
+            <Box sx={{ mb: 1.25 }}>
+              {(() => {
+                const MAX_TABLE_CHIPS = 20;
+                const AVAILABLE_MAX_HEIGHT = 170;
+
+                const shownAvail = showAllTables
+                  ? availableTableNumbers
+                  : availableTableNumbers.slice(0, MAX_TABLE_CHIPS);
+
+                const hasMore = availableTableNumbers.length > MAX_TABLE_CHIPS;
+
+                return (
+                  <>
+                    {/* Header row: "Table Availability | Selected [Chip]" */}
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1, flexWrap: "wrap" }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 900 }}>
+                        Table Availability
+                      </Typography>
+
+                      <Typography variant="subtitle2" sx={{ opacity: 0.55 }}>
+                        |
+                      </Typography>
+
+                      <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                        Selected
+                      </Typography>
+
+                      <Chip
+                        size="small"
+                        label={tableNo ? `Table ${tableNo}` : "—"}
+                        sx={{
+                          fontWeight: 900,
+                          bgcolor: tableNo
+                            ? alpha(t.palette.primary.main, 0.18)
+                            : alpha(t.palette.text.primary, 0.06),
+                          border: `1px solid ${alpha(t.palette.text.primary, 0.18)}`,
+                        }}
+                      />
+
+                      {/* keep controls subtle (optional, but won’t change the look much) */}
+                      <Box sx={{ flex: 1 }} />
+                      {hasMore && (
+                        <Button
+                          size="small"
+                          variant="text"
+                          onClick={() => setShowAllTables((v) => !v)}
+                          sx={{ textTransform: "none", fontWeight: 900, opacity: 0.8 }}
+                        >
+                          {showAllTables ? "Less" : "More"}
+                        </Button>
+                      )}
+                    </Box>
+
+                    <Typography variant="caption" sx={{ display: "block", mb: 1, opacity: 0.7 }}>
+                      Tap an available table to auto-fill
+                    </Typography>
+
+                    {/* Available tables grid (numbers only) */}
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 1,
+                        borderRadius: 2,
+                        bgcolor: alpha(t.palette.text.primary, 0.03),
+                        borderColor: alpha(t.palette.text.primary, 0.12),
+                        maxHeight: AVAILABLE_MAX_HEIGHT,
+                        overflow: "auto",
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))",
+                          gap: 1,
+                        }}
+                      >
+                        {shownAvail.map((no) => {
+                          const isSelected = String(tableNo) === String(no);
+                          return (
+                            <Chip
+                              key={no}
+                              size="small"
+                              clickable
+                              onClick={() => {
+                                setTableNo(String(no));
+                                setTableTouched(true);
+                              }}
+                              label={String(no)} // ✅ numbers only (matches screenshot)
+                              sx={{
+                                width: "100%",
+                                fontWeight: 900,
+                                justifyContent: "center",
+                                borderRadius: 999,
+                                bgcolor: isSelected
+                                  ? alpha(t.palette.primary.main, 0.25)
+                                  : alpha(t.palette.success.main, 0.20), // ✅ “available green-ish” feel
+                                border: `1px solid ${
+                                  isSelected
+                                    ? alpha(t.palette.primary.main, 0.50)
+                                    : alpha(t.palette.success.main, 0.28)
+                                }`,
+                              }}
+                            />
+                          );
+                        })}
+                      </Box>
+                    </Paper>
+
+                    {/* Occupied (latest) — row style like screenshot */}
+                    {occupiedLatest?.length > 0 && (
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          mt: 1.2,
+                          p: 1,
+                          borderRadius: 2,
+                          bgcolor: alpha(t.palette.text.primary, 0.02),
+                          borderColor: alpha(t.palette.text.primary, 0.10),
+                        }}
+                      >
+                        <Typography variant="caption" sx={{ fontWeight: 900, opacity: 0.8 }}>
+                          Occupied (latest)
+                        </Typography>
+
+                        {occupiedLatest.slice(0, 1).map((x) => (
+                          <Box
+                            key={`${x.tableNo}-${x.time}`}
+                            sx={{
+                              mt: 1,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 1,
+                              p: 1,
+                              borderRadius: 1.5,
+                              bgcolor: alpha(t.palette.text.primary, 0.03),
+                            }}
+                          >
+                            <Typography sx={{ fontWeight: 900 }}>
+                              #{x.tableNo}{" "}
+                              <Box component="span" sx={{ fontWeight: 700, opacity: 0.8, ml: 0.5 }}>
+                                {x.customer}
+                              </Box>
+                            </Typography>
+                            <Typography variant="caption" sx={{ opacity: 0.75 }}>
+                              {x.time}
+                            </Typography>
+                          </Box>
+                        ))}
+                      </Paper>
+                    )}
+
+                    {/* Keep your validation message (but don’t make it a huge red block) */}
+                    {tableTouched && tableError && (
+                      <Typography variant="caption" sx={{ display: "block", mt: 0.75, color: t.palette.error.main }}>
+                        {tableError}
+                      </Typography>
+                    )}
+                  </>
+                );
+              })()}
+            </Box>
+          )}
+
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
           <Button
