@@ -48,7 +48,7 @@ const posPaymentTypesApi = (subPath = "") => {
   return `${base}/api/pos/payment-types${clean}`;
 };
 
-function LeftSummary({ orderType }) {
+function LeftSummary({ orderType, customerName }) {
   const t = useTheme();
   const cart = useCart() || {};
   const items = cart.items || [];
@@ -99,7 +99,7 @@ function LeftSummary({ orderType }) {
         Recipient:
       </Typography>
       <Typography variant="h6" sx={{ mb: 1 }}>
-        Rey
+        {customerName || "Walk-in"}
       </Typography>
 
       <Typography variant="subtitle2" sx={{ opacity: 0.9 }}>
@@ -206,6 +206,7 @@ function Row({ label, value, bold }) {
 }
 
 const LS_ORDER_TYPE = "pos_orderType";
+const LS_CHARGE_CUSTOMER = "bo_draft_charge_customer";
 
 export default function Charge() {
   const t = useTheme();
@@ -254,7 +255,36 @@ export default function Charge() {
     "UNKNOWN";
 
   const orderIdFromState = state?.orderId || null;
-  const customerName = state?.customerName || "Walk-in";
+
+  const [custOpen, setCustOpen] = useState(false);
+  const [custErr, setCustErr] = useState("");
+
+  const [chargeCustName, setChargeCustName] = useState(() => {
+    // priority: navigation state → saved draft → empty (force ask)
+    const fromState = String(state?.customerName || "").trim();
+    if (fromState) return fromState;
+
+    try {
+      const fromLS = String(localStorage.getItem(LS_CHARGE_CUSTOMER) || "").trim();
+      return fromLS || "";
+    } catch {
+      return "";
+    }
+  });
+
+  useEffect(() => {
+    // if state brings a name, persist it as draft
+    const fromState = String(state?.customerName || "").trim();
+    if (!fromState) return;
+
+    setChargeCustName(fromState);
+    try {
+      localStorage.setItem(LS_CHARGE_CUSTOMER, fromState);
+    } catch {}
+  }, [state?.customerName]);
+
+  const customerName = String(chargeCustName || "").trim() || "Walk-in";
+
   const tableNo = state?.tableNo || "-";
   const [activeOrderId, setActiveOrderId] = useState(orderIdFromState);
 
@@ -287,6 +317,7 @@ export default function Charge() {
   }, [items, discounts, itemDiscountAmount]);
 
   // Split mode via query param (?split=1) – same idea as Cashier
+  const [splitReceipt, setSplitReceipt] = useState(null);
   const splitOn = params.get("split") === "1";
   const [mode, setMode] = useState(splitOn ? "split" : "single");
   useEffect(() => {
@@ -375,6 +406,7 @@ export default function Charge() {
   const [singleReceipt, setSingleReceipt] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmSlot, setConfirmSlot] = useState(1);
+  const [pendingSlot, setPendingSlot] = useState(1);
 
   const [gcashConfirmOpen, setGcashConfirmOpen] = useState(false);
   const [slot1Charged, setSlot1Charged] = useState(false);
@@ -432,16 +464,14 @@ export default function Charge() {
   const fullyPaid = paidSoFar >= totalDue;
   const saleLocked = mode === "split" && fullyPaid;
 
-  const confirmCash = confirmSlot === 1 ? paid1 : paid2;
+  const confirmPaid = confirmSlot === 1 ? paid1 : paid2;
 
-  const dueBeforeThisPayment =
+  const confirmDue =
     mode === "single"
       ? totalDue
-      : confirmSlot === 1
-      ? remainingBefore1
-      : remainingBefore2;
+      : Math.max(0, totalDue - paidSoFar);
 
-  const confirmChange = Math.max(0, confirmCash - dueBeforeThisPayment);
+  const confirmChange = Math.max(0, confirmPaid - confirmDue);
 
   // minimum required amounts
   const minFor1 = 0;
@@ -458,6 +488,10 @@ export default function Charge() {
       localStorage.removeItem("currentOrderId");
     } catch {}
 
+    // ✅ clear customer draft on NEW SALE
+    setChargeCustName("");
+    try { localStorage.removeItem(LS_CHARGE_CUSTOMER); } catch {}
+
     // unlock back when starting a new sale
     try {
       const next = new URLSearchParams(params);
@@ -471,6 +505,29 @@ export default function Charge() {
       clearItemDiscounts();
       clearCart();
     }, 0);
+};
+
+  const ensureCustomerName = (slot) => {
+    setPendingSlot(slot);
+    const name = String(chargeCustName || "").trim();
+    if (name) return true;
+    setCustErr("Customer name is required.");
+    setCustOpen(true);
+    return false;
+  };
+
+  const saveCustomerDraft = () => {
+    const name = String(chargeCustName || "").trim();
+    if (!name) {
+      setCustErr("Customer name is required.");
+      return false;
+    }
+    setCustErr("");
+    try {
+      localStorage.setItem(LS_CHARGE_CUSTOMER, name);
+    } catch {}
+    setCustOpen(false);
+    return true;
   };
 
   const handleCharge = (slot = 1) => {
@@ -602,6 +659,16 @@ export default function Charge() {
         throw new Error(data?.error || `Checkout failed (${res.status})`);
       }
 
+      const dueBefore = Math.max(0, totalDue - paidBeforeThis);
+      const change = Math.max(0, paidThis - dueBefore);
+
+      setSplitReceipt({
+        slot,
+        dueBefore,
+        paid: paidThis,
+        change,
+      });
+
       setPaidSoFar(paidBeforeThis + paidThis);
 
       if (data.orderId) {
@@ -633,7 +700,7 @@ export default function Charge() {
 
   return (
     <Box sx={{ display: "flex", height: "100%", minHeight: 0 }}>
-      <LeftSummary orderType={orderType} />
+      <LeftSummary orderType={orderType} customerName={customerName} />
 
       {/* Right workspace */}
       <Box
@@ -725,6 +792,7 @@ export default function Charge() {
               <Button
                 variant="contained"
                 onClick={() => {
+                  if (!ensureCustomerName(1)) return;
                   setConfirmSlot(1);
                   setConfirmOpen(true);
                 }}
@@ -741,14 +809,9 @@ export default function Charge() {
         {mode === "single" && step === "paid" && (
           <PaidScreen
             leftLabel="Total Paid"
-            leftValue={PHP(
-              singleReceipt?.paid ?? Math.min(paid1, totalDue)
-            )}
+            leftValue={PHP(singleReceipt?.paid ?? Math.min(paid1, totalDue))}
             rightLabel="Change"
-            rightValue={PHP(
-              singleReceipt?.change ??
-                Math.max(0, paid1 - totalDue)
-            )}
+            rightValue={PHP(singleReceipt?.change ?? Math.max(0, paid1 - totalDue))}
             cta="NEW SALE"
             onCta={resetToMenu}
           />
@@ -823,6 +886,7 @@ export default function Charge() {
                 <Button
                   variant="contained"
                   onClick={() => {
+                    if (!ensureCustomerName(1)) return;
                     setConfirmSlot(1);
                     setConfirmOpen(true);
                   }}
@@ -890,6 +954,7 @@ export default function Charge() {
                 <Button
                   variant="contained"
                   onClick={() => {
+                    if (!ensureCustomerName(2)) return;
                     setConfirmSlot(2);
                     setConfirmOpen(true);
                   }}
@@ -926,17 +991,9 @@ export default function Charge() {
             step === "paid_split_2") && (
             <PaidScreen
               leftLabel="Paid"
-              leftValue={PHP(
-                step.endsWith("_1")
-                  ? Math.min(paid1, totalDue)
-                  : Math.min(paid2, totalDue)
-              )}
+              leftValue={PHP(splitReceipt?.paid ?? (step.endsWith("_1") ? paid1 : paid2))}
               rightLabel="Change"
-              rightValue={PHP(
-                step.endsWith("_1")
-                  ? Math.max(0, paid1 - remainingBefore1)
-                  : Math.max(0, paid2 - remainingBefore2)
-              )}
+              rightValue={PHP(splitReceipt?.change ?? 0)}
               cta="CONTINUE"
               onCta={() => {
                 setStep("charge");
@@ -972,15 +1029,8 @@ export default function Charge() {
         <DialogContent sx={{ py: 3 }}>
           <Stack spacing={2.5}>
             <Box sx={{ textAlign: "center", py: 1 }}>
-              <Typography
-                variant="subtitle2"
-                sx={{
-                  color: "text.secondary",
-                  mb: 0.5,
-                  fontSize: "0.875rem",
-                }}
-              >
-                Total Amount Due
+              <Typography variant="subtitle2">
+                {mode === "split" ? "Remaining Amount" : "Total Amount Due"}
               </Typography>
               <Typography
                 variant="h5"
@@ -990,7 +1040,7 @@ export default function Charge() {
                   fontSize: "1.5rem",
                 }}
               >
-                {PHP(totalDue)}
+                {PHP(confirmDue)}
               </Typography>
             </Box>
 
@@ -1015,7 +1065,7 @@ export default function Charge() {
                   variant="body1"
                   sx={{ fontWeight: 700 }}
                 >
-                  {PHP(confirmCash)}
+                  {PHP(confirmPaid)}
                 </Typography>
               </Box>
 
@@ -1336,6 +1386,54 @@ export default function Charge() {
             sx={{ fontWeight: 800 }}
           >
             OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={custOpen}
+        onClose={() => setCustOpen(false)}
+        PaperProps={{ sx: { minWidth: 420, borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, textAlign: "center" }}>
+          Customer Name
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb: 1.5, textAlign: "center", opacity: 0.85 }}>
+            Enter the customer name for this receipt.
+          </Typography>
+
+          <TextField
+            autoFocus
+            fullWidth
+            value={chargeCustName}
+            onChange={(e) => {
+              setChargeCustName(e.target.value);
+              setCustErr("");
+            }}
+            placeholder="e.g. Juan Dela Cruz"
+            error={Boolean(custErr)}
+            helperText={custErr || " "}
+          />
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2.5, py: 2, gap: 1.5 }}>
+          <Button variant="outlined" onClick={() => setCustOpen(false)} disabled={isPosting}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              if (!saveCustomerDraft()) return;
+              // after saving name, continue the flow:
+              setConfirmSlot(pendingSlot);
+              setConfirmOpen(true);
+            }}
+            sx={{ fontWeight: 800 }}
+            disabled={isPosting}
+          >
+            Continue
           </Button>
         </DialogActions>
       </Dialog>

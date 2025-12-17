@@ -1312,6 +1312,10 @@ const terminalId = "TERMINAL-1";
     clearDiscounts();
     clearItemDiscounts();
     clearCart();
+
+    setChargeCustName("");
+    try { localStorage.removeItem("draft_charge_customer"); } catch {}
+
     setReflecting(null);
     setLockedBaseQty({});
     setNewOrderConfirmOpen(false);
@@ -1326,6 +1330,10 @@ const terminalId = "TERMINAL-1";
     clearDiscounts();
     clearItemDiscounts();
     clearCart();
+
+    setChargeCustName("");
+    try { localStorage.removeItem("draft_charge_customer"); } catch {}
+
     setReflecting(null);
     setLockedBaseQty({});
     setConfirmOpen(false);
@@ -1333,6 +1341,57 @@ const terminalId = "TERMINAL-1";
 
   const confirmTitle = "Clear Order";
   const confirmBody = "Remove all items and discounts from the cart?";
+
+  // ✅ Instant charge customer name (for NEW cart -> Charge)
+  const [chargeNameOpen, setChargeNameOpen] = useState(false);
+  const [chargeCustName, setChargeCustName] = useState(() => {
+    try {
+      return localStorage.getItem("draft_charge_customer") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [chargeNameTouched, setChargeNameTouched] = useState(false);
+
+  // ✅ Instant Charge Summary (step 2)
+  const [chargeSummaryOpen, setChargeSummaryOpen] = useState(false);
+
+  // ✅ Reset helper (same idea as Cashier POS)
+  const resetInstantCharge = () => {
+    setChargeCustName("");
+    setChargeNameTouched(false);
+    setChargeNameOpen(false);
+    setChargeSummaryOpen(false);
+    try { localStorage.removeItem("draft_charge_customer"); } catch {}
+  };
+
+  // ✅ Close handlers (do NOT reset, just close)
+  const closeChargeNameDialog = () => {
+    setChargeNameOpen(false);
+    setChargeNameTouched(false);
+  };
+
+  const closeChargeSummaryDialog = () => {
+    setChargeSummaryOpen(false);
+  };
+
+  // ✅ Cancel handler (this one DOES reset)
+  const cancelInstantCharge = () => {
+    resetInstantCharge();
+  };
+
+  const chargeNameError = (() => {
+    const nm = chargeCustName.trim();
+    if (!nm) return "Customer name is required";
+    if (nm.length < 3) return "Minimum 3 characters";
+    if (/\d/.test(nm)) return "Digits are not allowed";
+    return "";
+  })();
+
+  const commitDraftChargeName = (val) => {
+    setChargeCustName(val);
+    try { localStorage.setItem("draft_charge_customer", val); } catch {}
+  };
 
   // --- Pending order dialog -----------------------------------------------
   const [pendingOpen, setPendingOpen] = useState(false);
@@ -1492,6 +1551,10 @@ const terminalId = "TERMINAL-1";
     clearDiscounts();
     clearItemDiscounts();
     clearCart();
+
+    setChargeCustName("");
+    try { localStorage.removeItem("draft_charge_customer"); } catch {}
+
     setReflecting(null);
     setLockedBaseQty({});
     setPendingOpen(false);
@@ -1895,15 +1958,26 @@ const terminalId = "TERMINAL-1";
     [currentOrderId, openOrders]
   );
 
-  const goCharge = () =>
+  const proceedToCharge = (finalName) => {
     navigate("/pos/charge", {
       state: {
         orderType,
         orderId: currentOrderId || null,
-        customerName: currentOrder?.customer || "",
+        customerName: finalName || currentOrder?.customer || "",
         tableNo: currentOrder?.table || "",
       },
     });
+  };
+
+  const goCharge = () => {
+    if (currentOrderId) {
+      return proceedToCharge(currentOrder?.customer || "");
+    }
+
+    // ✅ NEW cart -> always start fresh
+    resetInstantCharge();
+    openSafely(setChargeNameOpen);
+  };
 
   const sortLabels = {
     time: "Time",
@@ -2748,6 +2822,127 @@ const terminalId = "TERMINAL-1";
         </DialogActions>
       </Dialog>
 
+      {/* ✅ Instant Charge -> Customer Name*/}
+      <Dialog
+        open={chargeNameOpen}
+        onClose={closeChargeNameDialog}
+        PaperProps={{ sx: { minWidth: 400 } }}
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center" }}>
+          <Typography variant="h6" component="span" sx={{ flex: 1 }}>
+            Customer Name
+          </Typography>
+          <Typography variant="subtitle2" component="span" sx={{ opacity: 0.8 }}>
+            {nowLabel()}
+          </Typography>
+        </DialogTitle>
+
+        <DialogContent sx={{ pt: 1.5 }}>
+          <TextField
+            fullWidth
+            placeholder="e.g. Juan D."
+            value={chargeCustName}
+            onChange={(e) => {
+              const raw = e.target.value;
+              const cleaned = raw.replace(/[^A-Za-z .-]/g, "");
+              const limited = cleaned.slice(0, 30);
+              commitDraftChargeName(limited);
+            }}
+            onBlur={() => setChargeNameTouched(true)}
+            error={chargeNameTouched && Boolean(chargeNameError)}
+            helperText={chargeNameError || " "}
+            InputProps={{
+              sx: { bgcolor: alpha(t.palette.common.white, 0.7), borderRadius: 1 },
+              inputProps: { maxLength: 30 },
+            }}
+          />
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+        <Button onClick={cancelInstantCharge} variant="outlined">
+          Cancel
+        </Button>
+
+          <Button
+            variant="contained"
+            disabled={Boolean(chargeNameError)}
+            onClick={() => {
+              const finalName = chargeCustName.trim();
+              if (!finalName) {
+                setChargeNameTouched(true);
+                return;
+              }
+
+              setChargeNameOpen(false);
+              setChargeNameTouched(false);
+
+              // ✅ Step 2: show summary dialog
+              openSafely(setChargeSummaryOpen);
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ✅ Instant Charge Summary (Step 2) */}
+      <Dialog
+        open={chargeSummaryOpen}
+        onClose={closeChargeSummaryDialog}
+        PaperProps={{ sx: { minWidth: 420 } }}
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center" }}>
+          <Typography variant="h6" component="span" sx={{ flex: 1 }}>
+            Instant Charge Summary
+          </Typography>
+          <Typography variant="subtitle2" component="span" sx={{ opacity: 0.8 }}>
+            {nowLabel()}
+          </Typography>
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={1}>
+            <Row label="Customer" value={chargeCustName.trim() || "—"} />
+            <Row label="Order Type" value={orderType} />
+            <Divider />
+
+            {(items || []).map((it, idx) => (
+              <Row
+                key={idx}
+                label={`${it.name} (${it.quantity ?? 1}×${PHP(it.price || 0)})`}
+                value={PHP((it.quantity ?? 1) * (it.price || 0))}
+              />
+            ))}
+
+            <Divider />
+            <Row label="Total" value={PHP(total)} bold />
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={cancelInstantCharge} variant="outlined">
+            Cancel
+          </Button>
+
+          <Button
+            variant="contained"
+            onClick={() => {
+              const finalName = chargeCustName.trim();
+              if (!finalName) {
+                // If someone closed name dialog oddly, guard here.
+                cancelInstantCharge();
+                return;
+              }
+
+              setChargeSummaryOpen(false);
+              proceedToCharge(finalName);
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Pending → Save Order */}
       <Dialog
         open={pendingOpen}
@@ -3502,7 +3697,6 @@ const terminalId = "TERMINAL-1";
 
                 const data = await res.json();
                 console.log("DISCOUNTS RAW:", data);
-                console.log("DISCOUNT OPTIONS:", options);
 
                 if (!data.ok) {
                   setPinError(data.error || "Invalid PIN");
