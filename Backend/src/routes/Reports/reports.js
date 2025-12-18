@@ -96,6 +96,44 @@ module.exports = ({ db }) => {
   });
 
   /* =========================================================================
+ * 1A) TOP 5 ITEMS SALES
+ * ========================================================================= */
+  router.get("/items-top5", async (req, res) => {
+    try {
+      const { range = "days", from, to } = req.query;
+      const where = buildRangeSQL(range, from, to);
+
+      const rows = await db.query(
+        `
+        SELECT
+          oi.item_id,
+          oi.item_name AS name,
+          SUM(oi.line_total) AS net
+        FROM pos_order_items oi
+        JOIN pos_orders o ON o.order_id = oi.order_id
+        WHERE o.status IN ('paid','refunded')
+          AND ${where}
+        GROUP BY oi.item_id, oi.item_name
+        ORDER BY net DESC
+        LIMIT 5
+        `
+      );
+
+      return res.json({
+        ok: true,
+        data: rows.map((r) => ({
+          itemId: Number(r.item_id),
+          name: r.name,
+          net: Number(r.net || 0),
+        })),
+      });
+    } catch (e) {
+      console.error("TOP 5 ITEMS ERROR", e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  /* =========================================================================
    * 1) TOP 5 CATEGORY SALES
    * ========================================================================= */
     router.get("/category-top5", async (req, res) => {
@@ -254,8 +292,69 @@ module.exports = ({ db }) => {
   });
 
   /* =========================================================================
-   * 4) BEST SELLERS (REAL)
-   * ========================================================================= */
+  * 4B) TOP 5 ITEMS INSIDE A CATEGORY (for Best Seller drilldown)
+  * ========================================================================= */
+  router.get("/best-sellers/:categoryId/top-items", async (req, res) => {
+    try {
+      const { categoryId } = req.params;
+      const { range = "days", from, to } = req.query;
+      const where = buildRangeSQL(range, from, to);
+
+      const catIdNum = Number(categoryId);
+
+      // ✅ allow 0 for Uncategorized
+      if (Number.isNaN(catIdNum) || catIdNum < 0) {
+        return res.status(400).json({ ok: false, error: "Invalid categoryId" });
+      }
+
+      const categoryFilterSql =
+        catIdNum === 0
+          ? `(it.categoryId IS NULL OR it.categoryId = 0)`
+          : `it.categoryId = ?`;
+
+      const params = catIdNum === 0 ? [] : [catIdNum];
+
+      const rows = await db.query(
+        `
+        SELECT
+          oi.item_id,
+          oi.item_name AS name,
+          SUM(oi.qty) AS qty,
+          COUNT(*) AS orders,
+          SUM(oi.line_total) AS sales
+        FROM pos_order_items oi
+        JOIN pos_orders o ON o.order_id = oi.order_id
+        JOIN items it ON it.id = oi.item_id
+        WHERE o.status IN ('paid','refunded')
+          AND ${categoryFilterSql}
+          AND ${where}
+        GROUP BY oi.item_id, oi.item_name
+        ORDER BY sales DESC
+        LIMIT 5
+        `,
+        params
+      );
+
+      return res.json({
+        ok: true,
+        data: rows.map((r, idx) => ({
+          rank: idx + 1,
+          item_id: r.item_id,
+          name: r.name,
+          orders: Number(r.orders || 0),
+          qty: Number(r.qty || 0),
+          sales: Number(r.sales || 0),
+        })),
+      });
+    } catch (e) {
+      console.error("TOP ITEMS IN CATEGORY ERROR", e);
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  /* =========================================================================
+  * 4) BEST SELLERS (CATEGORIES)
+  * ========================================================================= */
   router.get("/best-sellers", async (req, res) => {
     try {
       const { range = "days", from, to } = req.query;
@@ -263,24 +362,28 @@ module.exports = ({ db }) => {
 
       const rows = await db.query(
         `
-        SELECT 
-          i.item_name AS name,
-          SUM(i.qty) AS qty,
+        SELECT
+          COALESCE(c.id, 0) AS category_id,
+          COALESCE(c.name, 'Uncategorized') AS name,
+          SUM(oi.qty) AS qty,
           COUNT(*) AS orders,
-          SUM(i.line_total) AS sales
-        FROM pos_order_items i
-        JOIN pos_orders o ON o.order_id = i.order_id
+          SUM(oi.line_total) AS sales
+        FROM pos_order_items oi
+        JOIN pos_orders o ON o.order_id = oi.order_id
+        JOIN items it ON it.id = oi.item_id
+        LEFT JOIN categories c ON c.id = it.categoryId
         WHERE o.status IN ('paid','refunded')
-        AND ${where}
-        GROUP BY i.item_name
+          AND ${where}
+        GROUP BY COALESCE(c.id, 0), COALESCE(c.name, 'Uncategorized')
         ORDER BY sales DESC
         LIMIT 20
-      `
+        `
       );
 
       const list = rows.map((r, idx) => ({
         rank: idx + 1,
-        name: r.name,
+        categoryId: Number(r.category_id || 0),
+        name: r.name, // category name
         orders: Number(r.orders || 0),
         qty: Number(r.qty || 0),
         sales: Number(r.sales || 0),
@@ -288,7 +391,7 @@ module.exports = ({ db }) => {
 
       res.json({ ok: true, data: list });
     } catch (e) {
-      console.error("BEST SELLERS ERROR", e);
+      console.error("BEST SELLERS (CATEGORIES) ERROR", e);
       res.status(500).json({ ok: false, error: e.message });
     }
   });

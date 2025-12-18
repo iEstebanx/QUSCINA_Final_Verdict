@@ -144,35 +144,72 @@ module.exports = ({ db }) => {
   });
 
   /* =========================================================================
-   * 3) BEST SELLERS
-   * ========================================================================= */
+  * 3) BEST SELLERS (CATEGORIES)
+  * ========================================================================= */
+
+  // items column resolver (categoryId vs category_id, id vs item_id)
+  let _itemsColsResolved = false;
+  let _itemsTableMissing = false;
+  let ITEMS_CATEGORY_COL = "categoryId";
+  let ITEMS_PK_COL = "id";
+
+  async function resolveItemsColumns(db) {
+    if (_itemsColsResolved || _itemsTableMissing) return;
+    try {
+      const cols = await db.query(`SHOW COLUMNS FROM items`);
+      const fields = new Set((cols || []).map((c) => c.Field));
+
+      // items PK
+      if (fields.has("id")) ITEMS_PK_COL = "id";
+      else if (fields.has("item_id")) ITEMS_PK_COL = "item_id";
+
+      // category FK
+      if (fields.has("categoryId")) ITEMS_CATEGORY_COL = "categoryId";
+      else if (fields.has("category_id")) ITEMS_CATEGORY_COL = "category_id";
+
+      _itemsColsResolved = true;
+    } catch (e) {
+      if (e?.code === "ER_NO_SUCH_TABLE") _itemsTableMissing = true;
+      _itemsColsResolved = true;
+    }
+  }
+
   router.get("/best-sellers", async (req, res) => {
     try {
       const { range = "days", from, to } = req.query;
       const where = buildRangeSQL(range, from, to);
 
+      await resolveItemsColumns(db);
+
+      // If items table doesn't exist, can't map item -> category
+      if (_itemsTableMissing) {
+        return res.json({ ok: true, bestSellers: [] });
+      }
+
       const rows = await db.query(
         `
         SELECT
-          i.item_id,
-          i.item_name AS name,
-          SUM(i.qty) AS orders,
-          SUM(i.line_total) AS sales
-        FROM pos_order_items i
-        JOIN pos_orders o ON i.order_id = o.order_id
+          COALESCE(c.id, 0) AS category_id,
+          COALESCE(c.name, 'Uncategorized') AS name,
+          SUM(oi.qty) AS orders,
+          SUM(oi.line_total) AS sales
+        FROM pos_order_items oi
+        JOIN pos_orders o ON oi.order_id = o.order_id
+        LEFT JOIN items it ON it.${ITEMS_PK_COL} = oi.item_id
+        LEFT JOIN categories c ON c.id = it.${ITEMS_CATEGORY_COL}
         WHERE o.status IN ('paid','refunded')
         AND ${where}
-        GROUP BY i.item_id, i.item_name
+        GROUP BY COALESCE(c.id, 0), COALESCE(c.name, 'Uncategorized')
         ORDER BY sales DESC
         LIMIT 10
         `
       );
 
-      const list = rows.map((r) => ({
-        name: r.name,
-        orders: Number(r.orders) || 0,
+      const list = (rows || []).map((r) => ({
+        name: r.name,                 // ✅ category name
+        orders: Number(r.orders) || 0, // ✅ total qty sold under that category
         sales: Number(r.sales) || 0,
-        trend: "up", // real trend requires comparing previous period
+        trend: "up",
       }));
 
       return res.json({ ok: true, bestSellers: list });
@@ -181,7 +218,7 @@ module.exports = ({ db }) => {
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
-
+  
   /* =========================================================================
    * 4) PAYMENT METHOD BREAKDOWN
    * ========================================================================= */

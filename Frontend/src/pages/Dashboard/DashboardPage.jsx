@@ -484,7 +484,7 @@ export default function DashboardPage() {
             <Box sx={cardHeaderSx}>
               <TrendingUpIcon color="primary" />
               <Typography variant="h6" fontWeight={800}>
-                Best Sellers
+                Best Seller per Category
               </Typography>
             </Box>
             <Box sx={cardContentSx}>

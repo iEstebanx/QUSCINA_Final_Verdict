@@ -44,6 +44,12 @@ import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 
+import Dialog from "@mui/material/Dialog";
+import DialogTitle from "@mui/material/DialogTitle";
+import DialogContent from "@mui/material/DialogContent";
+import DialogActions from "@mui/material/DialogActions";
+import CircularProgress from "@mui/material/CircularProgress";
+
 // 🔹 PDF libs + logo
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -68,6 +74,23 @@ const formatNumberMoney = (n) =>
   });
 
 const peso = (n) => `₱${formatNumberMoney(n)}`;
+
+// PDF-safe: jsPDF default fonts can't reliably render ₱
+const pdfMoney = (n) => `PHP ${formatNumberMoney(n)}`;
+
+// Sanitize any text that may contain unsupported symbols (₱ becomes ± or ¤ in pdf)
+const pdfSafeText = (v) => {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replaceAll("₱", "PHP ")
+    .replaceAll("±", "PHP ")     // what ₱ often becomes in jsPDF
+    .replaceAll("¤", "PHP ")
+    .replaceAll("−", "-")        // minus variations
+    .replaceAll("–", "-")
+    .replaceAll("—", "-")
+    .replace(/\s+/g, " ")
+    .trim();
+};
 
 const pdfHeadStyles = {
   fillColor: [230, 230, 230],
@@ -176,6 +199,17 @@ export default function ReportsPage() {
   const isSmall = useMediaQuery(theme.breakpoints.down("md"));
   const [selectedOrder, setSelectedOrder] = useState(null);
 
+  const [bestCatOpen, setBestCatOpen] = useState(false);
+  const [bestCatLoading, setBestCatLoading] = useState(false);
+  const [bestCatSelected, setBestCatSelected] = useState(null); // {categoryId, name, ...}
+  const [bestCatTopItems, setBestCatTopItems] = useState([]);
+
+  const bestSellerQS = useMemo(() => {
+    return range === "custom" && customFrom && customTo
+      ? `range=custom&from=${customFrom}&to=${customTo}`
+      : `range=${range}`;
+  }, [range, customFrom, customTo]);
+
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
   dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s;
@@ -239,7 +273,7 @@ export default function ReportsPage() {
             : `range=${range}`;
 
         const [c1, c2, p, b, o, sp] = await Promise.all([
-          fetch(`/api/reports/category-top5?${qs}`).then((r) => r.json()),
+          fetch(`/api/reports/items-top5?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
@@ -303,6 +337,7 @@ export default function ReportsPage() {
     categorySeriesData,
     paymentsData,
     bestSellerData,
+    bestSellerDetails,
     staffPerformanceData,
     preparedBy,
   }) => {
@@ -334,7 +369,7 @@ export default function ReportsPage() {
       })),
       [
         { label: "Rank", key: "rank" },
-        { label: "Category", key: "name" },
+        { label: "Item", key: "name" },
         { label: "Net Sales", key: "net" },
       ]
     );
@@ -346,12 +381,38 @@ export default function ReportsPage() {
       { label: "Net Amount", key: "net" },
     ]);
 
-    const bestSellerCSV = convertToCSV(bestSellerData, [
-      { label: "Rank", key: "rank" },
-      { label: "Item Name", key: "name" },
-      { label: "Total Orders", key: "orders" },
-      { label: "Total Sales", key: "sales" },
-    ]);
+  const bestSellerCSV = convertToCSV(bestSellerData, [
+    { label: "Rank", key: "rank" },
+    { label: "Category", key: "name" },
+    { label: "Total Orders", key: "orders" },
+    { label: "Total Sales", key: "sales" },
+  ]);
+
+  const bestSellerDetailsCSV = (bestSellerDetails || [])
+    .map((cat) => {
+      const header = `\nCATEGORY: ${cat.rank}. ${cat.name} | Orders: ${cat.orders} | Sales: ${peso(cat.sales)}\n`;
+      const items = cat.topItems || [];
+
+      const itemsCsv = convertToCSV(
+        items.map((it) => ({
+          rank: it.rank,
+          name: it.name,
+          orders: it.orders,
+          qty: it.qty,
+          sales: peso(it.sales),
+        })),
+        [
+          { label: "Rank", key: "rank" },
+          { label: "Item", key: "name" },
+          { label: "Orders", key: "orders" },
+          { label: "Qty", key: "qty" },
+          { label: "Sales", key: "sales" },
+        ]
+      );
+
+      return header + (itemsCsv || "No data");
+    })
+    .join("\n");
 
     const staffCSV = convertToCSV(staffPerformanceData, [
       { label: "Shift No.", key: "shiftNo" },
@@ -372,14 +433,17 @@ export default function ReportsPage() {
     const fullCSV = `Sales Report - ${reportInfo.dateRange}
   Generated: ${reportInfo.generatedAt}
 
-  TOP 5 CATEGORIES
+  TOP 5 ITEMS
   ${categoryCSV || "No data"}
 
   SALES BY PAYMENT TYPE
   ${paymentsCSV || "No data"}
 
-  BEST SELLERS
+  BEST SELLER CATEGORIES (TOP 5)
   ${bestSellerCSV || "No data"}
+
+  BEST SELLER ITEMS PER CATEGORY (TOP 5 EACH)
+  ${bestSellerDetailsCSV || "No data"}
 
   SHIFT HISTORY
   ${staffCSV || "No data"}
@@ -417,14 +481,19 @@ export default function ReportsPage() {
   };
 
   /* -------------------------- Excel Export (current) -------------------------- */
-  const handleExcelExportCurrent = () => {
+  const handleExcelExportCurrent = async () => {
     if (!ensureCustomRangeComplete()) return;
+
+    const bestSellerTop5 = (bestSeller || []).slice(0, 5);
+    const bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
+
     const csv = buildSalesExcelCsv({
       rangeText: currentRangeLabel,
       categoryTop5Data: categoryTop5,
       categorySeriesData: categorySeries,
       paymentsData: payments,
-      bestSellerData: (bestSeller || []).slice(0, 5),
+      bestSellerData: bestSellerTop5,
+      bestSellerDetails,
       staffPerformanceData: staffPerformance,
       preparedBy,
     });
@@ -439,12 +508,12 @@ export default function ReportsPage() {
     categorySeriesData,
     paymentsData,
     bestSellerData,
+    bestSellerDetails,
     staffPerformanceData,
     preparedBy,
   }) => {
     const totalSales = paymentsData.reduce((sum, p) => sum + (p.net || 0), 0);
     const totalOrders = paymentsData.reduce((sum, p) => sum + (p.tx || 0), 0);
-    const bestItem = bestSellerData[0];
     const customerCount = totalOrders * 2 + 18; // placeholder
 
     const dailyRows = categorySeriesData.map((d, idx) => {
@@ -472,6 +541,16 @@ export default function ReportsPage() {
       unit: "pt",
       format: "a4",
     });
+
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const bottomMargin = 60;
+
+    function ensureSpace(requiredHeight = 80) {
+      if (cursorY + requiredHeight > pageHeight - bottomMargin) {
+        doc.addPage();
+        cursorY = 72;
+      }
+    }
 
     const pageWidth = doc.internal.pageSize.getWidth();
     let cursorY = 48;
@@ -520,18 +599,22 @@ export default function ReportsPage() {
     cursorY += 14;
 
     doc.setFont(undefined, "normal");
-    doc.text(`Total Sales: ${peso(totalSales)}`, 72, cursorY);
+    doc.text(`Total Sales: ${pdfMoney(totalSales)}`, 72, cursorY);
     cursorY += 14;
     doc.text(`Total Orders: ${totalOrders} Orders`, 72, cursorY);
     cursorY += 14;
+
+    const bestItem = (categoryTop5Data || [])[0];
+
     if (bestItem) {
       doc.text(
-        `Best Selling Item: ${bestItem.name} (${bestItem.qty} Sold)`,
+        `Best Selling Item: ${bestItem.name} (${pdfMoney(bestItem.net)})`,
         72,
         cursorY
       );
       cursorY += 14;
     }
+
     doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
     cursorY += 26;
 
@@ -569,19 +652,16 @@ export default function ReportsPage() {
     cursorY = doc.lastAutoTable.finalY + 24;
 
     doc.setFont("helvetica", "bold");
-    doc.text("Best Seller", 72, cursorY);
+    doc.text("Top 5 Items", 72, cursorY);
     cursorY += 8;
-
-    const bestSellerTop5 = (bestSellerData || []).slice(0, 5);
 
     autoTable(doc, {
       startY: cursorY + 8,
-      head: [["Rank", "Item Name", "Total Orders", "Total Sales"]],
-      body: bestSellerTop5.map((b) => [
-        b.rank,
-        b.name,
-        b.orders,
-        formatNumberMoney(b.sales),
+      head: [["Rank", "Item", "Net Sales"]],
+      body: (categoryTop5Data || []).map((it, idx) => [
+        idx + 1,
+        it.name,
+        pdfMoney(it.net),
       ]),
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 4 },
@@ -589,6 +669,70 @@ export default function ReportsPage() {
       margin: { left: 72, right: 180 },
     });
     cursorY = doc.lastAutoTable.finalY + 24;
+
+    /* ===================== INSERT START: BEST SELLERS ===================== */
+
+    // Best Seller Categories (Top 5)
+    doc.setFont("helvetica", "bold");
+    doc.text("Best Seller Categories (Top 5)", 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [["Rank", "Category", "Total Orders", "Total Sales"]],
+      body: (bestSellerData || []).slice(0, 5).map((c) => [
+        c.rank,
+        c.name,
+        c.orders,
+        pdfMoney(c.sales),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 40 },
+    });
+    cursorY = doc.lastAutoTable.finalY + 18;
+
+    // Best Seller Items per Category (Top 5 each)
+    const bestDetails = (bestSellerDetails || []).slice(0, 5);
+
+    bestDetails.forEach((cat) => {
+      ensureSpace(110);
+
+      // Category title
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`${cat.rank}. ${cat.name}`, 72, cursorY);
+      cursorY += 14;
+
+      // Meta line
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(`Orders: ${cat.orders}   •   Sales: ${pdfMoney(cat.sales)}`, 72, cursorY);
+      cursorY += 10;
+
+      // Items table
+      autoTable(doc, {
+        startY: cursorY,
+        head: [["#", "Item", "Orders", "Qty", "Sales"]],
+        body: (cat.topItems || []).map((it) => [
+          it.rank,
+          it.name,
+          it.orders,
+          it.qty,
+          pdfMoney(it.sales),
+        ]),
+        theme: "grid",
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 40 },
+        pageBreak: "auto",
+      });
+
+      cursorY = doc.lastAutoTable.finalY + 22;
+    });
+
+    /* ====================== INSERT END: BEST SELLERS ====================== */
 
     doc.setFont("helvetica", "bold");
     doc.text("Payment Type", 72, cursorY);
@@ -601,7 +745,7 @@ export default function ReportsPage() {
         p.type,
         p.tx,
         p.refundTx,
-        formatNumberMoney(p.net),
+        pdfMoney(p.net),
       ]),
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 4 },
@@ -642,11 +786,11 @@ export default function ReportsPage() {
           s.shiftNo,
           s.staffName,
           dateText,
-          formatNumberMoney(s.startingCash),
-          s.cashInOut,
-          formatNumberMoney(s.countCash),
-          formatNumberMoney(s.actualCash),
-          s.remarks,
+          pdfMoney(s.startingCash),
+          pdfSafeText(s.cashInOut),
+          pdfMoney(s.countCash),
+          pdfMoney(s.actualCash),
+          pdfSafeText(s.remarks),
         ];
       }),
       theme: "grid",
@@ -670,16 +814,73 @@ export default function ReportsPage() {
   /* ---------------------------- PDF Export (current) ---------------------------- */
   const handlePdfExportCurrent = async () => {
     if (!ensureCustomRangeComplete()) return;
+
+    const bestSellerTop5 = (bestSeller || []).slice(0, 5);
+    const bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
+
     await buildSalesPdf({
       rangeText: currentRangeLabel,
       categoryTop5Data: categoryTop5,
       categorySeriesData: categorySeries,
       paymentsData: payments,
-      bestSellerData: bestSeller,
+      bestSellerData: bestSellerTop5,
+      bestSellerDetails, // ✅ NEW
       staffPerformanceData: staffPerformance,
       preparedBy,
     });
   };
+
+  async function openBestCategory(row) {
+    setBestCatSelected(row);
+    setBestCatTopItems([]);
+    setBestCatOpen(true);
+    setBestCatLoading(true);
+
+    try {
+      const resp = await fetch(
+        `/api/reports/best-sellers/${row.categoryId}/top-items?${bestSellerQS}`
+      );
+      const json = await resp.json();
+      setBestCatTopItems(json?.ok ? json.data || [] : []);
+    } catch (e) {
+      console.error("[best category top-items] failed", e);
+      setBestCatTopItems([]);
+    } finally {
+      setBestCatLoading(false);
+    }
+  }
+
+  function closeBestCategoryDialog() {
+    setBestCatOpen(false);
+    setBestCatSelected(null);
+    setBestCatTopItems([]);
+    setBestCatLoading(false);
+  }
+
+  async function fetchBestSellerExportDetails(topCats) {
+    const top5Cats = (topCats || []).slice(0, 5);
+
+    const results = await Promise.all(
+      top5Cats.map(async (cat) => {
+        if (!cat || cat.categoryId === undefined || cat.categoryId === null) {
+          return { ...cat, topItems: [] };
+        }
+
+        try {
+          const resp = await fetch(
+            `/api/reports/best-sellers/${cat.categoryId}/top-items?${bestSellerQS}`
+          );
+          const json = await resp.json();
+          return { ...cat, topItems: json?.ok ? json.data || [] : [] };
+        } catch (e) {
+          console.error("[export best-seller top-items] failed", cat, e);
+          return { ...cat, topItems: [] };
+        }
+      })
+    );
+
+    return results;
+  }
 
   return (
     <>
@@ -822,7 +1023,7 @@ export default function ReportsPage() {
                 }}
               >
                 <Typography fontWeight={700} mb={1}>
-                  Top 5 Category
+                  Top 5 Items
                 </Typography>
 
                 <TableContainer
@@ -900,7 +1101,7 @@ export default function ReportsPage() {
                 }}
               >
                 <Typography fontWeight={700} mb={1}>
-                  Sales by Category Chart
+                  Sales by Item Chart
                 </Typography>
                 <Paper variant="outlined" sx={{ p: 2, overflow: "hidden" }}>
                   <Box sx={{ width: "100%", height: 260 }}>
@@ -1040,51 +1241,56 @@ export default function ReportsPage() {
             />
           </Paper>
 
-          {/* ================= Best Seller ================= */}
+          {/* ================= Best Seller per Category================= */}
           <Paper sx={{ p: 2, overflow: "hidden" }}>
-            <Typography fontWeight={700} mb={1}>
-              Best Seller
-            </Typography>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1} gap={2}>
+              <Typography fontWeight={700}>Best Seller per Category</Typography>
+              <Chip size="small" label={`Range: ${currentRangeLabel}`} variant="outlined" />
+            </Stack>
+
             <TableContainer
               component={Paper}
               elevation={0}
               className="scroll-x"
               sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
             >
-              <Table
-                stickyHeader
-                sx={{
-                  minWidth: { xs: 720, sm: 900, md: 1080 },
-                  ...comfyCells,
-                }}
-              >
+              <Table stickyHeader sx={{ minWidth: { xs: 720, sm: 900, md: 1080 }, ...comfyCells }}>
                 <TableHead>
                   <TableRow>
                     <TableCell>Rank</TableCell>
-                    <TableCell>Item Name</TableCell>
+                    <TableCell>Category</TableCell>
                     <TableCell>Total Orders</TableCell>
                     <TableCell>Total Sales</TableCell>
                   </TableRow>
                 </TableHead>
+
                 <TableBody>
                   {bestSeller.map((r) => (
-                    <TableRow key={r.rank}>
+                    <TableRow
+                      key={r.rank}
+                      hover
+                      onClick={() => {
+                        if (!r.categoryId) return;
+                        openBestCategory(r);
+                      }}
+                      sx={{ cursor: "pointer" }}
+                    >
                       <TableCell>{r.rank}</TableCell>
+
                       <TableCell>
                         <Stack direction="row" spacing={1} alignItems="center">
-                          <Avatar
-                            variant="rounded"
-                            sx={{ width: 28, height: 28, fontSize: 12 }}
-                          >
-                            {r.name.slice(0, 1).toUpperCase()}
+                          <Avatar variant="rounded" sx={{ width: 28, height: 28, fontSize: 12 }}>
+                            {(r.name || "?").slice(0, 1).toUpperCase()}
                           </Avatar>
                           <Typography>{r.name}</Typography>
                         </Stack>
                       </TableCell>
+
                       <TableCell>{r.orders}</TableCell>
                       <TableCell>{peso(r.sales)}</TableCell>
                     </TableRow>
                   ))}
+
                   {bestSeller.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={4} align="center">
@@ -1240,133 +1446,77 @@ export default function ReportsPage() {
             </Stack>
           </Paper> */}
 
+          <Dialog
+            open={bestCatOpen}
+            onClose={closeBestCategoryDialog}
+            fullWidth
+            maxWidth="sm"
+          >
+            <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography fontWeight={800} noWrap>
+                  {bestCatSelected ? bestCatSelected.name : "Category"}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                  Top 5 Items • {currentRangeLabel}
+                </Typography>
+              </Box>
+
+              {bestCatSelected && (
+                <Chip size="small" label={`₱${formatNumberMoney(bestCatSelected.sales)}`} />
+              )}
+            </DialogTitle>
+
+            <DialogContent dividers sx={{ p: 0 }}>
+              {bestCatLoading ? (
+                <Box sx={{ p: 3, display: "grid", placeItems: "center" }}>
+                  <CircularProgress size={28} />
+                </Box>
+              ) : (
+                <Table size="small" sx={{ ...comfyCells }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ width: 56 }}>#</TableCell>
+                      <TableCell>Item</TableCell>
+                      <TableCell sx={{ width: 120 }}>Orders</TableCell>
+                      <TableCell sx={{ width: 140 }}>Sales</TableCell>
+                    </TableRow>
+                  </TableHead>
+
+                  <TableBody>
+                    {bestCatTopItems.map((it) => (
+                      <TableRow key={it.rank} hover>
+                        <TableCell>{it.rank}</TableCell>
+                        <TableCell>
+                          <Typography fontWeight={600}>{it.name}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {it.qty} qty
+                          </Typography>
+                        </TableCell>
+                        <TableCell>{it.orders}</TableCell>
+                        <TableCell>{peso(it.sales)}</TableCell>
+                      </TableRow>
+                    ))}
+
+                    {bestCatTopItems.length === 0 && !bestCatLoading && (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center" sx={{ py: 3, color: "text.secondary" }}>
+                          No items found for this category in this range.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              )}
+            </DialogContent>
+
+            <DialogActions>
+              <Button onClick={closeBestCategoryDialog}>Close</Button>
+            </DialogActions>
+          </Dialog>
+
         </LocalizationProvider>
       </Box>
     </>
-  );
-}
-
-/* ------------------------- Small metric card ------------------------- */
-function MetricCard({ icon, label, value, color = "default" }) {
-  return (
-    <Paper
-      elevation={0}
-      sx={{
-        px: 2,
-        py: 1.5,
-        minWidth: 200,
-        border: "1px solid",
-        borderColor: "divider",
-        borderRadius: 2,
-      }}
-    >
-      <Stack direction="row" alignItems="center" spacing={1.5}>
-        <Chip
-          icon={icon}
-          label={label}
-          variant="outlined"
-          color={color === "default" ? "default" : color}
-        />
-        <Box flexGrow={1} />
-        <Typography fontWeight={800} fontSize="1.25rem">
-          {value}
-        </Typography>
-      </Stack>
-    </Paper>
-  );
-}
-
-/* ------------------------- Receipt detail preview ------------------------- */
-function ReceiptPreview({ order }) {
-  const items = [{ name: "Pritong Manok", qty: 3, price: 220 }];
-  const dt = order.date ? new Date(order.date) : null;
-
-  const timeText = dt
-    ? dt.toLocaleTimeString("en-PH", {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "";
-
-  const dateText = dt
-    ? dt.toLocaleString("en-PH", {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : order.date;
-
-  return (
-    <Stack spacing={1.25}>
-      <Typography variant="h5" fontWeight={800} align="center">
-        {peso(order.total)}
-      </Typography>
-      <Divider />
-
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">Customer Name</Typography>
-        <Typography variant="body2" fontWeight={700}>
-          KYLA
-        </Typography>
-      </Stack>
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">Time:</Typography>
-        <Typography variant="body2" fontWeight={700}>
-          {timeText}
-        </Typography>
-      </Stack>
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">Employee:</Typography>
-        <Typography variant="body2" fontWeight={700}>
-          {order.employee}
-        </Typography>
-      </Stack>
-
-      <Divider />
-
-      <Typography variant="subtitle2" fontWeight={700}>
-        Dine in
-      </Typography>
-      {items.map((it, idx) => (
-        <Stack key={idx} direction="row" justifyContent="space-between">
-          <Typography variant="body2">
-            {it.name}
-            <br />
-            <span style={{ opacity: 0.7 }}>
-              {it.qty} x {peso(it.price)}
-            </span>
-          </Typography>
-          <Typography variant="body2" fontWeight={700}>
-            {peso(it.qty * it.price)}
-          </Typography>
-        </Stack>
-      ))}
-
-      <Divider />
-
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2" fontWeight={700}>
-          Total
-        </Typography>
-        <Typography variant="body2" fontWeight={700}>
-          {peso(order.total)}
-        </Typography>
-      </Stack>
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">Payment:</Typography>
-        <Typography variant="body2" fontWeight={700}>
-          Cash
-        </Typography>
-      </Stack>
-
-      <Divider />
-
-      <Stack direction="row" justifyContent="space-between">
-        <Typography variant="body2">{dateText}</Typography>
-        <Typography variant="body2">{order.id}</Typography>
-      </Stack>
-    </Stack>
   );
 }

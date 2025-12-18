@@ -1749,8 +1749,13 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
         Math.max(0, oldNet - safeNumber(totals.net_amount, 0))
       );
 
-      // IMPORTANT: DO NOT CHANGE STATUS HERE.
-      const newStatus = order.status;
+      // ✅ Cashier-POS parity:
+      // if all items are fully voided, auto-void the order
+      const hasAnyQtyLeft = itemsForTotals.some(
+        (it) => safeNumber(it.qty, 0) > 0
+      );
+
+      const newStatus = hasAnyQtyLeft ? order.status : "voided";
 
       await db.query(
         `
