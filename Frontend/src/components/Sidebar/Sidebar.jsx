@@ -391,14 +391,6 @@ function SidebarContent({ collapsed }) {
             collapsed={collapsed}
           />
 
-          {/* 3. Inventory Settings */}
-          <NavLeaf
-            to="/settings/inventory"
-            label="Inventory Settings"
-            icon={Inventory2Icon}
-            collapsed={collapsed}
-          />
-
           {/* 4. Discounts */}
           <NavLeaf
             to="/settings/discounts"

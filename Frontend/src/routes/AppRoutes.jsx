@@ -30,7 +30,6 @@ import ReceiptPrintWrapper from "@/pages/POS/Print/ReceiptPrintWrapper.jsx";
 
 import UserManagementPage from "../pages/UserManagement/UserManagementPage";
 import StoreSettingsPage from "@/pages/Settings/StoreSettings/StoreSettingsPage.jsx";
-import InventorySettingsPage from "@/pages/Settings/InventorySettings/InventorySettingsPage.jsx";
 import DiscountPage from "@/pages/Discounts/DiscountPage.jsx";
 import PaymentTypePage from "@/pages/Settings/PaymentTypes/PaymentTypePage.jsx";
 import AuthorizationPinsPage from "@/pages/Settings/AuthorizationPins/AuthorizationPinsPage.jsx";
@@ -93,10 +92,6 @@ export default function AppRoutes() {
           />
           <Route path="/settings/users" element={<UserManagementPage />} />
           <Route path="/settings/store" element={<StoreSettingsPage />} />
-          <Route
-            path="/settings/inventory"
-            element={<InventorySettingsPage />}
-          />
           <Route
             path="/settings/payment-types"
             element={<PaymentTypePage />}

@@ -33,6 +33,9 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import { alpha } from "@mui/material/styles";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import SearchIcon from "@mui/icons-material/Search";
 import { useAlert } from "@/context/Snackbar/AlertContext";
 
@@ -138,6 +141,14 @@ const UNIT_LABEL_MAP = UNIT_OPTIONS.reduce((map, u) => {
   return map;
 }, {});
 
+const parseLowStock = (val) => {
+  const trimmed = String(val ?? "").trim();
+  if (!trimmed) return 0;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+};
+
 export default function InventoryPage() {
   const [query, setQuery] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
@@ -165,15 +176,6 @@ export default function InventoryPage() {
   };
   const markStockTouched = () => {
     if (!stockTouchedRef.current) stockTouchedRef.current = true;
-  };
-
-  const handleStockClose = () => {
-    if (stockFormChanged || stockTouchedRef.current) {
-      setShowStockConfirm(true);
-    } else {
-      setOpenStock(false);
-      resetStockForm();
-    }
   };
 
   // Load categories
@@ -352,28 +354,6 @@ export default function InventoryPage() {
     if (from === "l" && to === "ml") return n * 1000;
 
     return n;
-  };
-
-  const lastActivity = (ingId, ioType) => {
-    const rows = activity
-      .filter((a) => a.ingredientId === ingId && a.io === ioType)
-      .slice()
-      .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-    return rows[0] || null;
-  };
-
-  const formatShortDate = (iso) => {
-    if (!iso) return "-";
-    try {
-      const dt = new Date(iso);
-      return dt.toLocaleDateString("en-US", {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-      });
-    } catch {
-      return "-";
-    }
   };
 
   // Delete flow
@@ -637,9 +617,41 @@ export default function InventoryPage() {
     }
   };
 
-  // Stock In/Out
-  const [openStock, setOpenStock] = useState(false);
-  const [stockForm, setStockForm] = useState({
+// ===================== STOCK IN/OUT (movement only) =====================
+const [openStock, setOpenStock] = useState(false);
+const [stockForm, setStockForm] = useState({
+  ingId: "",
+  name: "",
+  cat: "",
+  type: DEFAULT_UNIT,
+  direction: "IN",
+  qty: "",
+  current: 0,
+  low: "",
+  date: todayDate(),
+  reason: "",
+});
+const [initialStockForm, setInitialStockForm] = useState(null);
+const [stockFormChanged, setStockFormChanged] = useState(false);
+const [showStockConfirm, setShowStockConfirm] = useState(false);
+
+const canSaveStock = useMemo(() => {
+  if (!stockForm.ingId) return false;
+
+  const qtyStr = String(stockForm.qty ?? "").trim();
+  if (!qtyStr) return false;
+
+  const qty = Number(qtyStr);
+  if (!Number.isFinite(qty) || qty <= 0) return false;
+
+  if (stockForm.direction === "OUT" && qty > Number(stockForm.current || 0))
+    return false;
+
+  return true;
+}, [stockForm]);
+
+const resetStockForm = () => {
+  setStockForm({
     ingId: "",
     name: "",
     cat: "",
@@ -651,66 +663,236 @@ export default function InventoryPage() {
     date: todayDate(),
     reason: "",
   });
-  const [initialStockForm, setInitialStockForm] = useState(null);
-  const [stockFormChanged, setStockFormChanged] = useState(false);
-  const [showStockConfirm, setShowStockConfirm] = useState(false);
+  setInitialStockForm(null);
+  setStockFormChanged(false);
+  setShowStockConfirm(false);
+};
 
-  const canSave = useMemo(() => {
-    if (!stockForm.ingId || !stockForm.cat || !stockForm.type) return false;
+const handleStockFormChange = (newForm) => {
+  if (!stockFormChanged && initialStockForm) {
+    const hasChanges = JSON.stringify(newForm) !== JSON.stringify(initialStockForm);
+    if (hasChanges) setStockFormChanged(true);
+  }
+};
 
-    const wantsRename =
-      normalize(stockForm.name) !==
-      normalize(initialStockForm?.name || "");
-    if (wantsRename && !isValidName(normalize(stockForm.name)))
-      return false;
+const handleStockClose = () => {
+  if (stockFormChanged || stockTouchedRef.current) {
+    setShowStockConfirm(true);
+  } else {
+    setOpenStock(false);
+    resetStockForm();
+  }
+};
+
+// Row click → open Stock dialog (movement only)
+const handleRowClick = (ing) => {
+  const newForm = {
+    ingId: ing.id,
+    name: ing.name || "",
+    cat: ing.category || "",
+    type: ing.type || DEFAULT_UNIT,
+    direction: "IN",
+    qty: "",
+    current: Number(ing.currentStock || 0),
+    low: ing.lowStock ?? "",
+    date: todayDate(),
+    reason: "",
+  };
+  setStockForm(newForm);
+  setInitialStockForm(newForm);
+  setStockFormChanged(false);
+  setShowStockConfirm(false);
+  stockTouchedRef.current = false;
+  setOpenStock(true);
+};
+
+// HANDLE STOCK SAVE
+const handleStockSave = async () => {
+  try {
+    const picked = ingredients.find((i) => i.id === stockForm.ingId);
+    if (!picked) return;
+
+    const io = stockForm.direction === "IN" ? "In" : "Out";
 
     const qtyStr = String(stockForm.qty ?? "").trim();
-    const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
-    const qn = hasQty ? Number(qtyStr) : 0;
+    const qty = Number(qtyStr);
 
-    if (hasQty) {
-      if (qn <= 0) return false;
-      if (
-        stockForm.direction === "OUT" &&
-        qn > Number(stockForm.current || 0)
-      )
-        return false;
-      return true;
+    if (!Number.isFinite(qty) || qty <= 0) {
+      alert.error("Quantity is required.");
+      return;
     }
 
-    if (!initialStockForm) return false;
-    const catChanged = stockForm.cat !== initialStockForm.cat;
-    const typeChanged = stockForm.type !== initialStockForm.type;
-
-    // edit-only save when only metadata/unit changed
-    return catChanged || typeChanged || wantsRename;
-  }, [stockForm, initialStockForm]);
-
-  const handleStockFormChange = (newForm) => {
-    if (!stockFormChanged && initialStockForm) {
-      const hasChanges =
-        JSON.stringify(newForm) !== JSON.stringify(initialStockForm);
-      if (hasChanges) setStockFormChanged(true);
+    if (io === "Out" && qty > (picked.currentStock || 0)) {
+      alert.error("You cannot stock out more than the current stock.");
+      return;
     }
-  };
 
-  const resetStockForm = () => {
-    setStockForm({
-      ingId: "",
-      name: "",
-      cat: "",
-      type: DEFAULT_UNIT,
-      direction: "IN",
-      qty: "",
-      current: 0,
-      low: "",
-      date: todayDate(),
-      reason: "",
+    const res = await fetch(INV_ACTIVITY_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        employee: "Chef",
+        reason: (stockForm.reason || "").trim() || (io === "In" ? "Stock In" : "Stock Out"),
+        io,
+        qty,
+        ingredientId: picked.id,
+        ingredientName: picked.name,
+      }),
     });
-    setInitialStockForm(null);
-    setStockFormChanged(false);
-    setShowStockConfirm(false);
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.ok !== true) {
+      throw new Error(data?.error || `HTTP ${res.status}`);
+    }
+
+    // Update activity list
+    const r = data.row || {};
+    setActivity((a) => [
+      {
+        id: data.id || r.id || `a-${Date.now()}`,
+        ts: r.ts || NOW(),
+        ingredientId: r.ingredientId || picked.id,
+        ingredientName: r.ingredientName || picked.name,
+        employee: r.employee || "Chef",
+        reason: r.reason || (io === "In" ? "Stock In" : "Stock Out"),
+        io,
+        qty,
+      },
+      ...a,
+    ]);
+
+    // Update ingredient locally (currentStock only)
+    const newCurrent = Math.max(
+      0,
+      (picked.currentStock || 0) + (io === "In" ? qty : -qty)
+    );
+
+    setIngredients((arr) => {
+      const next = arr.map((i) =>
+        i.id === picked.id
+          ? { ...i, currentStock: newCurrent, updatedAt: NOW() }
+          : i
+      );
+      return moveIdToFront(next, picked.id);
+    });
+    setPageState((s) => ({ ...s, page: 0 }));
+
+    setOpenStock(false);
+    resetStockForm();
+    alert.success(io === "In" ? "Stock in saved" : "Stock out saved");
+  } catch (e) {
+    console.error("[inv-activity] save failed:", e);
+    alert.error(e?.message || "Save failed");
+  }
+};
+
+// ===================== EDIT INGREDIENT (metadata only) =====================
+const [openEdit, setOpenEdit] = useState(false);
+const [editTouched, setEditTouched] = useState(false);
+const [showEditConfirm, setShowEditConfirm] = useState(false);
+
+const [editForm, setEditForm] = useState({
+  id: "",
+  name: "",
+  category: "",
+  type: DEFAULT_UNIT,
+  currentStock: 0,
+  lowStock: 0,
+});
+
+const [initialEditForm, setInitialEditForm] = useState(null);
+
+const editChanged = useMemo(() => {
+  if (!initialEditForm) return false;
+  return JSON.stringify(editForm) !== JSON.stringify(initialEditForm);
+}, [editForm, initialEditForm]);
+
+const canSaveEdit = useMemo(() => {
+  if (!editForm.id) return false;
+  if (!isValidName(normalize(editForm.name))) return false;
+  if (!normalize(editForm.category)) return false;
+  if (!editForm.type) return false;
+  return true;
+}, [editForm]);
+
+const openEditDialog = (ing) => {
+  const form = {
+    id: ing.id,
+    name: ing.name || "",
+    category: ing.category || "",
+    type: ing.type || DEFAULT_UNIT,
+    currentStock: Number(ing.currentStock || 0),
+    lowStock: Number(ing.lowStock || 0),
   };
+  setEditForm(form);
+  setInitialEditForm(form);
+  setEditTouched(false);
+  setShowEditConfirm(false);
+  setOpenEdit(true);
+};
+
+const handleEditClose = () => {
+  if (editChanged || editTouched) setShowEditConfirm(true);
+  else {
+    setOpenEdit(false);
+    setInitialEditForm(null);
+    setShowEditConfirm(false);
+  }
+};
+
+const handleEditSave = async () => {
+  try {
+    const id = editForm.id;
+    if (!id) return;
+
+    const body = {
+      name: normalize(editForm.name),
+      category: normalize(editForm.category),
+      type: editForm.type,
+      lowStock: parseLowStock(editForm.lowStock),
+    };
+
+    const r = await fetch(`${ING_API}/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+
+    if (!r.ok || j?.ok !== true) {
+      if (r.status === 409 && j?.code === "name_taken") {
+        alert.error(j?.error || "Name already exists.");
+        return;
+      }
+      throw new Error(j?.error || `HTTP ${r.status}`);
+    }
+
+    setIngredients((arr) =>
+      arr.map((i) =>
+        i.id === id
+          ? {
+              ...i,
+              name: body.name,
+              category: body.category,
+              type: body.type,
+              lowStock: Number(body.lowStock || 0),
+              updatedAt: NOW(),
+            }
+          : i
+      )
+    );
+
+    alert.success("Ingredient details updated");
+    setOpenEdit(false);
+    setInitialEditForm(null);
+    setShowEditConfirm(false);
+  } catch (e) {
+    console.error("[ingredients] edit failed:", e);
+    alert.error(e?.message || "Update failed");
+  }
+};
+
+// ===================== dont know =====================
 
   const dropdownMenuProps = {
     MenuListProps: { disablePadding: true },
@@ -736,65 +918,6 @@ export default function InventoryPage() {
     },
   };
 
-  const openStockDialog = () => {
-    const initialForm = {
-      ingId: "",
-      name: "",
-      cat: "",
-      type: DEFAULT_UNIT,
-      direction: "IN",
-      qty: "",
-      current: 0,
-      low: "",
-      date: todayDate(),
-      reason: "",
-    };
-    setStockForm(initialForm);
-    setInitialStockForm(initialForm);
-    setStockFormChanged(false);
-    setShowStockConfirm(false);
-    stockTouchedRef.current = false;
-    setOpenStock(true);
-  };
-
-  const onPickIngredient = (id) => {
-    const ing = ingredients.find((i) => i.id === id);
-    const type = ing?.type || DEFAULT_UNIT;
-    const newForm = {
-      ...stockForm,
-      ingId: id,
-      name: ing?.name || "",
-      cat: ing?.category || "",
-      type,
-      current: ing?.currentStock || 0,
-      low: ing?.lowStock ?? "",
-    };
-    setStockForm(newForm);
-    setInitialStockForm(newForm);
-    setStockFormChanged(false);
-  };
-
-  const handleRowClick = (ing) => {
-    const newForm = {
-      ingId: ing.id,
-      name: ing.name || "",
-      cat: ing.category || "",
-      type: ing.type || "",
-      direction: "IN",
-      qty: "",
-      current: ing.currentStock || 0,
-      low: ing.lowStock || "",
-      date: todayDate(),
-      reason: "",
-    };
-    setStockForm(newForm);
-    setInitialStockForm(newForm);
-    setStockFormChanged(false);
-    setShowStockConfirm(false);
-    stockTouchedRef.current = false;
-    setOpenStock(true);
-  };
-
   const moveIdToFront = (arr, id) => {
     const idx = arr.findIndex((x) => x.id === id);
     if (idx < 0) return arr;
@@ -802,198 +925,44 @@ export default function InventoryPage() {
     return [item, ...arr.slice(0, idx), ...arr.slice(idx + 1)];
   };
 
-  const handleStockSave = async () => {
-    try {
-      const io = stockForm.direction === "IN" ? "In" : "Out";
-      const picked = ingredients.find((i) => i.id === stockForm.ingId);
-      if (!picked) return;
+const readOnlySx = (theme) => ({
+  // keep background unchanged
+  "& .MuiInputBase-root": {
+    bgcolor: "transparent",
+  },
 
-      const qtyStr = String(stockForm.qty ?? "").trim();
-      const hasQty = qtyStr !== "" && !Number.isNaN(Number(qtyStr));
-      const qty = hasQty ? Number(qtyStr) : 0;
+  // ✅ border muted
+  "& .MuiOutlinedInput-notchedOutline": {
+    borderColor: theme.palette.divider,
+    opacity: 0.55,
+  },
 
-      if (!stockForm.cat) {
-        alert.error("Please select a category.");
-        return;
-      }
+  // ✅ no “active” focus look
+  "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline": {
+    borderColor: theme.palette.divider,
+    opacity: 0.55,
+  },
 
-      const wantsRename =
-        normalize(stockForm.name) !== normalize(picked.name);
-      if (wantsRename && !isValidName(normalize(stockForm.name))) {
-        alert.error("Invalid name format.");
-        return;
-      }
+  // ✅ text muted
+  "& .MuiInputBase-input": {
+    color: theme.palette.text.secondary,
+    cursor: "default",
+  },
 
-      /* ================================
-         EDIT-ONLY MODE (NO MOVEMENT)
-         ================================ */
-      if (!hasQty || qty <= 0) {
-        let newCurrent = picked.currentStock || 0;
+  // ✅ label muted
+  "& .MuiInputLabel-root": {
+    color: theme.palette.text.secondary,
+    opacity: 0.85,
+  },
+});
 
-        const unitChanged = stockForm.type !== picked.type;
-        if (unitChanged) {
-          newCurrent = convertStockByUnitChange(
-            newCurrent,
-            picked.type,
-            stockForm.type
-          );
-        }
+const filtersAreDefault = categoryFilter === "all" && stockFilter === "all";
 
-        const patchBody = {
-          category: stockForm.cat,
-          type: stockForm.type,
-          currentStock: newCurrent,
-          ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
-        };
-
-        const r = await fetch(`${ING_API}/${picked.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(patchBody),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || j?.ok !== true) {
-          if (r.status === 409 && j?.code === "name_taken") {
-            alert.error(j.error || "Name already exists.");
-            return;
-          }
-          throw new Error(j?.error || `HTTP ${r.status}`);
-        }
-
-        setIngredients((arr) => {
-          const next = arr.map((i) =>
-            i.id === picked.id
-              ? {
-                  ...i,
-                  name: wantsRename ? normalize(stockForm.name) : i.name,
-                  currentStock: newCurrent,
-                  category: stockForm.cat,
-                  type: stockForm.type,
-                  updatedAt: NOW(),
-                }
-              : i
-          );
-          return moveIdToFront(next, picked.id);
-        });
-        setPageState((s) => ({ ...s, page: 0 }));
-
-        setOpenStock(false);
-        resetStockForm();
-        alert.success("Details updated");
-        return;
-      }
-
-      /* ================================
-         MOVEMENT PATH (HAS QTY)
-         ================================ */
-
-      if (io === "Out" && qty > (picked.currentStock || 0)) {
-        alert.error("You cannot stock out more than the current stock.");
-        return;
-      }
-
-      // 1) Create activity (qty only)
-      const res = await fetch(INV_ACTIVITY_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          employee: "Chef",
-          reason:
-            stockForm.reason ||
-            (io === "In" ? "Stock In" : "Stock Out"),
-          io,
-          qty,
-          ingredientId: picked.id,
-          ingredientName: wantsRename
-            ? normalize(stockForm.name)
-            : picked.name,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok !== true)
-        throw new Error(data?.error || `HTTP ${res.status}`);
-
-      // 2) Update activity list
-      const r = data.row || {};
-      setActivity((a) => [
-        {
-          id: data.id || r.id || `a-${Date.now()}`,
-          ts: r.ts || NOW(),
-          ingredientId: r.ingredientId || picked.id,
-          ingredientName: r.ingredientName || picked.name,
-          employee: r.employee || "Chef",
-          reason:
-            r.reason || (io === "In" ? "Stock In" : "Stock Out"),
-          io,
-          qty,
-        },
-        ...a,
-      ]);
-
-      // 3) Update ingredient locally (currentStock only)
-      const newCurrent = Math.max(
-        0,
-        (picked.currentStock || 0) + (io === "In" ? qty : -qty)
-      );
-
-      setIngredients((arr) => {
-        const next = arr.map((i) =>
-          i.id === picked.id
-            ? {
-                ...i,
-                name: wantsRename ? normalize(stockForm.name) : i.name,
-                currentStock: newCurrent,
-                category: stockForm.cat,
-                type: stockForm.type,
-                updatedAt: NOW(),
-              }
-            : i
-        );
-        return moveIdToFront(next, picked.id);
-      });
-      setPageState((s) => ({ ...s, page: 0 }));
-
-      // 4) Persist via PATCH in background (no price)
-      const patchBody = {
-        category: stockForm.cat,
-        type: stockForm.type,
-        currentStock: newCurrent,
-        ...(wantsRename ? { name: normalize(stockForm.name) } : {}),
-      };
-
-      (async () => {
-        try {
-          const pr = await fetch(`${ING_API}/${picked.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(patchBody),
-          });
-          const pj = await pr.json().catch(() => ({}));
-          if (!pr.ok || pj?.ok !== true) {
-            if (pr.status === 409 && pj?.code === "name_taken") {
-              alert.error(pj.error || "Name already exists.");
-              setIngredients((arr) =>
-                arr.map((i) =>
-                  i.id === picked.id ? { ...i, name: picked.name } : i
-                )
-              );
-              return;
-            }
-          }
-        } catch {
-          // ignore background error
-        }
-      })();
-
-      setOpenStock(false);
-      resetStockForm();
-      alert.success("Stock updated");
-    } catch (e) {
-      console.error("[inv-activity] save failed:", e);
-      alert.error(e?.message || "Save failed");
-    }
-  };
+const handleResetFilters = () => {
+  setCategoryFilter("all");
+  setStockFilter("all");
+  setQuery("");
+};
 
   return (
     <Box p={2} display="grid" gap={2}>
@@ -1096,6 +1065,33 @@ export default function InventoryPage() {
                 <MenuItem value="out">Out of stock</MenuItem>
               </Select>
             </FormControl>
+
+              <Tooltip title="Reset filters (Category: All, Stock alert: All items)">
+                <span>
+                  <IconButton
+                    aria-label="Reset filters"
+                    onClick={handleResetFilters}
+                    disabled={filtersAreDefault}
+                    sx={(t) => ({
+                      flexShrink: 0,
+                      alignSelf: "center",
+
+                      // ✅ normal (enabled) icon color
+                      "& .MuiSvgIcon-root": {
+                        color: alpha(t.palette.text.primary, 0.9),
+                      },
+
+                      // ✅ disabled icon color (still clearly visible)
+                      "&.Mui-disabled .MuiSvgIcon-root": {
+                        color: alpha(t.palette.text.primary, 0.6),
+                      },
+                    })}
+                  >
+                    <RestartAltIcon />
+                  </IconButton>
+                </span>
+              </Tooltip>
+
           </Stack>
         </Box>
 
@@ -1120,6 +1116,7 @@ export default function InventoryPage() {
 
               <TableHead>
                 <TableRow>
+
                   <TableCell padding="checkbox">
                     <Checkbox
                       checked={allChecked}
@@ -1128,32 +1125,56 @@ export default function InventoryPage() {
                       onClick={(e) => e.stopPropagation()}
                     />
                   </TableCell>
+
                   <TableCell>
                     <Typography fontWeight={600}>
                       Ingredient Name
                     </Typography>
                   </TableCell>
+
                   <TableCell>
                     <Typography fontWeight={600}>Categories</Typography>
                   </TableCell>
+
                   <TableCell>
                     <Typography fontWeight={600}>Unit</Typography>
                   </TableCell>
+
                   <TableCell>
                     <Typography fontWeight={600}>
                       Current Stock
                     </Typography>
                   </TableCell>
+
                   <TableCell>
                     <Typography fontWeight={600}>Actions</Typography>
                   </TableCell>
+
                 </TableRow>
               </TableHead>
 
               <TableBody>
                 {paged.map((ing) => {
+                  const isLow =
+                    Number(ing.lowStock || 0) > 0 &&
+                    Number(ing.currentStock || 0) > 0 &&
+                    Number(ing.currentStock || 0) <= Number(ing.lowStock || 0);
                   return (
-                    <TableRow key={ing.id} hover sx={{ cursor: "pointer" }}>
+                    <TableRow
+                      key={ing.id}
+                      hover
+                      sx={(theme) => ({
+                        cursor: "pointer",
+                        ...(isLow
+                          ? {
+                              backgroundColor:
+                                theme.palette.mode === "dark"
+                                  ? "rgba(244, 67, 54, 0.08)"
+                                  : "rgba(244, 67, 54, 0.06)",
+                            }
+                          : {}),
+                      })}
+                    >
                       <TableCell
                         padding="checkbox"
                         onClick={(e) => e.stopPropagation()}
@@ -1204,12 +1225,32 @@ export default function InventoryPage() {
                                   ({secondary})
                                 </Typography>
                               )}
+
+                              {isLow && (
+                                <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.25 }}>
+                                  Low
+                                </Typography>
+                              )}
+
                             </>
                           );
                         })()}
                       </TableCell>
 
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Tooltip title="Edit ingredient details">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditDialog(ing);
+                            }}
+                            sx={{ mr: 0.5 }}
+                          >
+                            <EditOutlinedIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+
                         <Tooltip title="Delete ingredient">
                           <IconButton
                             size="small"
@@ -1223,6 +1264,7 @@ export default function InventoryPage() {
                           </IconButton>
                         </Tooltip>
                       </TableCell>
+
                     </TableRow>
                   );
                 })}
@@ -1502,9 +1544,7 @@ export default function InventoryPage() {
         <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>
-              {stockForm.direction === "IN"
-                ? "Inventory — Stock In"
-                : "Inventory — Stock Out"}
+              Inventory — Stock In / Out
             </Typography>
           </Stack>
         </DialogTitle>
@@ -1531,120 +1571,34 @@ export default function InventoryPage() {
               <ToggleButton value="OUT">Stock Out</ToggleButton>
             </ToggleButtonGroup>
 
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={2}
-            >
-              <FormControl fullWidth>
-                <InputLabel id="name-label">Name</InputLabel>
-                <Select
-                  labelId="name-label"
-                  label="Name"
-                  value={stockForm.ingId ?? ""}
-                  onChange={(e) => onPickIngredient(e.target.value)}
-                  MenuProps={dropdownMenuProps}
-                >
-                  {ingredients.map((i) => (
-                    <MenuItem key={i.id} value={i.id}>
-                      {i.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-
-              <FormControl
+            {/* ✅ Read-only Name / Category / Unit */}
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
                 fullWidth
-                required
-                error={stockTouchedRef.current && !stockForm.cat}
-              >
-                <InputLabel id="cat2-label">Categories</InputLabel>
-                <Select
-                  labelId="cat2-label"
-                  label="Categories"
-                  value={stockForm.cat ?? ""}
-                  onChange={(e) => {
-                    const newForm = {
-                      ...stockForm,
-                      cat: e.target.value ?? "",
-                    };
-                    setStockForm(newForm);
-                    handleStockFormChange(newForm);
-                  }}
-                  MenuProps={dropdownMenuProps}
-                >
-                  <MenuItem value="" disabled>
-                    <em>Select a category</em>
-                  </MenuItem>
-                  {categories.map((c) => (
-                    <MenuItem key={c} value={c}>
-                      {c}
-                    </MenuItem>
-                  ))}
-                </Select>
-                {stockTouchedRef.current && !stockForm.cat && (
-                  <FormHelperText>Category is required</FormHelperText>
-                )}
-              </FormControl>
+                label="Ingredient"
+                value={stockForm.name || ""}
+                InputProps={{ readOnly: true }}
+              />
 
-              <FormControl
+              <TextField
                 fullWidth
-                required
-                sx={{ minWidth: 140 }}
-              >
-                <InputLabel id="unit-stock-label">Unit</InputLabel>
-                <Select
-                  labelId="unit-stock-label"
-                  label="Unit"
-                  value={stockForm.type || DEFAULT_UNIT}
-                  onChange={(e) => {
-                    const newType = e.target.value;
-                    const newForm = { ...stockForm, type: newType };
-                    setStockForm(newForm);
-                    handleStockFormChange(newForm);
-                  }}
-                  disabled={!stockForm.ingId}
-                >
-                  {UNIT_OPTIONS.map((u) => (
-                    <MenuItem key={u.value} value={u.value}>
-                      {u.label}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+                label="Category"
+                value={stockForm.cat || ""}
+                InputProps={{ readOnly: true }}
+              />
+
+              <TextField
+                fullWidth
+                label="Unit"
+                value={UNIT_LABEL_MAP[stockForm.type] || stockForm.type}
+                InputProps={{ readOnly: true }}
+              />
             </Stack>
 
             <Stack
               direction={{ xs: "column", md: "row" }}
               spacing={2}
             >
-              <TextField
-                fullWidth
-                label="Rename (optional)"
-                value={stockForm.name ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  const newForm = { ...stockForm, name: v };
-                  setStockForm(newForm);
-                  handleStockFormChange(newForm);
-                }}
-                disabled={!stockForm.ingId}
-                error={
-                  Boolean(stockForm.ingId) &&
-                  stockForm.name.trim().length > 0 &&
-                  !isValidName(normalize(stockForm.name))
-                }
-                helperText={
-                  !stockForm.ingId
-                    ? "Pick an ingredient to rename"
-                    : stockForm.name
-                    ? `${normalize(stockForm.name).length}/${NAME_MAX}${
-                        !isValidName(normalize(stockForm.name))
-                          ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
-                          : ""
-                      }`
-                    : "Leave blank to keep current name"
-                }
-              />
 
               <TextField
                 label="Quantity"
@@ -1706,13 +1660,6 @@ export default function InventoryPage() {
                 InputProps={{ readOnly: true }}
                 fullWidth
               />
-              <TextField
-                label="Low Stock"
-                value={stockForm.low ?? ""}
-                fullWidth
-                InputProps={{ readOnly: true }}
-                helperText="Configured in Settings → Inventory"
-              />
             </Stack>
 
             <Stack
@@ -1759,7 +1706,7 @@ export default function InventoryPage() {
           <Button
             variant="contained"
             onClick={handleStockSave}
-            disabled={!canSave}
+            disabled={!canSaveStock}
           >
             SAVE
           </Button>
@@ -1916,6 +1863,157 @@ export default function InventoryPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Edit Ingredient Details Dialog */}
+      <Dialog open={openEdit} onClose={handleEditClose} maxWidth="sm" fullWidth>
+        <DialogTitle component="div">
+          <Stack alignItems="center" spacing={1}>
+            <Typography variant="h5" fontWeight={800}>
+              Edit Ingredient Details
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <Divider />
+        <DialogContent
+          onInputCapture={() => setEditTouched(true)}
+          onChangeCapture={() => setEditTouched(true)}
+        >
+          <Stack spacing={2} mt={1}>
+            <TextField
+              label="Name"
+              value={editForm.name}
+              onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+              fullWidth
+              error={editForm.name.trim().length > 0 && !isValidName(normalize(editForm.name))}
+              helperText={
+                editForm.name
+                  ? `${normalize(editForm.name).length}/${NAME_MAX}${
+                      !isValidName(normalize(editForm.name))
+                        ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
+                        : ""
+                    }`
+                  : `Max ${NAME_MAX} chars`
+              }
+            />
+
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <FormControl fullWidth required error={editTouched && !normalize(editForm.category)}>
+                <InputLabel id="edit-cat-label">Categories</InputLabel>
+                <Select
+                  labelId="edit-cat-label"
+                  label="Categories"
+                  value={editForm.category}
+                  onChange={(e) => setEditForm((f) => ({ ...f, category: e.target.value }))}
+                  MenuProps={dropdownMenuProps}
+                >
+                  <MenuItem value="" disabled>
+                    <em>Select a category</em>
+                  </MenuItem>
+                  {categories.map((c) => (
+                    <MenuItem key={c} value={c}>
+                      {c}
+                    </MenuItem>
+                  ))}
+                </Select>
+                {editTouched && !normalize(editForm.category) && (
+                  <FormHelperText>Category is required</FormHelperText>
+                )}
+              </FormControl>
+
+              <FormControl fullWidth required>
+                <InputLabel id="edit-unit-label">Unit</InputLabel>
+                <Select
+                  labelId="edit-unit-label"
+                  label="Unit"
+                  value={editForm.type || DEFAULT_UNIT}
+                  onChange={(e) => setEditForm((f) => ({ ...f, type: e.target.value }))}
+                >
+                  {UNIT_OPTIONS.map((u) => (
+                    <MenuItem key={u.value} value={u.value}>
+                      {u.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <TextField
+                label="Current Stock"
+                value={formatStockInline(editForm.currentStock, editForm.type)}
+                InputProps={{ readOnly: true }}
+                sx={readOnlySx}
+                fullWidth
+              />
+              <TextField
+                label="Low Stock"
+                type="number"
+                value={editForm.lowStock}
+                onChange={(e) =>
+                  setEditForm((f) => ({ ...f, lowStock: e.target.value }))
+                }
+                fullWidth
+                InputProps={{ inputProps: { min: 0 } }}
+                helperText='Set 0 to disable low stock alert'
+              />
+            </Stack>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="outlined" onClick={handleEditClose}>
+            CANCEL
+          </Button>
+          <Button variant="contained" onClick={handleEditSave} disabled={!canSaveEdit}>
+            SAVE
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Confirm Discard Dialog for Edit */}
+      <Dialog
+        open={showEditConfirm}
+        onClose={() => setShowEditConfirm(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle component="div">
+          <Typography variant="h6" fontWeight={600}>
+            Discard Changes?
+          </Typography>
+        </DialogTitle>
+        <DialogContent>
+          <Typography>
+            You have unsaved changes. Are you sure you want to discard them?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button variant="outlined" onClick={() => setShowEditConfirm(false)}>
+            CANCEL
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              setOpenEdit(false);
+              setEditTouched(false);
+              setShowEditConfirm(false);
+              setEditForm(initialEditForm || {
+                id: "",
+                name: "",
+                category: "",
+                type: DEFAULT_UNIT,
+                currentStock: 0,
+                lowStock: 0,
+              });
+              setInitialEditForm(null);
+            }}
+          >
+            DISCARD
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 }
