@@ -43,7 +43,6 @@ Thumbs.db
 # If you keep service account keys locally, never commit them:
 serviceAccount*.json
 **/serviceAccount*.json
-backend/firebase-account.json
 
 # ---- Test coverage
 coverage/

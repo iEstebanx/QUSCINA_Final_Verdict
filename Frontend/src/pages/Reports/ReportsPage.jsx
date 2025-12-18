@@ -50,6 +50,10 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogActions from "@mui/material/DialogActions";
 import CircularProgress from "@mui/material/CircularProgress";
 
+import FormGroup from "@mui/material/FormGroup";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import Checkbox from "@mui/material/Checkbox";
+
 // 🔹 PDF libs + logo
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -64,6 +68,15 @@ const comfyCells = {
     background: "background.paper",
     zIndex: 1,
   },
+};
+
+const DEFAULT_EXPORT = {
+  dailySales: true,
+  top5Items: true,
+  paymentTypes: true,
+  bestSellerCats: true,
+  bestSellerItemsPerCat: true,
+  shiftHistory: true,
 };
 
 /* ------------------------- Helpers for money formatting ------------------------- */
@@ -104,6 +117,77 @@ export default function ReportsPage() {
 
   const [activeDays, setActiveDays] = useState([]);
   const [dateBounds, setDateBounds] = useState({ min: "", max: "" });
+
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportKind, setExportKind] = useState(null); // "pdf" | "excel"
+  const [exportPick, setExportPick] = useState(DEFAULT_EXPORT);
+  const [exportAll, setExportAll] = useState(true);
+
+  const runExport = async () => {
+    if (!ensureCustomRangeComplete()) return;
+
+    const pick = exportAll ? DEFAULT_EXPORT : exportPick;
+
+    let bestSellerTop5 = [];
+    let bestSellerDetails = [];
+
+    if (pick.bestSellerCats || pick.bestSellerItemsPerCat) {
+      bestSellerTop5 = (bestSeller || []).slice(0, 5);
+    }
+
+    if (pick.bestSellerItemsPerCat) {
+      bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
+    }
+
+    if (exportKind === "excel") {
+      const csv = buildSalesExcelCsv({
+        rangeText: currentRangeLabel,
+        categoryTop5Data: pick.top5Items ? categoryTop5 : [],
+        categorySeriesData: pick.dailySales ? categorySeries : [],
+        paymentsData: pick.paymentTypes ? payments : [],
+        bestSellerData: pick.bestSellerCats ? bestSellerTop5 : [],
+        bestSellerDetails: pick.bestSellerItemsPerCat ? bestSellerDetails : [],
+        staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
+        preparedBy,
+      });
+      triggerExcelDownload(csv, currentRangeLabel);
+    }
+
+    if (exportKind === "pdf") {
+      await buildSalesPdf({
+        rangeText: currentRangeLabel,
+        categoryTop5Data: pick.top5Items ? categoryTop5 : [],
+        categorySeriesData: pick.dailySales ? categorySeries : [],
+        paymentsData: pick.paymentTypes ? payments : [],
+        bestSellerData: pick.bestSellerCats ? bestSellerTop5 : [],
+        bestSellerDetails: pick.bestSellerItemsPerCat ? bestSellerDetails : [],
+        staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
+        preparedBy,
+      });
+    }
+
+    setExportOpen(false);
+  };
+
+  const exportKeys = [
+    { key: "dailySales", label: "Daily Sales (Table)" },
+    { key: "top5Items", label: "Top 5 Items" },
+    { key: "paymentTypes", label: "Sales by Payment Type" },
+    { key: "bestSellerCats", label: "Best Seller Categories (Top 5)" },
+    { key: "bestSellerItemsPerCat", label: "Best Seller Items per Category (Top 5 each)" },
+    { key: "shiftHistory", label: "Shift History" },
+  ];
+
+  const openExportDialog = (kind) => {
+    setExportKind(kind);          // "pdf" | "excel"
+    setExportAll(true);           // default = export all
+    setExportPick(DEFAULT_EXPORT); // reset checkboxes
+    setExportOpen(true);
+  };
+
+  const closeExportDialog = () => {
+    setExportOpen(false);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -243,24 +327,6 @@ export default function ReportsPage() {
     [activeDays]
   );
 
-  const formatRangePresetLabel = (r) => {
-    switch (r) {
-      case "days":
-        return "Today";
-      case "weeks":
-        return "This Week";
-      case "monthly":
-        return "This Month";
-      case "quarterly":
-        return "This Quarter";
-      case "yearly":
-        return "This Year";
-      case "custom":
-      default:
-        return "Custom";
-    }
-  };
-
   /* ------------------------ Load REAL data from backend ------------------------ */
   useEffect(() => {
     let alive = true;
@@ -362,7 +428,7 @@ export default function ReportsPage() {
     };
 
     const categoryCSV = convertToCSV(
-      categoryTop5Data.map((row, idx) => ({
+      (categoryTop5Data || []).map((row, idx) => ({
         rank: idx + 1,
         name: row.name,
         net: row.net,
@@ -374,47 +440,47 @@ export default function ReportsPage() {
       ]
     );
 
-    const paymentsCSV = convertToCSV(paymentsData, [
+    const paymentsCSV = convertToCSV(paymentsData || [], [
       { label: "Payment Type", key: "type" },
       { label: "Payment Transactions", key: "tx" },
       { label: "Refund Transactions", key: "refundTx" },
       { label: "Net Amount", key: "net" },
     ]);
 
-  const bestSellerCSV = convertToCSV(bestSellerData, [
-    { label: "Rank", key: "rank" },
-    { label: "Category", key: "name" },
-    { label: "Total Orders", key: "orders" },
-    { label: "Total Sales", key: "sales" },
-  ]);
+    const bestSellerCSV = convertToCSV(bestSellerData || [], [
+      { label: "Rank", key: "rank" },
+      { label: "Category", key: "name" },
+      { label: "Total Orders", key: "orders" },
+      { label: "Total Sales", key: "sales" },
+    ]);
 
-  const bestSellerDetailsCSV = (bestSellerDetails || [])
-    .map((cat) => {
-      const header = `\nCATEGORY: ${cat.rank}. ${cat.name} | Orders: ${cat.orders} | Sales: ${peso(cat.sales)}\n`;
-      const items = cat.topItems || [];
+    const bestSellerDetailsCSV = (bestSellerDetails || [])
+      .map((cat) => {
+        const header = `\nCATEGORY: ${cat.rank}. ${cat.name} | Orders: ${cat.orders} | Sales: ${peso(cat.sales)}\n`;
+        const items = cat.topItems || [];
 
-      const itemsCsv = convertToCSV(
-        items.map((it) => ({
-          rank: it.rank,
-          name: it.name,
-          orders: it.orders,
-          qty: it.qty,
-          sales: peso(it.sales),
-        })),
-        [
-          { label: "Rank", key: "rank" },
-          { label: "Item", key: "name" },
-          { label: "Orders", key: "orders" },
-          { label: "Qty", key: "qty" },
-          { label: "Sales", key: "sales" },
-        ]
-      );
+        const itemsCsv = convertToCSV(
+          items.map((it) => ({
+            rank: it.rank,
+            name: it.name,
+            orders: it.orders,
+            qty: it.qty,
+            sales: peso(it.sales),
+          })),
+          [
+            { label: "Rank", key: "rank" },
+            { label: "Item", key: "name" },
+            { label: "Orders", key: "orders" },
+            { label: "Qty", key: "qty" },
+            { label: "Sales", key: "sales" },
+          ]
+        );
 
-      return header + (itemsCsv || "No data");
-    })
-    .join("\n");
+        return header + (itemsCsv || "No data");
+      })
+      .join("\n");
 
-    const staffCSV = convertToCSV(staffPerformanceData, [
+    const staffCSV = convertToCSV(staffPerformanceData || [], [
       { label: "Shift No.", key: "shiftNo" },
       { label: "Staff Name", key: "staffName" },
       { label: "Date", key: "date" },
@@ -478,27 +544,6 @@ export default function ReportsPage() {
       return false;
     }
     return true;
-  };
-
-  /* -------------------------- Excel Export (current) -------------------------- */
-  const handleExcelExportCurrent = async () => {
-    if (!ensureCustomRangeComplete()) return;
-
-    const bestSellerTop5 = (bestSeller || []).slice(0, 5);
-    const bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
-
-    const csv = buildSalesExcelCsv({
-      rangeText: currentRangeLabel,
-      categoryTop5Data: categoryTop5,
-      categorySeriesData: categorySeries,
-      paymentsData: payments,
-      bestSellerData: bestSellerTop5,
-      bestSellerDetails,
-      staffPerformanceData: staffPerformance,
-      preparedBy,
-    });
-
-    triggerExcelDownload(csv, currentRangeLabel);
   };
 
   /* ------------------ Shared PDF builder (uses passed data) ------------------ */
@@ -618,150 +663,153 @@ export default function ReportsPage() {
     doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
     cursorY += 26;
 
-    doc.setFont(undefined, "bold");
-    doc.text("Daily sales", 72, cursorY);
-    cursorY += 8;
+    // DAILY SALES
+    if (categorySeriesData?.length) {
+      doc.setFont(undefined, "bold");
+      doc.text("Daily sales", 72, cursorY);
+      cursorY += 8;
 
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [
-        [
+      autoTable(doc, {
+        startY: cursorY + 8,
+        head: [[
           "Date",
           "Total Orders",
           "Discounted Orders",
           "Total Revenue(Discount Included)",
           "Total Profit",
-        ],
-      ],
-      body: dailyRows.map((r) => [
-        r.date,
-        r.totalOrders,
-        formatNumberMoney(r.retail),
-        r.discountedOrders,
-        formatNumberMoney(r.totalRevenue),
-        formatNumberMoney(r.totalProfit),
-      ]),
-      theme: "grid",
-      styles: {
-        fontSize: 9,
-        cellPadding: 4,
-      },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 40 },
-    });
-    cursorY = doc.lastAutoTable.finalY + 24;
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Top 5 Items", 72, cursorY);
-    cursorY += 8;
-
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [["Rank", "Item", "Net Sales"]],
-      body: (categoryTop5Data || []).map((it, idx) => [
-        idx + 1,
-        it.name,
-        pdfMoney(it.net),
-      ]),
-      theme: "grid",
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 180 },
-    });
-    cursorY = doc.lastAutoTable.finalY + 24;
-
-    /* ===================== INSERT START: BEST SELLERS ===================== */
-
-    // Best Seller Categories (Top 5)
-    doc.setFont("helvetica", "bold");
-    doc.text("Best Seller Categories (Top 5)", 72, cursorY);
-    cursorY += 8;
-
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [["Rank", "Category", "Total Orders", "Total Sales"]],
-      body: (bestSellerData || []).slice(0, 5).map((c) => [
-        c.rank,
-        c.name,
-        c.orders,
-        pdfMoney(c.sales),
-      ]),
-      theme: "grid",
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 40 },
-    });
-    cursorY = doc.lastAutoTable.finalY + 18;
-
-    // Best Seller Items per Category (Top 5 each)
-    const bestDetails = (bestSellerDetails || []).slice(0, 5);
-
-    bestDetails.forEach((cat) => {
-      ensureSpace(110);
-
-      // Category title
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.text(`${cat.rank}. ${cat.name}`, 72, cursorY);
-      cursorY += 14;
-
-      // Meta line
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.text(`Orders: ${cat.orders}   •   Sales: ${pdfMoney(cat.sales)}`, 72, cursorY);
-      cursorY += 10;
-
-      // Items table
-      autoTable(doc, {
-        startY: cursorY,
-        head: [["#", "Item", "Orders", "Qty", "Sales"]],
-        body: (cat.topItems || []).map((it) => [
-          it.rank,
-          it.name,
-          it.orders,
-          it.qty,
-          pdfMoney(it.sales),
+        ]],
+        body: dailyRows.map((r) => [
+          r.date,
+          r.totalOrders,
+          formatNumberMoney(r.retail),
+          r.discountedOrders,
+          formatNumberMoney(r.totalRevenue),
+          formatNumberMoney(r.totalProfit),
         ]),
         theme: "grid",
         styles: { fontSize: 9, cellPadding: 4 },
         headStyles: pdfHeadStyles,
         margin: { left: 72, right: 40 },
-        pageBreak: "auto",
       });
 
-      cursorY = doc.lastAutoTable.finalY + 22;
-    });
+      cursorY = doc.lastAutoTable.finalY + 24;
+    }
 
-    /* ====================== INSERT END: BEST SELLERS ====================== */
+    // TOP 5 ITEMS
+    if (categoryTop5Data?.length) {
+      doc.setFont("helvetica", "bold");
+      doc.text("Top 5 Items", 72, cursorY);
+      cursorY += 8;
 
-    doc.setFont("helvetica", "bold");
-    doc.text("Payment Type", 72, cursorY);
-    cursorY += 8;
+      autoTable(doc, {
+        startY: cursorY + 8,
+        head: [["Rank", "Item", "Net Sales"]],
+        body: (categoryTop5Data || []).map((it, idx) => [
+          idx + 1,
+          it.name,
+          pdfMoney(it.net),
+        ]),
+        theme: "grid",
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 180 },
+      });
 
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [["Payment Method", "Orders", "Refund Orders", "Net Sales"]],
-      body: paymentsData.map((p) => [
-        p.type,
-        p.tx,
-        p.refundTx,
-        pdfMoney(p.net),
-      ]),
-      theme: "grid",
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 40 },
-    });
-    cursorY = doc.lastAutoTable.finalY + 24;
+      cursorY = doc.lastAutoTable.finalY + 24;
+    }
 
-    doc.setFont("helvetica", "bold");
-    doc.text("Shift History", 72, cursorY);
-    cursorY += 8;
+    /* ===================== INSERT START: BEST SELLERS ===================== */
 
-    autoTable(doc, {
-      startY: cursorY + 8,
-      head: [
-        [
+    // Best Seller Categories (Top 5)
+    if (bestSellerData?.length) {
+      doc.setFont("helvetica", "bold");
+      doc.text("Best Seller Categories (Top 5)", 72, cursorY);
+      cursorY += 8;
+
+      autoTable(doc, {
+        startY: cursorY + 8,
+        head: [["Rank", "Category", "Total Orders", "Total Sales"]],
+        body: (bestSellerData || []).slice(0, 5).map((c) => [
+          c.rank,
+          c.name,
+          c.orders,
+          pdfMoney(c.sales),
+        ]),
+        theme: "grid",
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 40 },
+      });
+
+      cursorY = doc.lastAutoTable.finalY + 18;
+    }
+
+    // Best Seller Items per Category (Top 5 each)
+    if (bestSellerDetails?.length) {
+      const bestDetails = (bestSellerDetails || []).slice(0, 5);
+
+      bestDetails.forEach((cat) => {
+        ensureSpace(110);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(12);
+        doc.text(`${cat.rank}. ${cat.name}`, 72, cursorY);
+        cursorY += 14;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.text(`Orders: ${cat.orders}   •   Sales: ${pdfMoney(cat.sales)}`, 72, cursorY);
+        cursorY += 10;
+
+        autoTable(doc, {
+          startY: cursorY,
+          head: [["#", "Item", "Orders", "Qty", "Sales"]],
+          body: (cat.topItems || []).map((it) => [
+            it.rank,
+            it.name,
+            it.orders,
+            it.qty,
+            pdfMoney(it.sales),
+          ]),
+          theme: "grid",
+          styles: { fontSize: 9, cellPadding: 4 },
+          headStyles: pdfHeadStyles,
+          margin: { left: 72, right: 40 },
+          pageBreak: "auto",
+        });
+
+        cursorY = doc.lastAutoTable.finalY + 22;
+      });
+    }
+
+    // Payments
+    if (paymentsData?.length) {
+      doc.setFont("helvetica", "bold");
+      doc.text("Payment Type", 72, cursorY);
+      cursorY += 8;
+
+      autoTable(doc, {
+        startY: cursorY + 8,
+        head: [["Payment Method", "Orders", "Refund Orders", "Net Sales"]],
+        body: paymentsData.map((p) => [p.type, p.tx, p.refundTx, pdfMoney(p.net)]),
+        theme: "grid",
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 40 },
+      });
+
+      cursorY = doc.lastAutoTable.finalY + 24;
+    }
+
+    // Shift History
+    if (staffPerformanceData?.length) {
+      doc.setFont("helvetica", "bold");
+      doc.text("Shift History", 72, cursorY);
+      cursorY += 8;
+
+      autoTable(doc, {
+        startY: cursorY + 8,
+        head: [[
           "Shift No.",
           "Staff Name",
           "Date",
@@ -770,34 +818,30 @@ export default function ReportsPage() {
           "Count Cash",
           "Actual Cash",
           "Remarks",
-        ],
-      ],
-      body: staffPerformanceData.map((s) => {
-        const dt = s.date ? new Date(s.date) : null;
-        const dateText = dt
-          ? dt.toLocaleString("en-PH", {
-              month: "short",
-              day: "2-digit",
-              year: "numeric",
-            })
-          : s.date;
+        ]],
+        body: staffPerformanceData.map((s) => {
+          const dt = s.date ? new Date(s.date) : null;
+          const dateText = dt
+            ? dt.toLocaleString("en-PH", { month: "short", day: "2-digit", year: "numeric" })
+            : s.date;
 
-        return [
-          s.shiftNo,
-          s.staffName,
-          dateText,
-          pdfMoney(s.startingCash),
-          pdfSafeText(s.cashInOut),
-          pdfMoney(s.countCash),
-          pdfMoney(s.actualCash),
-          pdfSafeText(s.remarks),
-        ];
-      }),
-      theme: "grid",
-      styles: { fontSize: 9, cellPadding: 4 },
-      headStyles: pdfHeadStyles,
-      margin: { left: 72, right: 40 },
-    });
+          return [
+            s.shiftNo,
+            s.staffName,
+            dateText,
+            pdfMoney(s.startingCash),
+            pdfSafeText(s.cashInOut),
+            pdfMoney(s.countCash),
+            pdfMoney(s.actualCash),
+            pdfSafeText(s.remarks),
+          ];
+        }),
+        theme: "grid",
+        styles: { fontSize: 9, cellPadding: 4 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 40 },
+      });
+    }
 
     // 🔹 Prepared by footer
     const footerY = doc.lastAutoTable
@@ -809,25 +853,6 @@ export default function ReportsPage() {
     doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
 
     doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
-  };
-
-  /* ---------------------------- PDF Export (current) ---------------------------- */
-  const handlePdfExportCurrent = async () => {
-    if (!ensureCustomRangeComplete()) return;
-
-    const bestSellerTop5 = (bestSeller || []).slice(0, 5);
-    const bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
-
-    await buildSalesPdf({
-      rangeText: currentRangeLabel,
-      categoryTop5Data: categoryTop5,
-      categorySeriesData: categorySeries,
-      paymentsData: payments,
-      bestSellerData: bestSellerTop5,
-      bestSellerDetails, // ✅ NEW
-      staffPerformanceData: staffPerformance,
-      preparedBy,
-    });
   };
 
   async function openBestCategory(row) {
@@ -992,23 +1017,25 @@ export default function ReportsPage() {
 
               <Box sx={{ flexGrow: 1 }} />
 
-              {/* 🔸 Export Buttons */}
+              {/* Export Buttons */}
               <Button
                 variant="contained"
                 color="success"
                 startIcon={<GridOnIcon />}
-                onClick={handleExcelExportCurrent}
+                onClick={() => openExportDialog("excel")}
               >
                 Excel
               </Button>
+
               <Button
                 variant="contained"
                 color="error"
                 startIcon={<PictureAsPdfIcon />}
-                onClick={handlePdfExportCurrent}
+                onClick={() => openExportDialog("pdf")}
               >
                 PDF
               </Button>
+
             </Stack>
           </Paper>
 
@@ -1446,6 +1473,7 @@ export default function ReportsPage() {
             </Stack>
           </Paper> */}
 
+          {/* ================= Top 5 Items of Best Seller per Category ================= */}
           <Dialog
             open={bestCatOpen}
             onClose={closeBestCategoryDialog}
@@ -1512,6 +1540,71 @@ export default function ReportsPage() {
 
             <DialogActions>
               <Button onClick={closeBestCategoryDialog}>Close</Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* ================= Export Options Dialog ================= */}
+          <Dialog open={exportOpen} onClose={closeExportDialog} fullWidth maxWidth="xs">
+            <DialogTitle sx={{ fontWeight: 900 }}>
+              Export {exportKind === "pdf" ? "PDF" : exportKind === "excel" ? "Excel" : ""}
+            </DialogTitle>
+
+            <DialogContent dividers>
+              <Stack spacing={1.5}>
+                <Typography variant="body2" color="text.secondary">
+                  Range: <b>{currentRangeLabel}</b>
+                </Typography>
+
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={exportAll}
+                      onChange={(e) => setExportAll(e.target.checked)}
+                    />
+                  }
+                  label="Export all sections"
+                />
+
+                <Paper variant="outlined" sx={{ p: 1.25, borderRadius: 2, opacity: exportAll ? 0.55 : 1 }}>
+                  <FormGroup>
+                    {exportKeys.map((x) => (
+                      <FormControlLabel
+                        key={x.key}
+                        control={
+                          <Checkbox
+                            disabled={exportAll}
+                            checked={!!exportPick?.[x.key]}
+                            onChange={(e) =>
+                              setExportPick((prev) => ({
+                                ...(prev || DEFAULT_EXPORT),
+                                [x.key]: e.target.checked,
+                              }))
+                            }
+                          />
+                        }
+                        label={x.label}
+                      />
+                    ))}
+                  </FormGroup>
+
+                  {!exportAll && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                      Tip: uncheck items you don’t want included in the export.
+                    </Typography>
+                  )}
+                </Paper>
+              </Stack>
+            </DialogContent>
+
+            <DialogActions>
+              <Button onClick={closeExportDialog}>Cancel</Button>
+              <Button
+                variant="contained"
+                onClick={runExport}
+                disabled={!exportKind}
+              >
+                Export
+              </Button>
             </DialogActions>
           </Dialog>
 

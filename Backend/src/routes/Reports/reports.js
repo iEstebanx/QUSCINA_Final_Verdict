@@ -457,8 +457,11 @@ module.exports = ({ db }) => {
           s.shift_id,
           s.opened_at,
           s.opening_float,
-          s.total_cash_in,
-          s.total_cash_out,
+
+          -- ✅ compute from pos_cash_moves instead of relying on pos_shifts columns
+          COALESCE(cm.total_cash_in, 0)  AS total_cash_in,
+          COALESCE(cm.total_cash_out, 0) AS total_cash_out,
+
           s.expected_cash,
           s.declared_cash,
           s.variance_cash,
@@ -467,6 +470,14 @@ module.exports = ({ db }) => {
           e.last_name
         FROM pos_shifts s
         JOIN employees e ON e.employee_id = s.employee_id
+        LEFT JOIN (
+          SELECT
+            shift_id,
+            COALESCE(SUM(CASE WHEN type = 'cash_in'  THEN amount END), 0) AS total_cash_in,
+            COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount END), 0) AS total_cash_out
+          FROM pos_cash_moves
+          GROUP BY shift_id
+        ) cm ON cm.shift_id = s.shift_id
         WHERE ${where}
         ORDER BY s.opened_at DESC
         `
