@@ -39,7 +39,7 @@ import {
 import { useAlert } from "@/context/Snackbar/AlertContext";
 import { useConfirm } from "@/context/Cancel&ConfirmDialog/ConfirmContext";
 
-const ROLE_OPTIONS = ["Admin", "Manager", "Cashier"];
+const ROLE_OPTIONS = ["Admin", "Cashier"];
 
 // Same catalog as backend/auth
 const SQ_CATALOG = {
@@ -122,8 +122,8 @@ function isLockedForDisplay(row) {
     return legacyTemp || legacyPerm || legacyFail;
   })();
 
-  // Admin / Manager = Backoffice lock
-  if (role === "Admin" || role === "Manager") {
+  // Admin = Backoffice lock
+  if (role === "Admin") {
     if (states.backoffice) {
       return isLockedState(states.backoffice);
     }
@@ -1467,8 +1467,8 @@ export default function UserManagementPage() {
                         if (userRole === "Cashier") {
                           return appKey !== "backoffice";
                         }
-                        // Admin / Manager: hide Cashier POS (pos)
-                        if (userRole === "Admin" || userRole === "Manager") {
+                        // Admin: hide Cashier POS (pos)
+                        if (userRole === "Admin") {
                           return appKey !== "pos";
                         }
                         // Fallback: show everything

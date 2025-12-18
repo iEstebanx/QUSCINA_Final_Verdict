@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS employees (
   first_name            VARCHAR(60)  NOT NULL,
   last_name             VARCHAR(60)  NOT NULL,
   phone                 VARCHAR(11)  NOT NULL,                         -- app validates 10–11 digits
-  role                  ENUM('Admin','Manager','Chef','Cashier') NOT NULL,
+  role                  ENUM('Admin','Cashier') NOT NULL,
   status                ENUM('Active','Inactive') NOT NULL DEFAULT 'Active',
 
   username              VARCHAR(60)  DEFAULT NULL,

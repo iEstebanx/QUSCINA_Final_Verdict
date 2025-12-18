@@ -114,10 +114,11 @@ async function buildSQEntries(inputArr) {
 // Generate next 9-digit id: "YYYYxxxxx"
 async function generateNextEmployeeId(conn, year = new Date().getFullYear()) {
   const prefix = String(year);
-  const [{ max_id }] = await conn.query(
+  const [rows] = await conn.query(
     `SELECT MAX(employee_id) AS max_id FROM employees WHERE employee_id LIKE ?`,
     [`${prefix}%`]
   );
+  const max_id = rows?.[0]?.max_id;
   const base = Number(`${prefix}00000`);
   const nextNum = Math.max(base, Number(max_id || 0)) + 1;
   const nextStr = String(nextNum);
@@ -253,7 +254,7 @@ module.exports = ({ db } = {}) => {
       const pinProvided =
         typeof pin === "string" && /^\d{6}$/.test(String(pin || ""));
 
-      if (roleNorm !== "Cashier" && !passwordProvided) {
+      if (roleNorm === "Admin" && !passwordProvided) {
         return res.status(400).json({ error: "password must be at least 8 chars" });
       }
 
@@ -290,7 +291,7 @@ module.exports = ({ db } = {}) => {
 
           try {
             if (passwordHash) {
-              // 🔐 Roles WITH password (Admin / Manager / Chef, or any user that supplied one)
+              // Roles WITH password (Admin)
               await conn.execute(
                 `INSERT INTO employees
                   (employee_id, first_name, last_name, phone, role, status,
@@ -312,7 +313,7 @@ module.exports = ({ db } = {}) => {
                 ]
               );
             } else {
-              // 🧾 No password provided (e.g. Cashier) → do NOT touch password_hash
+              // No password provided (Cashier) → do NOT touch password_hash
               await conn.execute(
                 `INSERT INTO employees
                   (employee_id, first_name, last_name, phone, role, status,
@@ -421,6 +422,18 @@ module.exports = ({ db } = {}) => {
       const curRows = await db.query(`SELECT * FROM employees WHERE employee_id = ? LIMIT 1`, [String(employeeId)]);
       if (!curRows.length) return res.status(404).json({ error: "Employee not found" });
       const cur = curRows[0];
+
+      const nextRole = patch.role !== undefined ? String(patch.role).trim() : String(cur.role || "").trim();
+
+      // Block password updates for Cashier
+      if (hasNewPassword && nextRole === "Cashier") {
+        return res.status(400).json({ error: "Cashier cannot have a password (PIN only)." });
+      }
+
+      // Block PIN updates for Admin
+      if (hasNewPin && nextRole === "Admin") {
+        return res.status(400).json({ error: "Admin cannot have a PIN (password only)." });
+      }
 
       await requireCurrentPasswordIfNeeded({ passwordHash: cur.password_hash }, hasNewPassword, currentPassword);
 

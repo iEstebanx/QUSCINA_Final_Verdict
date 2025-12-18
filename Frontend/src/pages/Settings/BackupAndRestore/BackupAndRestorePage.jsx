@@ -123,7 +123,7 @@ export default function BackupAndRestorePage() {
           backupType,
           employeeId,
           employeeName,
-          employeeRole, // "Admin", "Manager", etc
+          employeeRole, // "Admin"
           trigger: "manual",
         }),
       });

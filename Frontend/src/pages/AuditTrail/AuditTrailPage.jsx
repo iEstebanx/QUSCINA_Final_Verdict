@@ -16,6 +16,7 @@ import {
   MenuItem,
   Select,
   InputAdornment,
+  OutlinedInput,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -220,8 +221,6 @@ export default function AuditTrailPage() {
 
   // 🔹 extra helpers for the dialog (you mentioned these)
   const moduleName = selectedRow?.detail?.actionDetails?.module || "";
-  const isItemLog = moduleName === "items";
-  const isIngredientLog = moduleName === "inventory_ingredients";
 
   const dialogTitle =
     selectedRow?.action === "POS - Void"
@@ -261,31 +260,34 @@ export default function AuditTrailPage() {
               <Select
                 value={employeeFilter}
                 onChange={(e) => setEmployeeFilter(e.target.value)}
-                size="small"
                 displayEmpty
-                sx={{ minWidth: 220 }}
-                startAdornment={
-                  <InputAdornment position="start">
-                    <PersonIcon fontSize="small" />
-                  </InputAdornment>
+                input={
+                  <OutlinedInput
+                    startAdornment={
+                      <InputAdornment position="start">
+                        <PersonIcon fontSize="small" />
+                      </InputAdornment>
+                    }
+                  />
                 }
               >
                 <MenuItem value="All Employees">All Employees</MenuItem>
                 <MenuItem value="Admin">Admin</MenuItem>
-                <MenuItem value="Manager">Manager</MenuItem>
                 <MenuItem value="Cashier">Cashier</MenuItem>
               </Select>
 
               <Select
                 value={dateFilter}
                 onChange={(e) => setDateFilter(e.target.value)}
-                size="small"
                 displayEmpty
-                sx={{ minWidth: 200 }}
-                startAdornment={
-                  <InputAdornment position="start">
-                    <CalendarMonthIcon fontSize="small" />
-                  </InputAdornment>
+                input={
+                  <OutlinedInput
+                    startAdornment={
+                      <InputAdornment position="start">
+                        <CalendarMonthIcon fontSize="small" />
+                      </InputAdornment>
+                    }
+                  />
                 }
               >
                 <MenuItem value="Select Date">Select Date</MenuItem>
@@ -704,8 +706,9 @@ function CompactDetailRow({ label, value }) {
    ACTION DETAIL COMPONENTS (Updated for compact layout)
    ============================================================ */
 function AuthActionDetails({ detail }) {
-  const a = detail?.actionDetails || {};
   const meta = detail?.meta || {};
+  const a = detail?.actionDetails || {};
+  const app = String(a.app || meta.app || "").toLowerCase();
   const statusKey = detail?.affectedData?.statusChange;
   const legend = statusKey && AUTH_STATUS_LEGEND[statusKey];
 
@@ -729,7 +732,9 @@ function AuthActionDetails({ detail }) {
   return (
     <Stack spacing={1.5} mt={1.5}>
       <CompactDetailRow label="Action Type" value={a.actionType || "login"} />
-      {a.app && <CompactDetailRow label="App" value={a.app} />}
+      {(a.app || meta.app) && (
+        <CompactDetailRow label="App" value={a.app || meta.app} />
+      )}
       <CompactDetailRow label="Remember Me" value={rememberLabel} />
       {a.loginType && (
         <CompactDetailRow label="Login Method" value={loginMethodLabel} />
@@ -753,7 +758,9 @@ function AuthActionDetails({ detail }) {
 function GenericActionDetails({ detail }) {
   const a = detail?.actionDetails || {};
 
-  const app = String(a.app || "").toLowerCase();
+  const meta = detail?.meta || {};
+  const app = String(a.app || meta.app || "").toLowerCase();
+
   const actionType = a.actionType || "";
 
   const isPosShiftOpen  = app === "pos" && actionType === "Open Shift";

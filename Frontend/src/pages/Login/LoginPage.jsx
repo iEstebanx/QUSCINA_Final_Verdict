@@ -250,7 +250,7 @@ export default function LoginPage() {
           const m = Math.floor(seconds / 60), s = seconds % 60;
           alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
         } else {
-          alert.error("Account locked. Please contact an Admin or Manager.");
+          alert.error("Account locked. Please contact an Admin.");
         }
       } else if (status === 403) {
         alert.error(msg);
@@ -623,7 +623,7 @@ export default function LoginPage() {
             color="text.secondary"
             sx={{ mt: 0.5, fontSize: { xs: 12.5, sm: 13 } }}
           >
-            Admin Dashboard (Admin/Manager only)
+            Admin Dashboard
           </Typography>
         </Box>
 

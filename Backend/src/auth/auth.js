@@ -385,7 +385,7 @@ module.exports = function authRouterFactory({ db } = {}) {
           .status(423)
           .json({
             error:
-              "Account locked. Please contact an Admin or Manager.",
+              "Account locked. Please contact an Admin.",
           });
       }
 
@@ -468,13 +468,13 @@ module.exports = function authRouterFactory({ db } = {}) {
         const roleLower = String(user.role || "").toLowerCase();
 
         // If this is a non-admin role, just say they're not allowed here
-        if (!["admin", "manager"].includes(roleLower)) {
+        if (!["admin"].includes(roleLower)) {
           return res
             .status(403)
             .json({ error: "Not authorized for Admin Dashboard" });
         }
 
-        // For Admin/Manager with no password, keep the old message
+        // For Admin with no password, keep the old message
         await db.query(
           `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
           VALUES (?, ?, ?, 0, 'bad_password', ?, ?)`,
@@ -607,7 +607,7 @@ module.exports = function authRouterFactory({ db } = {}) {
             .status(423)
             .json({
               error:
-                "Account locked. Please contact an Admin or Manager.",
+                "Account locked. Please contact an Admin.",
             });
         }
         if (nowLocked) {
@@ -659,11 +659,8 @@ module.exports = function authRouterFactory({ db } = {}) {
       };
 
       // Role gate (Backoffice)
-      if (
-        !["admin", "manager"].includes(
-          String(user.role || "").toLowerCase()
-        )
-      ) {
+      if (!["admin"].includes(String(user.role || "").toLowerCase()))
+        {
         await logAuditLogin({
           employeeName: prettyEmployeeName(user),
           role: user.role,
@@ -1675,7 +1672,7 @@ module.exports = function authRouterFactory({ db } = {}) {
 
       if (permanent) {
         return res.status(423).json({
-          error: "Account locked. Please contact an Admin or Manager.",
+          error: "Account locked. Please contact an Admin.",
         });
       }
       if (locked) {
@@ -1741,7 +1738,7 @@ module.exports = function authRouterFactory({ db } = {}) {
 
         if (nowPerm) {
           return res.status(423).json({
-            error: "Account locked. Please contact an Admin or Manager.",
+            error: "Account locked. Please contact an Admin.",
           });
         }
         if (nowLocked) {

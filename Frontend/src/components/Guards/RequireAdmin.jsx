@@ -19,9 +19,9 @@ export default function RequireAdmin() {
     return <Navigate to="/" replace state={{ from: loc }} />;
   }
 
-  if (!["Admin", "Manager"].includes(user.role)) {
+  if (user.role !== "Admin") {
     return <Navigate to="/" replace />;
   }
-
+  
   return <Outlet />;
 }

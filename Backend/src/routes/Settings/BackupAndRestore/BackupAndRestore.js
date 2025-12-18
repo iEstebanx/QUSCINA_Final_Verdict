@@ -177,7 +177,7 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
 
       const actorRole =
         employeeId
-          ? (employeeRole || "Employee") // Admin / Manager / Chef / Cashier will come from frontend
+          ? (employeeRole || "Employee") // Admin / Cashier will come from frontend
           : "System";
 
       await logAuditTrail({
