@@ -127,6 +127,42 @@ CREATE TABLE IF NOT EXISTS employee_lock_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE= utf8mb4_0900_ai_ci
 
 -- ------------------------------------------------------------
+-- employee_pin_reset_requests
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS employee_pin_reset_requests (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id     CHAR(9) NOT NULL,
+  token_hash      VARCHAR(100) NOT NULL,
+
+  status          ENUM('pending','used','expired','revoked') NOT NULL DEFAULT 'pending',
+  expires_at      DATETIME NOT NULL,
+
+  used_at         DATETIME DEFAULT NULL,
+  used_terminal_id VARCHAR(64) DEFAULT NULL,
+  used_ip         VARCHAR(45) DEFAULT NULL,
+  used_user_agent VARCHAR(255) DEFAULT NULL,
+
+  attempt_count   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  last_attempt_at DATETIME DEFAULT NULL,
+
+  created_by      CHAR(9) NOT NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  KEY ix_emp_status (employee_id, status),
+  KEY ix_expires (expires_at),
+  KEY ix_created_at (created_at),
+
+  CONSTRAINT fk_pinreset_emp
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+
+  CONSTRAINT fk_pinreset_admin
+    FOREIGN KEY (created_by) REFERENCES employees(employee_id) ON DELETE RESTRICT
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_0900_ai_ci;
+
+-- ------------------------------------------------------------
 -- SECURITY QUESTIONS
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS employee_security_questions (

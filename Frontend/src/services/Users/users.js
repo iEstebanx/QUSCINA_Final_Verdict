@@ -10,6 +10,10 @@ async function safeJson(res) {
   }
 }
 
+function isFormData(v) {
+  return typeof FormData !== "undefined" && v instanceof FormData;
+}
+
 // Helper to build /api/users/... URLs via joinApi
 const usersUrl = (suffix = "") =>
   joinApi(
@@ -67,13 +71,17 @@ export async function fetchUsersOnce() {
  * Create user
  * Backend: POST /api/users
  */
-export async function createUser(payload) {
+export async function createUser(payload, opts = {}) {
+  const multipart = opts?.multipart || isFormData(payload);
+
   const res = await fetch(usersUrl(), {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    // ✅ IMPORTANT: do NOT set Content-Type when using FormData
+    headers: multipart ? undefined : { "Content-Type": "application/json" },
+    body: multipart ? payload : JSON.stringify(payload),
   });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Create user failed");
   return data;
@@ -83,16 +91,17 @@ export async function createUser(payload) {
  * Update user
  * Backend: PATCH /api/users/:employeeId
  */
-export async function updateUser(employeeId, patch) {
-  const res = await fetch(
-    usersUrl(encodeURIComponent(employeeId)),
-    {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }
-  );
+export async function updateUser(employeeId, patch, opts = {}) {
+  const multipart = opts?.multipart || isFormData(patch);
+
+  const res = await fetch(usersUrl(encodeURIComponent(employeeId)), {
+    method: "PATCH",
+    credentials: "include",
+    // ✅ IMPORTANT: do NOT set Content-Type when using FormData
+    headers: multipart ? undefined : { "Content-Type": "application/json" },
+    body: multipart ? patch : JSON.stringify(patch),
+  });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Update user failed");
   return data;
@@ -136,4 +145,62 @@ export async function unlockUser(employeeId, { app, scope } = {}) {
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Unlock user failed");
   return data; // { ok: true }
+}
+
+/**
+ * 🎟️ Create a one-time POS PIN reset ticket for a cashier
+ * Backend: POST /api/users/:employeeId/pin-reset-ticket
+ * Returns: { token, expiresAt, requestId } (shape depends on backend)
+ */
+export async function createPinResetTicket(employeeId) {
+  if (!employeeId) throw new Error("employeeId is required");
+
+  const res = await fetch(
+    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket`),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}), // keep open for options later
+    }
+  );
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.error || "Create reset ticket failed");
+  return data;
+}
+
+/**
+ * 🚫 Optional: revoke a ticket (only if your backend supports it)
+ * Backend: POST /api/users/:employeeId/pin-reset-ticket/revoke
+ */
+export async function revokePinResetTicket(employeeId, requestId) {
+  if (!employeeId) throw new Error("employeeId is required");
+
+  const res = await fetch(
+    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/revoke`),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId }),
+    }
+  );
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.error || "Revoke reset ticket failed");
+  return data; // { ok: true }
+}
+
+export async function getActivePinResetTicket(employeeId) {
+  if (!employeeId) throw new Error("employeeId is required");
+
+  const res = await fetch(
+    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/active`),
+    { method: "GET", credentials: "include" }
+  );
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.error || "Check active ticket failed");
+  return data; // { ok, active, requestId, expiresAt, createdAt }
 }

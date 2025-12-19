@@ -34,6 +34,9 @@ import {
   updateUser,
   deleteUser,
   unlockUser,
+  createPinResetTicket,
+  revokePinResetTicket,
+  getActivePinResetTicket,
 } from "@/services/Users/users";
 
 import { useAlert } from "@/context/Snackbar/AlertContext";
@@ -150,6 +153,8 @@ export default function UserManagementPage() {
 
   const [rows, setRows] = useState([]);
 
+  const [photoFile, setPhotoFile] = useState(null);
+
   // snapshots to compare for dirty checks
   const initialMainRef = useRef(null);    // pristine state for main dialog
   const initialSqRef = useRef(null);      // pristine state for SQ sub-dialog
@@ -160,6 +165,75 @@ export default function UserManagementPage() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
   const [open, setOpen] = useState(false);
+
+  // === Reset Ticket (POS PIN) dialog state ===
+  const [rtOpen, setRtOpen] = useState(false);
+
+  // split loading states
+  const [rtChecking, setRtChecking] = useState(false);
+  const [rtGenerating, setRtGenerating] = useState(false);
+
+  const [rtError, setRtError] = useState("");
+  const [rtData, setRtData] = useState(null); // { token, expiresAt, requestId }
+
+  async function openResetTicketDialog() {
+    if (form.role !== "Cashier") return;
+    if (!isEditingExisting) {
+      alert.info("Create the user first before generating a reset ticket.");
+      return;
+    }
+
+    setRtError("");
+    setRtOpen(true);
+
+    setRtChecking(true);
+    try {
+      const meta = await getActivePinResetTicket(form.employeeId);
+      if (meta?.active) {
+        setRtData({
+          requestId: meta.requestId,
+          expiresAt: meta.expiresAt,
+          token: "",
+          __metaOnly: true,
+        });
+      } else {
+        setRtData(null);
+      }
+    } catch (e) {
+      setRtError(e?.message || "Failed to check active ticket.");
+    } finally {
+      setRtChecking(false);
+    }
+  }
+
+  async function handleRevokeTicket() {
+    const reqId = rtData?.requestId;
+    if (!reqId) return;
+
+    const ok = await confirm({
+      title: "Revoke ticket?",
+      content: "This invalidates the ticket immediately.",
+      confirmLabel: "Revoke",
+      confirmColor: "error",
+    });
+    if (!ok) return;
+
+    try {
+      setRtGenerating(true);
+      await revokePinResetTicket(form.employeeId, reqId);
+      setRtData(null);
+      alert.success("Ticket revoked.");
+    } catch (e) {
+      alert.error(e?.message || "Failed to revoke.");
+    } finally {
+      setRtGenerating(false);
+    }
+  }
+
+  function isTicketActive(d) {
+    if (!d?.expiresAt) return false;
+    return new Date(d.expiresAt).getTime() > Date.now();
+  }
 
   // === Password sub-dialog state ===
   const [pwDialogOpen, setPwDialogOpen] = useState(false);
@@ -217,7 +291,20 @@ export default function UserManagementPage() {
 
   // 👉 Role-based requirements
   const needsPassword = form.role === "Admin" || form.role === "Manager";
-  const needsPin = form.role === "Cashier";  
+  const needsPin = form.role === "Cashier";
+
+  const isEditingExisting = useMemo(() => {
+    return rows.some((r) => String(r.employeeId) === String(form.employeeId));
+  }, [rows, form.employeeId]);
+
+  // near your render (inside component)
+  const isNewUser = !isEditingExisting;
+
+  // Show Credentials section only if it will contain at least one row
+  const showCredentialsSection =
+    needsPassword ||
+    (form.role !== "Cashier") ||
+    (form.role === "Cashier" && isEditingExisting);
 
   useEffect(() => {
     setErrors((prev) => ({
@@ -292,6 +379,7 @@ export default function UserManagementPage() {
   };
 
   const openDialogFor = (row) => {
+    setCreateResult(null);
     if (row) {
       // prefill SQ ids (without exposing hashes)
       const existingSQ = Array.isArray(row.securityQuestions) ? row.securityQuestions : [];
@@ -365,6 +453,8 @@ export default function UserManagementPage() {
     setOpen(true);
   };
 
+  const [createResult, setCreateResult] = useState(null);
+
   const validate = () => {
     const e = {};
     if (!form.firstName.trim()) e.firstName = "Required";
@@ -380,14 +470,6 @@ export default function UserManagementPage() {
         if (!/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d\S]{8,}$/.test(form.password)) {
           e.password = "8+ chars with letters & numbers (special recommended)";
         }
-      }
-    }
-
-    // 🔢 PIN (role-aware)
-    const pin = form.pinDigits.join("");
-    if (needsPin) {
-      if (!isEditing || (isEditing && pin.trim() !== "")) {
-        if (!/^\d{6}$/.test(pin)) e.pin = "6 digits required";
       }
     }
 
@@ -425,7 +507,9 @@ export default function UserManagementPage() {
 
   const handleSave = async () => {
     if (!validate()) return;
+
     const pin = form.pinDigits.join("");
+    const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
 
     const payload = {
       employeeId: String(form.employeeId),
@@ -438,17 +522,13 @@ export default function UserManagementPage() {
       email: form.email.trim(),
       loginVia: { ...form.loginVia },
       photoUrl: form.photoUrl || "",
-      // Only include password if present AND role actually uses it
       ...(needsPassword && form.password ? { password: form.password } : {}),
-      // Only include PIN if role uses PIN and it's a valid 6-digit value
       ...(needsPin && /^\d{6}$/.test(pin) ? { pin } : {}),
     };
 
-    const isEditing = rows.some((r) => String(r.employeeId) === String(form.employeeId));
-
-    // For CREATE flow only, include any staged SQs from the SQ dialog
+    // create-only: include staged SQs if touched
     if (!isEditing && sqTouched) {
-      const filled = sqFields.filter(q => q.id && q.answer.trim()).slice(0, 2);
+      const filled = sqFields.filter((q) => q.id && q.answer.trim()).slice(0, 2);
       const seen = new Set();
       const sqUnique = [];
       for (const q of filled) {
@@ -456,17 +536,39 @@ export default function UserManagementPage() {
         seen.add(q.id);
         sqUnique.push({ id: q.id, answer: q.answer.trim() });
       }
-      payload.securityQuestions = sqUnique; // or [] if user saved "clear" during create
+      payload.securityQuestions = sqUnique;
     }
 
     try {
-      if (isEditing) {
-        await updateUser(form.employeeId, payload); // PATCH
-        alert.success("User updated.");
+      let res = null;
+
+      if (!photoFile) {
+        // JSON
+        res = isEditing
+          ? await updateUser(form.employeeId, payload)
+          : await createUser(payload);
       } else {
-        await createUser(payload); // POST
-        alert.success("User created.");
+        // multipart
+        const fd = new FormData();
+        fd.append("photo", photoFile);
+        fd.append("data", JSON.stringify(payload));
+
+        res = isEditing
+          ? await updateUser(form.employeeId, fd, { multipart: true })
+          : await createUser(fd, { multipart: true });
       }
+
+      // ✅ IMPORTANT: set ticket BEFORE closing main dialog
+      if (!isEditing && form.role === "Cashier" && res?.initialTicket) {
+        setCreateResult({
+          employeeId: form.employeeId,
+          username: form.username,
+          email: form.email,
+          ticket: res.initialTicket,
+        });
+      }
+
+      alert.success(isEditing ? "User updated." : "User created.");
       setOpen(false);
     } catch (e) {
       console.error(e);
@@ -475,7 +577,6 @@ export default function UserManagementPage() {
   };
 
   // ===== Password dialog helpers =====
-  const isEditingExisting = rows.some((r) => String(r.employeeId) === String(form.employeeId));
   const editingRow = rows.find((r) => String(r.employeeId) === String(form.employeeId));
   const hasStagedPin = Array.isArray(form.pinDigits) && form.pinDigits.some((d) => d);
   const hasExistingPin = !!editingRow?.hasPin;
@@ -778,28 +879,6 @@ export default function UserManagementPage() {
     setSqDialogOpen(false);
   };
 
-  async function handleRowDelete(row) {
-    if (rows.length <= 1) {
-      alert.info("You must keep at least one user account.");
-      return;
-    }
-    const ok = await confirm({
-      title: "Delete this user?",
-      content: `This will permanently remove ${row.firstName || ""} ${row.lastName || ""} (${row.employeeId}).`,
-      confirmLabel: "Delete",
-      confirmColor: "error",
-    });
-    if (!ok) return;
-
-    try {
-      await deleteUser(row.employeeId);
-      alert.success("User deleted.");
-    } catch (e) {
-      console.error(e);
-      alert.error(e?.message || "Failed to delete user.");
-    }
-  }
-
   /* ============================
      🔴 DELETE helpers (dialog)
      ============================ */
@@ -1052,8 +1131,10 @@ export default function UserManagementPage() {
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
-                          const url = URL.createObjectURL(file);
-                          setForm((f) => ({ ...f, photoUrl: url }));
+
+                          setPhotoFile(file); // <-- store actual file
+                          const previewUrl = URL.createObjectURL(file);
+                          setForm((f) => ({ ...f, photoUrl: previewUrl })); // preview only
                         }}
                       />
                       <label htmlFor="user-photo-input">
@@ -1062,7 +1143,11 @@ export default function UserManagementPage() {
                         </Button>
                       </label>
                       {form.photoUrl && (
-                        <Button size="small" color="error" onClick={() => setForm((f) => ({ ...f, photoUrl: "" }))}>
+                        <Button size="small" color="error" 
+                          onClick={() => {
+                            setPhotoFile(null);
+                            setForm((f) => ({ ...f, photoUrl: "" }));
+                          }}>
                           Remove
                         </Button>
                       )}
@@ -1282,138 +1367,118 @@ export default function UserManagementPage() {
             </Grid>
 
             {/* ===== Credentials ===== */}
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Credentials</Typography>
+            {showCredentialsSection && (
+              <>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                  Credentials
+                </Typography>
 
-            <Grid container spacing={3} alignItems="center">
-              {/* Password row (hidden for Cashier) */}
-              {needsPassword && (
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Paper
-                    variant="outlined"
-                    onClick={openPasswordDialog}
-                    sx={{
-                      p: 1,
-                      cursor: "pointer",
-                      "&:hover": { bgcolor: "action.hover" },
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      minHeight: 46,
-                    }}
-                  >
-                    <Stack direction="row" spacing={1.25} alignItems="center">
-                      <LockOutlinedIcon fontSize="small" />
-                      <Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                          {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                <Grid container spacing={3} alignItems="center">
+                  {/* Password row (Admins only) */}
+                  {needsPassword && (
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Paper
+                        variant="outlined"
+                        onClick={openPasswordDialog}
+                        sx={{
+                          p: 1,
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "action.hover" },
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          minHeight: 46,
+                        }}
+                      >
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <LockOutlinedIcon fontSize="small" />
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                              {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                            </Typography>
+                            <Typography variant="body2" sx={{ mt: 0.25 }}>
+                              Password{form.password ? " (staged)" : ""}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <ChevronRightOutlinedIcon fontSize="small" />
+                      </Paper>
+
+                      {errors.password && (
+                        <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                          {errors.password}
                         </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.25 }}>
-                          Password
-                          {rows.some((r) => String(r.employeeId) === String(form.employeeId)) ? "" : "*"}
-                          {form.password ? " (staged)" : ""}
-                          {form.role === "Cashier" && " (not required for Cashier)"}
-                        </Typography>
-                      </Box>
-                    </Stack>
-                    <ChevronRightOutlinedIcon fontSize="small" />
-                  </Paper>
-                  {errors.password && (
-                    <Typography
-                      variant="caption"
-                      color="error"
-                      sx={{ mt: 0.5, display: "block" }}
-                    >
-                      {errors.password}
-                    </Typography>
+                      )}
+                    </Grid>
+                  )}
+
+                  {/* Security Questions row (non-cashier only) */}
+                  {form.role !== "Cashier" && (
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Paper
+                        variant="outlined"
+                        onClick={openSqDialog}
+                        sx={{
+                          p: 1,
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "action.hover" },
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          minHeight: 46,
+                        }}
+                      >
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <HelpOutlineOutlinedIcon fontSize="small" />
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                              {hasExistingSq ? "Question and Answer configured" : "None configured"}
+                            </Typography>
+                            <Typography variant="body2" sx={{ mt: 0.25 }}>
+                              Security Questions
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <ChevronRightOutlinedIcon fontSize="small" />
+                      </Paper>
+                    </Grid>
+                  )}
+
+                  {/* Reset Ticket (Cashier only, existing user only) */}
+                  {needsPin && isEditingExisting && (
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Paper
+                        variant="outlined"
+                        onClick={openResetTicketDialog}
+                        sx={{
+                          p: 1,
+                          cursor: "pointer",
+                          "&:hover": { bgcolor: "action.hover" },
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          minHeight: 46,
+                        }}
+                      >
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <LockOutlinedIcon fontSize="small" />
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                              Generate a one-time ticket so cashier can set a NEW POS PIN
+                            </Typography>
+                            <Typography variant="body2" sx={{ mt: 0.25 }}>
+                              Reset Ticket (POS PIN)
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <ChevronRightOutlinedIcon fontSize="small" />
+                      </Paper>
+                    </Grid>
                   )}
                 </Grid>
-              )}
-
-              {/* Security Questions row – unchanged, still available for everyone */}
-              {form.role !== "Cashier" && (
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Paper
-                    variant="outlined"
-                    onClick={openSqDialog}
-                    sx={{
-                      p: 1,
-                      cursor: "pointer",
-                      "&:hover": { bgcolor: "action.hover" },
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      minHeight: 46,
-                    }}
-                  >
-                    <Stack direction="row" spacing={1.25} alignItems="center">
-                      <HelpOutlineOutlinedIcon fontSize="small" />
-                      <Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                          {hasExistingSq
-                            ? "Question and Answer configured"
-                            : "None configured"}
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.25 }}>
-                          Security Questions
-                        </Typography>
-                      </Box>
-                    </Stack>
-                    <ChevronRightOutlinedIcon fontSize="small" />
-                  </Paper>
-                </Grid>
-              )}
-
-              {/* POS PIN row */}
-              {needsPin && (
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <Paper
-                    variant="outlined"
-                    onClick={openPinDialog}
-                    sx={{
-                      p: 1,
-                      cursor: "pointer",
-                      "&:hover": { bgcolor: "action.hover" },
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      minHeight: 46,
-                    }}
-                  >
-                    <Stack direction="row" spacing={1.25} alignItems="center">
-                      <LockOutlinedIcon fontSize="small" />
-                      <Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                          {hasStagedPin
-                            ? (isEditingExisting
-                                ? "New PIN staged — will be saved when you click Save"
-                                : "PIN set — will be saved when you create this user")
-                            : isEditingExisting
-                            ? (hasExistingPin
-                                ? "PIN configured — tap to change"
-                                : "No PIN configured yet — tap to set")
-                            : "Required before saving this user"}
-                        </Typography>
-                        <Typography variant="body2" sx={{ mt: 0.25 }}>
-                          POS PIN
-                          {!isEditingExisting && <span style={{ color: "#d32f2f" }}> *</span>}
-                        </Typography>
-                      </Box>
-                    </Stack>
-                    <ChevronRightOutlinedIcon fontSize="small" />
-                  </Paper>
-                  {errors.pin && (
-                    <Typography
-                      variant="caption"
-                      color="error"
-                      sx={{ mt: 0.5, display: "block" }}
-                    >
-                      {errors.pin}
-                    </Typography>
-                  )}
-                </Grid>
-              )}
-            </Grid>
+              </>
+            )}
 
             {/* ===== Security & Lock ===== */}
             {isEditingExisting && (
@@ -2039,10 +2104,86 @@ export default function UserManagementPage() {
         </DialogActions>
       </Dialog>
 
-      {/* ===== POS PIN sub-dialog ===== */}
+      {/* ===== New Cashier Account (POS PIN) dialog ===== */}
       <Dialog
-        open={pinDialogOpen}
-        onClose={() => setPinDialogOpen(false)}
+        open={!!createResult}
+        onClose={() => {}}
+        disableEscapeKeyDown
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>New Cashier Account</DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={1.25}>
+            <Typography variant="body2" color="text.secondary">
+              Save these details. The ticket is shown once. If lost, generate a new one later.
+            </Typography>
+
+            <TextField
+              size="small"
+              label="Employee ID"
+              value={createResult?.employeeId || ""}
+              InputProps={{ readOnly: true }}
+              fullWidth
+            />
+
+            {!!createResult?.username && (
+              <TextField
+                size="small"
+                label="Username"
+                value={createResult.username}
+                InputProps={{ readOnly: true }}
+                fullWidth
+              />
+            )}
+
+            <TextField
+              size="small"
+              label="Setup Ticket (NEW POS PIN)"
+              value={createResult?.ticket?.token || ""}
+              InputProps={{ readOnly: true }}
+              fullWidth
+            />
+
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(createResult?.ticket?.token || "");
+                  alert.success("Copied ticket.");
+                } catch {
+                  alert.error("Copy failed.");
+                }
+              }}
+            >
+              Copy Ticket
+            </Button>
+
+            <Typography variant="caption" color="text.secondary">
+              Expires:{" "}
+              {createResult?.ticket?.expiresAt
+                ? new Date(createResult.ticket.expiresAt).toLocaleString()
+                : "—"}
+            </Typography>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions>
+          <Button
+            variant="contained"
+            onClick={() => setCreateResult(null)}
+          >
+            Confirm & Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ===== Reset Ticket (POS PIN) dialog ===== */}
+      <Dialog
+        open={rtOpen}
+        onClose={() => setRtOpen(false)}
         maxWidth="xs"
         fullWidth
         disableAutoFocus
@@ -2050,171 +2191,173 @@ export default function UserManagementPage() {
         TransitionProps={{ onEnter: blurActive }}
         PaperProps={dialogPaperGrid}
       >
-        <DialogTitle sx={{ pb: 0.5 }}>
-          {pinDialogMode === "change" ? "Change POS PIN" : "Set POS PIN"}
-        </DialogTitle>
-        <DialogContent
-          dividers
-          sx={{
-            overflowY: "auto",
-            overscrollBehaviorY: "contain",
-            scrollbarGutter: "stable both-edges",
-          }}
-        >
-          <Stack spacing={2}>
-            {/* New PIN row */}
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                New PIN
-              </Typography>
-              <Stack direction="row" alignItems="center" spacing={1} flexWrap="nowrap">
-                <LockOutlinedIcon fontSize="small" />
-                <Stack direction="row" spacing={0.5}>
-                  {pinFields.newDigits.map((d, i) => {
-                    const visible = pinVisibility.next;
-                    return (
-                      <TextField
-                        key={i}
-                        size="small"
-                        inputRef={pinNextRefs[i]}
-                        value={visible ? d : d ? "•" : ""}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/\D/g, "").slice(-1);
-                          setPinFields((prev) => {
-                            const arr = [...prev.newDigits];
-                            arr[i] = v;
-                            return { ...prev, newDigits: arr };
-                          });
-                          if (v && i < 5) pinNextRefs[i + 1].current?.focus();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Backspace" && !pinFields.newDigits[i] && i > 0) {
-                            pinNextRefs[i - 1].current?.focus();
-                          }
-                        }}
-                        slotProps={{
-                          htmlInput: {
-                            inputMode: "numeric",
-                            pattern: "[0-9]*",
-                            maxLength: 1,
-                            style: { textAlign: "center", width: 28 },
-                            "aria-label": `New PIN digit ${i + 1}`,
-                          },
-                        }}
-                        sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
-                      />
-                    );
-                  })}
-                </Stack>
-                <Tooltip title={pinVisibility.next ? "Hide PIN" : "Show PIN"}>
-                  <IconButton
-                    size="small"
-                    onClick={() =>
-                      setPinVisibility((prev) => ({ ...prev, next: !prev.next }))
-                    }
-                  >
-                    {pinVisibility.next ? (
-                      <VisibilityOutlinedIcon />
-                    ) : (
-                      <VisibilityOffOutlinedIcon />
-                    )}
-                  </IconButton>
-                </Tooltip>
-              </Stack>
-            </Box>
+        <DialogTitle sx={{ pb: 0.5 }}>Reset Ticket (POS PIN)</DialogTitle>
 
-            {/* Confirm PIN row */}
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                Confirm new PIN
-              </Typography>
-              <Stack direction="row" alignItems="center" spacing={1} flexWrap="nowrap">
-                <LockOutlinedIcon fontSize="small" />
-                <Stack direction="row" spacing={0.5}>
-                  {pinFields.confirmDigits.map((d, i) => {
-                    const visible = pinVisibility.confirm;
-                    return (
-                      <TextField
-                        key={i}
-                        size="small"
-                        inputRef={pinConfirmRefs[i]}
-                        value={visible ? d : d ? "•" : ""}
-                        onChange={(e) => {
-                          const v = e.target.value.replace(/\D/g, "").slice(-1);
-                          setPinFields((prev) => {
-                            const arr = [...prev.confirmDigits];
-                            arr[i] = v;
-                            return { ...prev, confirmDigits: arr };
-                          });
-                          if (v && i < 5) pinConfirmRefs[i + 1].current?.focus();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Backspace" && !pinFields.confirmDigits[i] && i > 0) {
-                            pinConfirmRefs[i - 1].current?.focus();
-                          }
-                        }}
-                        slotProps={{
-                          htmlInput: {
-                            inputMode: "numeric",
-                            pattern: "[0-9]*",
-                            maxLength: 1,
-                            style: { textAlign: "center", width: 28 },
-                            "aria-label": `Confirm PIN digit ${i + 1}`,
-                          },
-                        }}
-                        sx={{ "& .MuiInputBase-input": { p: "8px 6px" }, width: 34 }}
-                      />
-                    );
-                  })}
-                </Stack>
-                <Tooltip title={pinVisibility.confirm ? "Hide PIN" : "Show PIN"}>
-                  <IconButton
-                    size="small"
-                    onClick={() =>
-                      setPinVisibility((prev) => ({
-                        ...prev,
-                        confirm: !prev.confirm,
-                      }))
-                    }
-                  >
-                    {pinVisibility.confirm ? (
-                      <VisibilityOutlinedIcon />
-                    ) : (
-                      <VisibilityOffOutlinedIcon />
-                    )}
-                  </IconButton>
-                </Tooltip>
-              </Stack>
-            </Box>
-
-            <Typography variant="caption" color="text.secondary">
-              Use a 6-digit numeric PIN. Avoid obvious patterns like 000000 or 123456.
+        <DialogContent dividers sx={{ overflowY: "auto", overscrollBehaviorY: "contain" }}>
+          <Stack spacing={1.5}>
+            <Typography variant="body2" color="text.secondary">
+              This generates a <b>one-time ticket</b>. Give it to the cashier so they can create a new PIN.
             </Typography>
 
-            {pinError && (
+            {!!rtError && (
               <Typography variant="body2" color="error">
-                {pinError}
+                {rtError}
               </Typography>
             )}
+
+            {rtChecking && (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">
+                  Checking active ticket…
+                </Typography>
+              </Stack>
+            )}
+
+            <Paper variant="outlined" sx={{ p: 1 }}>
+              <Stack spacing={1}>
+                {/* Always show who this ticket is for */}
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  {form.employeeId} — {form.firstName} {form.lastName}
+                </Typography>
+
+                {/* ✅ If no ticket yet */}
+                {rtData?.__metaOnly ? (
+                  <>
+                    <Chip size="small" color="warning" label="Active ticket exists" />
+
+                    <Typography variant="caption" color="text.secondary">
+                      Expires: {rtData.expiresAt ? new Date(rtData.expiresAt).toLocaleString() : "—"}
+                    </Typography>
+
+                    <Typography variant="caption" color="text.secondary">
+                      The ticket code is shown only once at creation time. To get a new code, generate again
+                      (this revokes the current one).
+                    </Typography>
+
+                    {/* ✅ ADD THIS: revoke even when token is not visible */}
+                    {!!rtData.requestId && (
+                      <Stack direction="row" spacing={1} flexWrap="wrap">
+                        <Button
+                          size="small"
+                          color="error"
+                          variant="outlined"
+                          onClick={handleRevokeTicket}
+                          disabled={rtChecking || rtGenerating}
+                        >
+                          Revoke
+                        </Button>
+                      </Stack>
+                    )}
+                  </>
+                ) : rtData ? (
+                  <>
+                    <Typography variant="caption" color="text.secondary">
+                      Ticket Code
+                    </Typography>
+
+                    <TextField
+                      size="small"
+                      value={rtData.token || ""}
+                      InputProps={{ readOnly: true }}
+                      fullWidth
+                    />
+
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(rtData.token || "");
+                            alert.success("Copied ticket.");
+                          } catch {
+                            alert.error("Copy failed.");
+                          }
+                        }}
+                      >
+                        Copy
+                      </Button>
+
+                      {!!rtData.requestId && (
+                        <Button
+                          size="small"
+                          color="error"
+                          variant="outlined"
+                          onClick={handleRevokeTicket}
+                          disabled={rtChecking || rtGenerating}
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                    </Stack>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Expires: {rtData.expiresAt ? new Date(rtData.expiresAt).toLocaleString() : "—"}
+                    </Typography>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Token is shown once. If lost, generate again.
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    Token will be shown once. If lost, generate again.
+                  </Typography>
+                )}
+              </Stack>
+            </Paper>
           </Stack>
         </DialogContent>
+
         <DialogActions sx={{ p: 1.25, gap: 1 }}>
           <Button
-            onClick={() => setPinDialogOpen(false)}
+            onClick={() => setRtOpen(false)}
             variant="outlined"
             size="small"
+            disabled={rtChecking || rtGenerating}
           >
-            Cancel
+            Close
           </Button>
+
           <Button
-            onClick={savePinDialog}
+            onClick={async () => {
+              try {
+                function normalizeTicket(res) {
+                  return res?.ticket || res?.initialTicket || res?.data?.ticket || res?.data || res;
+                }
+
+                setRtGenerating(true);
+                setRtError("");
+
+                const res = await createPinResetTicket(form.employeeId);
+                const data = normalizeTicket(res);
+
+                if (!data?.token) {
+                  throw new Error(
+                    `Backend did not return token. Got keys: ${Object.keys(data || {}).join(", ") || "(empty)"}`
+                  );
+                }
+
+                const hadTicket = !!rtData;
+                setRtData(data);
+                alert.success(hadTicket ? "New ticket generated." : "Reset ticket generated.");
+              } catch (e) {
+                setRtError(e?.message || "Failed to generate ticket.");
+              } finally {
+                setRtGenerating(false);
+              }
+            }}
             variant="contained"
             size="small"
+            disabled={rtChecking || rtGenerating}
           >
-            Save PIN
+            {rtGenerating ? "Generating..." : rtData ? "Generate Again" : "Generate Ticket"}
           </Button>
         </DialogActions>
+
       </Dialog>
+
     </Box>
   );
 }

@@ -293,6 +293,37 @@ export default function DashboardPage() {
     (a, b) => (b.orders || 0) - (a.orders || 0)
   );
 
+  const EmptyState = ({ icon, title, description, hint }) => (
+    <Box
+      sx={{
+        flex: 1,
+        minHeight: 220,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        px: 2,
+      }}
+    >
+      <Box sx={{ maxWidth: 320 }}>
+        <Box sx={{ display: "flex", justifyContent: "center", mb: 1 }}>
+          {icon}
+        </Box>
+        <Typography variant="body1" fontWeight={800} sx={{ mb: 0.5 }}>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: hint ? 1 : 0 }}>
+          {description}
+        </Typography>
+        {hint ? (
+          <Typography variant="caption" color="text.secondary">
+            {hint}
+          </Typography>
+        ) : null}
+      </Box>
+    </Box>
+  );
+
   return (
     <Box p={2}>
       {/* Date Range Controls */}
@@ -487,61 +518,61 @@ export default function DashboardPage() {
                 Best Seller per Category
               </Typography>
             </Box>
-            <Box sx={cardContentSx}>
-              <List dense sx={{ flex: 1 }}>
-                {sortedBestSellers.slice(0, 5).map((item, i) => (
-                  <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                    {/* Rank number */}
-                    <Avatar
-                      sx={{
-                        width: 32,
-                        height: 32,
-                        mr: 2,
-                        bgcolor: theme.palette.primary.main,
-                        fontSize: 14,
-                      }}
-                    >
-                      {i + 1}
-                    </Avatar>
+              <Box sx={cardContentSx}>
+                {sortedBestSellers.length === 0 ? (
+                  <EmptyState
+                    icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
+                    title="No best sellers yet"
+                    description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
+                    hint="Try switching the range to Week/Month or choose a different date."
+                  />
+                ) : (
+                  <List dense sx={{ flex: 1 }}>
+                    {sortedBestSellers.slice(0, 5).map((item, i) => (
+                      <ListItem key={i} disableGutters sx={{ py: 1 }}>
+                        <Avatar
+                          sx={{
+                            width: 32,
+                            height: 32,
+                            mr: 2,
+                            bgcolor: theme.palette.primary.main,
+                            fontSize: 14,
+                          }}
+                        >
+                          {i + 1}
+                        </Avatar>
 
-                    {/* Item name */}
-                    <ListItemText
-                      primary={
-                        <Typography variant="body2" fontWeight="medium">
-                          {item.name}
-                        </Typography>
-                      }
-                    />
-
-                    {/* Orders + Trend Icon on the RIGHT */}
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
-                        minWidth: 90,
-                      }}
-                    >
-                      <Typography variant="body2" fontWeight="bold">
-                        {item.orders} orders
-                      </Typography>
-
-                      {item.trend === "up" ? (
-                        <TrendingUpIcon
-                          color="success"
-                          sx={{ fontSize: 20 }}
+                        <ListItemText
+                          primary={
+                            <Typography variant="body2" fontWeight="medium">
+                              {item.name}
+                            </Typography>
+                          }
                         />
-                      ) : (
-                        <TrendingDownIcon
-                          color="error"
-                          sx={{ fontSize: 20 }}
-                        />
-                      )}
-                    </Box>
-                  </ListItem>
-                ))}
-              </List>
-            </Box>
+
+                        <Box
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1,
+                            minWidth: 90,
+                          }}
+                        >
+                          <Typography variant="body2" fontWeight="bold">
+                            {item.orders} orders
+                          </Typography>
+
+                          {item.trend === "up" ? (
+                            <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
+                          ) : (
+                            <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
+                          )}
+                        </Box>
+                      </ListItem>
+                    ))}
+                  </List>
+                )}
+              </Box>
           </Paper>
         </Box>
 
@@ -666,77 +697,87 @@ export default function DashboardPage() {
               </Typography>
             </Box>
             <Box sx={cardContentSx}>
-              <Box
-                sx={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-                }}
-              >
-                <Box sx={{ height: 200 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={paymentData}
-                        dataKey="value"
-                        nameKey="name"
-                        outerRadius="80%"
-                        label={({ name, value }) => `${name} ${value}%`}
+              {paymentData.length === 0 ? (
+                <EmptyState
+                  icon={<PaymentIcon color="disabled" sx={{ fontSize: 40 }} />}
+                  title="No payment activity"
+                  description="No transactions were recorded for the selected period, so there’s nothing to chart yet."
+                  hint="Once sales are made, you’ll see the breakdown by payment method here."
+                />
+              ) : (
+                <Box
+                  sx={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Box sx={{ height: 200 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={paymentData}
+                          dataKey="value"
+                          nameKey="name"
+                          outerRadius="80%"
+                          label={({ name, value }) => `${name} ${value}%`}
+                        >
+                          {paymentData.map((_, i) => (
+                            <Cell
+                              key={i}
+                              fill={
+                                [
+                                  theme.palette.primary.main,
+                                  theme.palette.secondary.main,
+                                  theme.palette.success.main,
+                                ][i % 3]
+                              }
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(v) => [`${v}%`, "Percentage"]} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </Box>
+
+                  <Stack spacing={1} sx={{ mt: 1 }}>
+                    {paymentData.map((d, i) => (
+                      <Box
+                        key={d.name}
+                        sx={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
                       >
-                        {paymentData.map((_, i) => (
-                          <Cell
-                            key={i}
-                            fill={
-                              [
-                                theme.palette.primary.main,
-                                theme.palette.secondary.main,
-                                theme.palette.success.main,
-                              ][i % 3]
-                            }
+                        <Typography variant="body2">
+                          <Box
+                            component="span"
+                            sx={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              display: "inline-block",
+                              backgroundColor:
+                                [
+                                  theme.palette.primary.main,
+                                  theme.palette.secondary.main,
+                                  theme.palette.success.main,
+                                ][i % 3],
+                              mr: 1,
+                            }}
                           />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(v) => [`${v}%`, "Percentage"]} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                          {d.name}
+                        </Typography>
+                        <Typography variant="body2" fontWeight="bold">
+                          {peso(d.amount)} ({d.transactions} txn)
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Stack>
                 </Box>
-                <Stack spacing={1} sx={{ mt: 1 }}>
-                  {paymentData.map((d, i) => (
-                    <Box
-                      key={d.name}
-                      sx={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                      }}
-                    >
-                      <Typography variant="body2">
-                        <Box
-                          component="span"
-                          sx={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            display: "inline-block",
-                            backgroundColor:
-                              [
-                                theme.palette.primary.main,
-                                theme.palette.secondary.main,
-                                theme.palette.success.main,
-                              ][i % 3],
-                            mr: 1,
-                          }}
-                        />
-                        {d.name}
-                      </Typography>
-                      <Typography variant="body2" fontWeight="bold">
-                        {peso(d.amount)} ({d.transactions} txn)
-                      </Typography>
-                    </Box>
-                  ))}
-                </Stack>
-              </Box>
+              )}
             </Box>
           </Paper>
         </Box>

@@ -244,30 +244,37 @@ module.exports = ({ db } = {}) => {
         password, pin, photoUrl = "", securityQuestions = undefined,
       } = req.body;
 
-      if (!firstName?.trim() || !lastName?.trim()) return res.status(400).json({ error: "firstName and lastName are required" });
-      if (!/^\d{10,11}$/.test(String(phone || ""))) return res.status(400).json({ error: "phone must be 10–11 digits" });
+      if (!firstName?.trim() || !lastName?.trim()) {
+        return res.status(400).json({ error: "firstName and lastName are required" });
+      }
+      if (!/^\d{10,11}$/.test(String(phone || ""))) {
+        return res.status(400).json({ error: "phone must be 10–11 digits" });
+      }
       if (!role) return res.status(400).json({ error: "role is required" });
       if (!status) return res.status(400).json({ error: "status is required" });
-      const roleNorm = String(role || "").trim();
-      const passwordProvided =
-        typeof password === "string" && password.length >= 8;
-      const pinProvided =
-        typeof pin === "string" && /^\d{6}$/.test(String(pin || ""));
 
+      const roleNorm = String(role || "").trim();
+      const passwordProvided = typeof password === "string" && password.length >= 8;
+      const pinProvided = typeof pin === "string" && /^\d{6}$/.test(String(pin || ""));
+
+      // Admin must have password
       if (roleNorm === "Admin" && !passwordProvided) {
         return res.status(400).json({ error: "password must be at least 8 chars" });
       }
 
-      if (roleNorm === "Cashier" && !pinProvided) {
+      // Cashier PIN staging is optional — but if provided it must be valid
+      if (roleNorm === "Cashier" && pinProvided && !/^\d{6}$/.test(pin)) {
         return res.status(400).json({ error: "pin must be 6 digits" });
       }
 
       const uname = String(username || "").trim().toLowerCase();
       const mail = String(email || "").trim();
+
       const desiredLoginVia = mergeLoginVia(undefined, loginVia);
       ensureAtLeastOneMethod(desiredLoginVia);
 
       const sqEntries = await buildSQEntries(securityQuestions);
+
       const passwordHash = passwordProvided ? await bcrypt.hash(password, SALT_ROUNDS) : null;
       const pinHash = pinProvided ? await bcrypt.hash(pin, SALT_ROUNDS) : null;
 
@@ -282,28 +289,32 @@ module.exports = ({ db } = {}) => {
         loginVia: desiredLoginVia,
       };
 
+      // ✅ will be filled only for NEW Cashier
+      let initialTicket = null; // { token, expiresAt, requestId }
+
       await db.tx(async (conn) => {
         let id = /^\d{9}$/.test(String(employeeId)) ? String(employeeId) : null;
         const lv = objToDbLoginVia(desiredLoginVia);
 
+        // --- INSERT employee (retry on employee_id collision)
         for (let attempt = 0; attempt < 5; attempt++) {
           if (!id) id = await generateNextEmployeeId(conn);
 
           try {
             if (passwordHash) {
-              // Roles WITH password (Admin)
+              // Admin (password)
               await conn.execute(
                 `INSERT INTO employees
                   (employee_id, first_name, last_name, phone, role, status,
-                   username, email,
-                   login_employee_id, login_username, login_email,
-                   password_hash, pin_hash, password_last_changed, photo_url,
-                   created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?,
-                         ?, ?,
-                         ?, ?, ?,
-                         ?, ?, NOW(), ?,
-                         NOW(), NOW())`,
+                  username, email,
+                  login_employee_id, login_username, login_email,
+                  password_hash, pin_hash, password_last_changed, photo_url,
+                  created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        ?, ?,
+                        ?, ?, ?,
+                        ?, ?, NOW(), ?,
+                        NOW(), NOW())`,
                 [
                   id, firstName.trim(), lastName.trim(), String(phone),
                   role, status,
@@ -313,19 +324,19 @@ module.exports = ({ db } = {}) => {
                 ]
               );
             } else {
-              // No password provided (Cashier) → do NOT touch password_hash
+              // Cashier (no password)
               await conn.execute(
                 `INSERT INTO employees
                   (employee_id, first_name, last_name, phone, role, status,
-                   username, email,
-                   login_employee_id, login_username, login_email,
-                   pin_hash, password_last_changed, photo_url,
-                   created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?,
-                         ?, ?,
-                         ?, ?, ?,
-                         ?, NULL, ?,
-                         NOW(), NOW())`,
+                  username, email,
+                  login_employee_id, login_username, login_email,
+                  pin_hash, password_last_changed, photo_url,
+                  created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        ?, ?,
+                        ?, ?, ?,
+                        ?, NULL, ?,
+                        NOW(), NOW())`,
                 [
                   id, firstName.trim(), lastName.trim(), String(phone),
                   role, status,
@@ -336,11 +347,9 @@ module.exports = ({ db } = {}) => {
               );
             }
 
-            // Insert succeeded, break retry loop
-            break;
+            break; // success
           } catch (err) {
             if (err?.code === "ER_DUP_ENTRY") {
-              // ID collision → regenerate and retry
               id = null;
               continue;
             }
@@ -348,13 +357,14 @@ module.exports = ({ db } = {}) => {
           }
         }
 
+        // --- INSERT aliases
         const aliasesWanted = makeAliases(desiredLoginVia, uname, mail, id);
         for (const key of aliasesWanted) {
           const [type, valueLower] = key.split(":");
           try {
             await conn.execute(
               `INSERT INTO aliases (alias_key, type, value_lower, employee_id, created_at)
-               VALUES (?, ?, ?, ?, NOW())`,
+              VALUES (?, ?, ?, ?, NOW())`,
               [key, type, valueLower, id]
             );
           } catch (err) {
@@ -367,22 +377,80 @@ module.exports = ({ db } = {}) => {
           }
         }
 
+        // --- INSERT security question(s) if provided
         if (Array.isArray(sqEntries)) {
           for (const q of sqEntries) {
             await conn.execute(
               `INSERT INTO employee_security_questions
-                 (employee_id, question_id, answer_hash, updated_at, created_at)
-               VALUES (?, ?, ?, NOW(), NOW())
-               ON DUPLICATE KEY UPDATE
-                 answer_hash = VALUES(answer_hash),
-                 updated_at = NOW()`,
+                (employee_id, question_id, answer_hash, updated_at, created_at)
+              VALUES (?, ?, ?, NOW(), NOW())
+              ON DUPLICATE KEY UPDATE
+                answer_hash = VALUES(answer_hash),
+                updated_at = NOW()`,
               [id, q.id, q.answerHash]
             );
           }
         }
 
-        const subjectAfter = subjectAfterBase;
+        // ✅ AUTO-ISSUE "FIRST TIME PIN SETUP" ticket (Cashier-only, 1 hour)
+        // - This is separate from the 15-minute reset-ticket endpoint.
+        if (roleNorm === "Cashier") {
+          const token = String(Math.floor(Math.random() * 1e8)).padStart(8, "0");
+          const tokenHash = await bcrypt.hash(token, SALT_ROUNDS);
 
+          const createdBy = String(req.user?.employeeId || req.user?.sub || "");
+          if (!createdBy) {
+            const err = new Error("Unauthorized");
+            err.statusCode = 401;
+            throw err;
+          }
+
+          // revoke any prior pending tickets (defensive)
+          await conn.execute(
+            `UPDATE employee_pin_reset_requests
+                SET status='revoked'
+              WHERE employee_id = ? AND status='pending'`,
+            [String(id)]
+          );
+
+          const [ins] = await conn.execute(
+            `
+            INSERT INTO employee_pin_reset_requests
+              (employee_id, token_hash, status, expires_at, created_by, created_at)
+            VALUES (
+              ?, ?, 'pending',
+              DATE_ADD(CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), INTERVAL 1 HOUR),
+              ?,
+              CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+            )
+            `,
+            [String(id), tokenHash, createdBy]
+          );
+
+          const requestId = ins?.insertId ?? null;
+
+          const [r2] = await conn.query(
+            `SELECT id, expires_at FROM employee_pin_reset_requests WHERE id = ? LIMIT 1`,
+            [requestId]
+          );
+
+          const expiresAt = r2?.[0]?.expires_at ?? null;
+
+          initialTicket = { token, expiresAt, requestId };
+
+          // Audit for ticket issuance on create
+          await logUserAudit(conn, req, {
+            action: "User - POS PIN Reset Ticket Issued",
+            actionType: "pin_reset_ticket_initial",
+            statusChange: "USER_PIN_RESET_TICKET_ISSUED",
+            targetEmployeeId: String(id),
+            statusMessage: `Issued INITIAL POS PIN setup ticket for new Cashier (${id}).`,
+            extraActionDetails: { requestId, expiresAt, reason: "initial_setup" },
+          });
+        }
+
+        // Audit user created
+        const subjectAfter = subjectAfterBase;
         await logUserAudit(conn, req, {
           action: "User - Created",
           actionType: "create",
@@ -397,14 +465,20 @@ module.exports = ({ db } = {}) => {
             username: subjectAfter.username,
             email: subjectAfter.email,
             loginVia: subjectAfter.loginVia,
+            // helpful for audit review:
+            initialPinTicketIssued: roleNorm === "Cashier" ? true : false,
           },
         });
       });
 
-      res.status(201).json({ ok: true });
+      // ✅ Return ticket ONLY for newly created Cashier
+      return res.status(201).json({
+        ok: true,
+        ...(initialTicket ? { initialTicket } : {}),
+      });
     } catch (e) {
       console.error("[POST /api/users] fail:", e);
-      res.status(500).json({ error: e?.message ?? "Failed to create user" });
+      return res.status(e.statusCode ?? 500).json({ error: e?.message ?? "Failed to create user" });
     }
   });
 
@@ -894,6 +968,209 @@ module.exports = ({ db } = {}) => {
       }
 
       res.status(500).json({ error: e?.message ?? "Failed to delete user" });
+    }
+  });
+
+  /* =============================
+    Request Ticket for Reset Pin of Cashier
+    ============================= */
+  router.post("/:employeeId/pin-reset-ticket", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+
+      if ((req.user?.role || "") !== "Admin") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const rows = await db.query(
+        `SELECT employee_id, role, status FROM employees WHERE employee_id = ? LIMIT 1`,
+        [String(employeeId)]
+      );
+      if (!rows.length) return res.status(404).json({ error: "Employee not found" });
+
+      const target = rows[0];
+      if (target.role !== "Cashier") {
+        return res.status(400).json({ error: "PIN reset ticket is only for Cashier accounts." });
+      }
+      if (target.status !== "Active") {
+        return res.status(400).json({ error: "Cashier is not Active." });
+      }
+
+      const token = String(Math.floor(Math.random() * 1e8)).padStart(8, "0");
+      const tokenHash = await bcrypt.hash(token, SALT_ROUNDS);
+      const createdBy = String(req.user?.employeeId || req.user?.sub || "");
+
+      if (!createdBy) return res.status(401).json({ error: "Unauthorized" });
+
+      let expiresAt = null;
+      let requestId = null;
+
+      await db.tx(async (conn) => {
+        await conn.execute(
+          `UPDATE employee_pin_reset_requests
+              SET status='revoked'
+            WHERE employee_id = ? AND status='pending'`,
+          [String(employeeId)]
+        );
+
+        const [ins] = await conn.execute(
+          `
+          INSERT INTO employee_pin_reset_requests
+            (employee_id, token_hash, status, expires_at, created_by, created_at)
+          VALUES (
+            ?, ?, 'pending',
+            DATE_ADD(CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), INTERVAL 15 MINUTE),
+            ?,
+            CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+          )
+          `,
+          [String(employeeId), tokenHash, createdBy]
+        );
+
+        requestId = ins?.insertId ?? null;
+
+        const r2 = await conn.query(
+          `SELECT id, expires_at FROM employee_pin_reset_requests WHERE id = ? LIMIT 1`,
+          [requestId]
+        );
+
+        const rows2 = Array.isArray(r2) ? (Array.isArray(r2[0]) ? r2[0] : r2) : [];
+        expiresAt = rows2?.[0]?.expires_at ?? null;
+
+        await logUserAudit(conn, req, {
+          action: "User - POS PIN Reset Ticket Issued",
+          actionType: "pin_reset_ticket",
+          statusChange: "USER_PIN_RESET_TICKET_ISSUED",
+          targetEmployeeId: String(employeeId),
+          statusMessage: `Issued POS PIN reset ticket for Cashier (${employeeId}).`,
+          extraActionDetails: { requestId, expiresAt },
+        });
+      });
+
+      return res.json({
+        ok: true,
+        token,
+        expiresAt,
+        requestId,
+      });
+    } catch (e) {
+      console.error("[POST /api/users/:employeeId/pin-reset-ticket] fail:", e);
+      return res.status(500).json({ error: e?.message || "Failed to issue reset ticket" });
+    }
+  });
+
+  // ✅ GET active ticket metadata (NO TOKEN RETURNED)
+  router.get("/:employeeId/pin-reset-ticket/active", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+
+      if ((req.user?.role || "") !== "Admin") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const rows = await db.query(
+        `SELECT employee_id, role, status FROM employees WHERE employee_id = ? LIMIT 1`,
+        [String(employeeId)]
+      );
+      if (!rows.length) return res.status(404).json({ error: "Employee not found" });
+
+      const target = rows[0];
+      if (target.role !== "Cashier") {
+        return res.status(400).json({ error: "PIN reset ticket is only for Cashier accounts." });
+      }
+
+      // Find latest pending ticket that is not expired
+      const t = await db.query(
+        `
+        SELECT id, expires_at, created_at
+        FROM employee_pin_reset_requests
+        WHERE employee_id = ?
+          AND status = 'pending'
+          AND expires_at > CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [String(employeeId)]
+      );
+
+      if (!t.length) return res.json({ ok: true, active: false });
+
+      return res.json({
+        ok: true,
+        active: true,
+        requestId: t[0].id,
+        expiresAt: t[0].expires_at,
+        createdAt: t[0].created_at,
+        // ❌ no token
+      });
+    } catch (e) {
+      console.error("[GET /api/users/:employeeId/pin-reset-ticket/active] fail:", e);
+      return res.status(500).json({ error: e?.message || "Failed to check active ticket" });
+    }
+  });
+
+  // ✅ POST revoke active/pending ticket (NO TOKEN)
+  router.post("/:employeeId/pin-reset-ticket/revoke", async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const requestId = req.body?.requestId ? Number(req.body.requestId) : null;
+
+      if ((req.user?.role || "") !== "Admin") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const rows = await db.query(
+        `SELECT employee_id, role, status FROM employees WHERE employee_id = ? LIMIT 1`,
+        [String(employeeId)]
+      );
+      if (!rows.length) return res.status(404).json({ error: "Employee not found" });
+
+      const target = rows[0];
+      if (target.role !== "Cashier") {
+        return res.status(400).json({ error: "PIN reset ticket is only for Cashier accounts." });
+      }
+
+      const createdBy = String(req.user?.employeeId || req.user?.sub || "");
+      if (!createdBy) return res.status(401).json({ error: "Unauthorized" });
+
+      let revokedCount = 0;
+
+      await db.tx(async (conn) => {
+        // Revoke either:
+        // - a specific requestId (recommended), OR
+        // - all pending tickets for that employee (fallback)
+        const [upd] = await conn.execute(
+          requestId
+            ? `UPDATE employee_pin_reset_requests
+                  SET status='revoked'
+                WHERE employee_id = ?
+                  AND status='pending'
+                  AND id = ?`
+            : `UPDATE employee_pin_reset_requests
+                  SET status='revoked'
+                WHERE employee_id = ?
+                  AND status='pending'`,
+          requestId ? [String(employeeId), requestId] : [String(employeeId)]
+        );
+
+        revokedCount = upd?.affectedRows ?? 0;
+
+        await logUserAudit(conn, req, {
+          action: "User - POS PIN Reset Ticket Revoked",
+          actionType: "pin_reset_ticket_revoke",
+          statusChange: "USER_PIN_RESET_TICKET_REVOKED",
+          targetEmployeeId: String(employeeId),
+          statusMessage: requestId
+            ? `Revoked POS PIN reset ticket ${requestId} for Cashier (${employeeId}).`
+            : `Revoked POS PIN reset ticket(s) for Cashier (${employeeId}).`,
+          extraActionDetails: { requestId: requestId || null, revokedCount },
+        });
+      });
+
+      return res.json({ ok: true, revokedCount });
+    } catch (e) {
+      console.error("[POST /api/users/:employeeId/pin-reset-ticket/revoke] fail:", e);
+      return res.status(500).json({ error: e?.message || "Failed to revoke ticket" });
     }
   });
 
