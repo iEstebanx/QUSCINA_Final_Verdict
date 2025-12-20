@@ -1,4 +1,4 @@
-// Frontend/src/pages/UserManagement/UserManagementPage.jsx
+// QUSCINA_BACKOFFICE/src/pages/UserManagement/UserManagementPage.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Button, IconButton, TextField, InputAdornment,
@@ -55,6 +55,14 @@ const SQ_CATALOG = {
 
 const emailRe =
   /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+const rtTypographySx = {
+  "& .rt-desc": { fontSize: 14.5, lineHeight: 1.35 },     // top description
+  "& .rt-name": { fontSize: 15.5, fontWeight: 600, letterSpacing: 0.2 },     // name
+  "& .rt-meta": { fontSize: 14, lineHeight: 1.35 },       // EmployeeID/Username/Email lines
+  "& .rt-label": { fontSize: 14, fontWeight: 700 },       // "Ticket Code" label
+  "& .rt-note": { fontSize: 13.5, lineHeight: 1.35 },     // footnotes
+};
 
 function scorePassword(pw) {
   if (!pw) return 0;
@@ -184,9 +192,10 @@ export default function UserManagementPage() {
     }
 
     setRtError("");
+    setRtData(null);
+    setRtChecking(true);
     setRtOpen(true);
 
-    setRtChecking(true);
     try {
       const meta = await getActivePinResetTicket(form.employeeId);
       if (meta?.active) {
@@ -565,6 +574,7 @@ export default function UserManagementPage() {
           username: form.username,
           email: form.email,
           ticket: res.initialTicket,
+          loginVia: { ...(form.loginVia || {}) },
         });
       }
 
@@ -974,7 +984,7 @@ export default function UserManagementPage() {
             component={Paper}
             elevation={0}
             className="scroll-x"
-            sx={{ width: "100%", borderRadius: 1, maxHeight: 520, overflowX: "auto" }}
+            sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
           >
             <Table
               stickyHeader
@@ -1366,458 +1376,410 @@ export default function UserManagementPage() {
 
             </Grid>
 
-            {/* ===== Credentials ===== */}
-            {showCredentialsSection && (
+            {/* ===== Credentials (left) + Security & Lock (right) ===== */}
+            {(showCredentialsSection || isEditingExisting) && (
               <>
                 <Divider sx={{ my: 2 }} />
-                <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-                  Credentials
-                </Typography>
-
-                <Grid container spacing={3} alignItems="center">
-                  {/* Password row (Admins only) */}
-                  {needsPassword && (
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Paper
-                        variant="outlined"
-                        onClick={openPasswordDialog}
-                        sx={{
-                          p: 1,
-                          cursor: "pointer",
-                          "&:hover": { bgcolor: "action.hover" },
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          minHeight: 46,
-                        }}
-                      >
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <LockOutlinedIcon fontSize="small" />
-                          <Box>
-                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                              {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
-                            </Typography>
-                            <Typography variant="body2" sx={{ mt: 0.25 }}>
-                              Password{form.password ? " (staged)" : ""}
-                            </Typography>
-                          </Box>
-                        </Stack>
-                        <ChevronRightOutlinedIcon fontSize="small" />
-                      </Paper>
-
-                      {errors.password && (
-                        <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
-                          {errors.password}
-                        </Typography>
-                      )}
-                    </Grid>
-                  )}
-
-                  {/* Security Questions row (non-cashier only) */}
-                  {form.role !== "Cashier" && (
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Paper
-                        variant="outlined"
-                        onClick={openSqDialog}
-                        sx={{
-                          p: 1,
-                          cursor: "pointer",
-                          "&:hover": { bgcolor: "action.hover" },
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          minHeight: 46,
-                        }}
-                      >
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <HelpOutlineOutlinedIcon fontSize="small" />
-                          <Box>
-                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                              {hasExistingSq ? "Question and Answer configured" : "None configured"}
-                            </Typography>
-                            <Typography variant="body2" sx={{ mt: 0.25 }}>
-                              Security Questions
-                            </Typography>
-                          </Box>
-                        </Stack>
-                        <ChevronRightOutlinedIcon fontSize="small" />
-                      </Paper>
-                    </Grid>
-                  )}
-
-                  {/* Reset Ticket (Cashier only, existing user only) */}
-                  {needsPin && isEditingExisting && (
-                    <Grid size={{ xs: 12, md: 6 }}>
-                      <Paper
-                        variant="outlined"
-                        onClick={openResetTicketDialog}
-                        sx={{
-                          p: 1,
-                          cursor: "pointer",
-                          "&:hover": { bgcolor: "action.hover" },
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          minHeight: 46,
-                        }}
-                      >
-                        <Stack direction="row" spacing={1.25} alignItems="center">
-                          <LockOutlinedIcon fontSize="small" />
-                          <Box>
-                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                              Generate a one-time ticket so cashier can set a NEW POS PIN
-                            </Typography>
-                            <Typography variant="body2" sx={{ mt: 0.25 }}>
-                              Reset Ticket (POS PIN)
-                            </Typography>
-                          </Box>
-                        </Stack>
-                        <ChevronRightOutlinedIcon fontSize="small" />
-                      </Paper>
-                    </Grid>
-                  )}
-                </Grid>
-              </>
-            )}
-
-            {/* ===== Security & Lock ===== */}
-            {isEditingExisting && (
-              <>
-                <Divider sx={{ my: 2 }} />
-                <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-                  Security & Lock
-                </Typography>
 
                 <Grid container spacing={2} alignItems="flex-start">
-                  <Grid size={{ xs: 12, md: 8 }}>
-                    {(() => {
-                      const row = rows.find(
-                        (r) => String(r.employeeId) === String(form.employeeId)
-                      );
-                      if (!row) {
-                        return (
-                          <Typography variant="body2" color="text.secondary">
-                            No lock info.
-                          </Typography>
-                        );
-                      }
+                  {/* LEFT COLUMN — Credentials */}
+                  {showCredentialsSection && (
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+                        Credentials
+                      </Typography>
 
-                      // --- helpers
-                      const now = Date.now();
-                      const LOCK_THRESHOLD = 3;
+                      <Grid container spacing={2} alignItems="center">
+                        {/* Password row (Admins only) */}
+                        {needsPassword && (
+                          <Grid size={{ xs: 12 }}>
+                            <Paper
+                              variant="outlined"
+                              onClick={openPasswordDialog}
+                              sx={{
+                                p: 1,
+                                cursor: "pointer",
+                                "&:hover": { bgcolor: "action.hover" },
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                minHeight: 46,
+                              }}
+                            >
+                              <Stack direction="row" spacing={1.25} alignItems="center">
+                                <LockOutlinedIcon fontSize="small" />
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                                    {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                                  </Typography>
+                                  <Typography variant="body2" sx={{ mt: 0.25 }}>
+                                    Password{form.password ? " (staged)" : ""}
+                                  </Typography>
+                                </Box>
+                              </Stack>
+                              <ChevronRightOutlinedIcon fontSize="small" />
+                            </Paper>
 
-                      const isLockedState = (s) => {
-                        if (!s) return false;
-                        const perm = !!s.permanentLock;
-                        const temp = s.lockUntil
-                          ? new Date(s.lockUntil).getTime() > now
-                          : false;
-                        const fail = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
-                        return perm || temp || fail;
-                      };
+                            {errors.password && (
+                              <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                                {errors.password}
+                              </Typography>
+                            )}
+                          </Grid>
+                        )}
 
-                      // Legacy/global (migration-only)
-                      const legacyTemp = row.lockUntil
-                        ? new Date(row.lockUntil).getTime() > now
-                        : false;
-                      const legacyPerm = !!row.permanentLock;
-                      const legacyFail = Number(row.failedLoginCount || 0) >= LOCK_THRESHOLD;
-                      const legacyLocked = legacyTemp || legacyPerm || legacyFail;
+                        {/* Security Questions row (non-cashier only) */}
+                        {form.role !== "Cashier" && (
+                          <Grid size={{ xs: 12 }}>
+                            <Paper
+                              variant="outlined"
+                              onClick={openSqDialog}
+                              sx={{
+                                p: 1,
+                                cursor: "pointer",
+                                "&:hover": { bgcolor: "action.hover" },
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                minHeight: 46,
+                              }}
+                            >
+                              <Stack direction="row" spacing={1.25} alignItems="center">
+                                <HelpOutlineOutlinedIcon fontSize="small" />
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                                    {hasExistingSq ? "Question and Answer configured" : "None configured"}
+                                  </Typography>
+                                  <Typography variant="body2" sx={{ mt: 0.25 }}>
+                                    Security Questions
+                                  </Typography>
+                                </Box>
+                              </Stack>
+                              <ChevronRightOutlinedIcon fontSize="small" />
+                            </Paper>
+                          </Grid>
+                        )}
 
-                      // ── Per-app states = source of truth (role-aware)
-                      const userRole = form.role;
+                        {/* Reset Ticket (Cashier only, existing user only) */}
+                        {needsPin && isEditingExisting && (
+                          <Grid size={{ xs: 12 }}>
+                            <Paper
+                              variant="outlined"
+                              onClick={openResetTicketDialog}
+                              sx={{
+                                p: 1,
+                                cursor: "pointer",
+                                "&:hover": { bgcolor: "action.hover" },
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                minHeight: 46,
+                              }}
+                            >
+                              <Stack direction="row" spacing={1.25} alignItems="center">
+                                <LockOutlinedIcon fontSize="small" />
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                                    Generate a one-time ticket so cashier can set a NEW POS PIN
+                                  </Typography>
+                                  <Typography variant="body2" sx={{ mt: 0.25 }}>
+                                    Reset Ticket (POS PIN)
+                                  </Typography>
+                                </Box>
+                              </Stack>
+                              <ChevronRightOutlinedIcon fontSize="small" />
+                            </Paper>
+                          </Grid>
+                        )}
+                      </Grid>
+                    </Grid>
+                  )}
 
-                      const shouldShowApp = (appKey) => {
-                        // Cashier: hide Backoffice
-                        if (userRole === "Cashier") {
-                          return appKey !== "backoffice";
+                  {/* RIGHT COLUMN — Security & Lock */}
+                  {isEditingExisting && (
+                    <Grid size={{ xs: 12, md: 6 }}>
+                      {/* ✅ NOTE: this is your same logic, just without the md:8 limiter */}
+                      {(() => {
+                        const row = rows.find((r) => String(r.employeeId) === String(form.employeeId));
+                        if (!row) {
+                          return (
+                            <Typography variant="body2" color="text.secondary">
+                              No lock info.
+                            </Typography>
+                          );
                         }
-                        // Admin: hide Cashier POS (pos)
-                        if (userRole === "Admin") {
-                          return appKey !== "pos";
-                        }
-                        // Fallback: show everything
-                        return true;
-                      };
 
-                      const rawEntries = Object.entries(row.lockStates || {});
-                      const entries = rawEntries.filter(([appKey]) => shouldShowApp(appKey));
+                        const now = Date.now();
+                        const LOCK_THRESHOLD = 3;
 
-                      // Which *visible* apps are locked?
-                      const lockedApps = entries
-                        .filter(([_, s]) => isLockedState(s))
-                        .map(([k]) => k);
-
-                      // Show legacy row ONLY if we have no per-app states from backend AND it’s locked
-                      const showLegacy = rawEntries.length === 0 && legacyLocked;
-
-                      // Primary action
-                      let primaryLabel = "All systems unlocked";
-                      let primaryDisabled = true;
-                      let primaryOnClick = null;
-
-                      if (lockedApps.length === 1) {
-                        const target = lockedApps[0];
-                        primaryLabel = "Unlock";
-                        primaryDisabled = false;
-                        primaryOnClick = async () => {
-                          const ok = await confirm({
-                            title: "Unlock system?",
-                            content: `This clears ${
-                              target === "pos"
-                                ? "Cashier-POS"
-                                : target === "backoffice"
-                                ? "Backoffice"
-                                : target
-                            } lock and failed attempts.`,
-                            confirmLabel: "Unlock",
-                          });
-                          if (!ok) return;
-
-                          try {
-                            await unlockUser(form.employeeId, { app: target });
-                            setRows((prev) =>
-                              prev.map((r) =>
-                                String(r.employeeId) === String(form.employeeId)
-                                  ? {
-                                      ...r,
-                                      failedLoginCount: 0,
-                                      lockUntil: null,
-                                      permanentLock: false,
-                                      lockStates: {
-                                        ...(r.lockStates || {}),
-                                        [target]: {
-                                          failedLoginCount: 0,
-                                          lockUntil: null,
-                                          permanentLock: 0,
-                                          lastFailedLogin: null,
-                                        },
-                                      },
-                                    }
-                                  : r
-                              )
-                            );
-                            alert.success("Unlock successful.");
-                          } catch (e) {
-                            alert.error(e?.message || "Failed to unlock.");
-                          }
+                        const isLockedState = (s) => {
+                          if (!s) return false;
+                          const perm = !!s.permanentLock;
+                          const temp = s.lockUntil ? new Date(s.lockUntil).getTime() > now : false;
+                          const fail = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                          return perm || temp || fail;
                         };
-                      } else if (lockedApps.length >= 2) {
-                        primaryLabel = "Unlock All";
-                        primaryDisabled = false;
-                        primaryOnClick = async () => {
-                          const ok = await confirm({
-                            title: "Unlock ALL systems?",
-                            content:
-                              "This clears locks and failed attempts for every system.",
-                            confirmLabel: "Unlock All",
-                          });
-                          if (!ok) return;
 
-                          try {
-                            await unlockUser(form.employeeId, { scope: "all" });
-                            setRows((prev) =>
-                              prev.map((r) =>
-                                String(r.employeeId) === String(form.employeeId)
-                                  ? {
-                                      ...r,
-                                      failedLoginCount: 0,
-                                      lockUntil: null,
-                                      permanentLock: false,
-                                      lockStates: Object.fromEntries(
-                                        Object.keys(r.lockStates || {}).map((k) => [
-                                          k,
-                                          {
+                        // Legacy/global (migration-only)
+                        const legacyTemp = row.lockUntil ? new Date(row.lockUntil).getTime() > now : false;
+                        const legacyPerm = !!row.permanentLock;
+                        const legacyFail = Number(row.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                        const legacyLocked = legacyTemp || legacyPerm || legacyFail;
+
+                        const userRole = form.role;
+
+                        const shouldShowApp = (appKey) => {
+                          if (userRole === "Cashier") return appKey !== "backoffice";
+                          if (userRole === "Admin") return appKey !== "pos";
+                          return true;
+                        };
+
+                        const rawEntries = Object.entries(row.lockStates || {});
+                        const entries = rawEntries.filter(([appKey]) => shouldShowApp(appKey));
+
+                        const lockedApps = entries
+                          .filter(([_, s]) => isLockedState(s))
+                          .map(([k]) => k);
+
+                        const showLegacy = rawEntries.length === 0 && legacyLocked;
+
+                        let primaryLabel = "All systems unlocked";
+                        let primaryDisabled = true;
+                        let primaryOnClick = null;
+
+                        if (lockedApps.length === 1) {
+                          const target = lockedApps[0];
+                          primaryLabel = "Unlock";
+                          primaryDisabled = false;
+                          primaryOnClick = async () => {
+                            const ok = await confirm({
+                              title: "Unlock system?",
+                              content: `This clears ${
+                                target === "pos" ? "Cashier-POS" : target === "backoffice" ? "Backoffice" : target
+                              } lock and failed attempts.`,
+                              confirmLabel: "Unlock",
+                            });
+                            if (!ok) return;
+
+                            try {
+                              await unlockUser(form.employeeId, { app: target });
+                              setRows((prev) =>
+                                prev.map((r) =>
+                                  String(r.employeeId) === String(form.employeeId)
+                                    ? {
+                                        ...r,
+                                        failedLoginCount: 0,
+                                        lockUntil: null,
+                                        permanentLock: false,
+                                        lockStates: {
+                                          ...(r.lockStates || {}),
+                                          [target]: {
                                             failedLoginCount: 0,
                                             lockUntil: null,
                                             permanentLock: 0,
                                             lastFailedLogin: null,
                                           },
-                                        ])
-                                      ),
-                                    }
-                                  : r
-                              )
-                            );
-                            alert.success("All systems unlocked.");
-                          } catch (e) {
-                            alert.error(e?.message || "Failed to unlock all.");
-                          }
+                                        },
+                                      }
+                                    : r
+                                )
+                              );
+                              alert.success("Unlock successful.");
+                            } catch (e) {
+                              alert.error(e?.message || "Failed to unlock.");
+                            }
+                          };
+                        } else if (lockedApps.length >= 2) {
+                          primaryLabel = "Unlock All";
+                          primaryDisabled = false;
+                          primaryOnClick = async () => {
+                            const ok = await confirm({
+                              title: "Unlock ALL systems?",
+                              content: "This clears locks and failed attempts for every system.",
+                              confirmLabel: "Unlock All",
+                            });
+                            if (!ok) return;
+
+                            try {
+                              await unlockUser(form.employeeId, { scope: "all" });
+                              setRows((prev) =>
+                                prev.map((r) =>
+                                  String(r.employeeId) === String(form.employeeId)
+                                    ? {
+                                        ...r,
+                                        failedLoginCount: 0,
+                                        lockUntil: null,
+                                        permanentLock: false,
+                                        lockStates: Object.fromEntries(
+                                          Object.keys(r.lockStates || {}).map((k) => [
+                                            k,
+                                            { failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null },
+                                          ])
+                                        ),
+                                      }
+                                    : r
+                                )
+                              );
+                              alert.success("All systems unlocked.");
+                            } catch (e) {
+                              alert.error(e?.message || "Failed to unlock all.");
+                            }
+                          };
+                        } else if (showLegacy) {
+                          primaryLabel = "Unlock";
+                          primaryDisabled = false;
+                          primaryOnClick = async () => {
+                            const ok = await confirm({
+                              title: "Unlock (legacy)?",
+                              content: "This clears legacy/global locks and failed attempts.",
+                              confirmLabel: "Unlock",
+                            });
+                            if (!ok) return;
+
+                            try {
+                              await unlockUser(form.employeeId, {});
+                              setRows((prev) =>
+                                prev.map((r) =>
+                                  String(r.employeeId) === String(form.employeeId)
+                                    ? { ...r, failedLoginCount: 0, lockUntil: null, permanentLock: false }
+                                    : r
+                                )
+                              );
+                              alert.success("Unlock successful.");
+                            } catch (e) {
+                              alert.error(e?.message || "Failed to unlock.");
+                            }
+                          };
+                        }
+
+                        const labelFor = (key) => {
+                          if (key === "pos") return "Cashier-POS";
+                          if (key === "backoffice") return "Backoffice";
+                          return key.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
                         };
-                      } else if (showLegacy) {
-                        primaryLabel = "Unlock";
-                        primaryDisabled = false;
-                        primaryOnClick = async () => {
-                          const ok = await confirm({
-                            title: "Unlock (legacy)?",
-                            content: "This clears legacy/global locks and failed attempts.",
-                            confirmLabel: "Unlock",
-                          });
-                          if (!ok) return;
 
-                          try {
-                            await unlockUser(form.employeeId, {}); // backend clears legacy without app/scope
-                            setRows((prev) =>
-                              prev.map((r) =>
-                                String(r.employeeId) === String(form.employeeId)
-                                  ? {
-                                      ...r,
-                                      failedLoginCount: 0,
-                                      lockUntil: null,
-                                      permanentLock: false,
-                                    }
-                                  : r
-                              )
-                            );
-                            alert.success("Unlock successful.");
-                          } catch (e) {
-                            alert.error(e?.message || "Failed to unlock.");
-                          }
-                        };
-                      }
-
-                      const labelFor = (key) => {
-                        if (key === "pos") return "Cashier-POS";
-                        if (key === "backoffice") return "Backoffice";
-                        return key
-                          .replace(/[-_]/g, " ")
-                          .replace(/\b\w/g, (c) => c.toUpperCase());
-                      };
-
-                      return (
-                        <>
-                          {/* Smart primary action */}
-                          <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
-                            <Button
-                              variant="contained"
-                              color={primaryDisabled ? "inherit" : "warning"}
-                              size="small"
-                              disabled={primaryDisabled}
-                              onClick={primaryOnClick}
+                        return (
+                          <>
+                            {/* ✅ Header row: title left, action/status right (SAME ROW) */}
+                            <Stack
+                              direction="row"
+                              alignItems="center"
+                              spacing={1}
+                              sx={{ mb: 1 }}
                             >
-                              {primaryLabel}
-                            </Button>
-                          </Stack>
+                              <Typography variant="subtitle2">
+                                Security &amp; Lock
+                              </Typography>
 
-                          {/* Per-system rows (compact, 2-up per row) */}
-                          {entries.length ? (
-                            <Paper variant="outlined" sx={{ p: 1, mb: 1 }}>
-                              <Grid container spacing={1} alignItems="stretch">
+                              {primaryDisabled ? (
+                                <Chip
+                                  size="small"
+                                  label="All systems unlocked"
+                                  variant="filled"
+                                  sx={(t) => ({
+                                    bgcolor: t.palette.action.disabledBackground,
+                                    color: t.palette.text.secondary,
+                                    fontWeight: 600,
+                                  })}
+                                />
+                              ) : (
+                                <Button
+                                  variant="contained"
+                                  color="warning"
+                                  size="small"
+                                  onClick={primaryOnClick}
+                                  sx={{ flexShrink: 0 }}
+                                >
+                                  {primaryLabel}
+                                </Button>
+                              )}
+                            </Stack>
+
+                            {/* ✅ Flat list: NO outer Paper wrapper (removes “box inside box”) */}
+                            {entries.length ? (
+                              <Stack spacing={1}>
                                 {entries.map(([appKey, s]) => {
-                                  const untilMs = s.lockUntil
-                                    ? new Date(s.lockUntil).getTime()
-                                    : 0;
+                                  const untilMs = s.lockUntil ? new Date(s.lockUntil).getTime() : 0;
                                   const tempLocked = untilMs > now;
                                   const permLocked = !!s.permanentLock;
-                                  const failLocked =
-                                    Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
+                                  const failLocked = Number(s.failedLoginCount || 0) >= LOCK_THRESHOLD;
                                   const locked = permLocked || tempLocked || failLocked;
 
                                   return (
-                                    <Grid key={appKey} size={{ xs: 12, sm: 6 }}>
-                                      <Box
-                                        sx={{
-                                          p: 1,
-                                          height: "100%",
-                                          borderRadius: 1,
-                                          border: "1px solid",
-                                          borderColor: "divider",
-                                        }}
-                                      >
-                                        <Stack
-                                          direction="row"
-                                          alignItems="center"
-                                          spacing={1}
-                                          flexWrap="wrap"
-                                        >
-                                          <Typography
-                                            variant="body2"
-                                            sx={{ fontWeight: 600, mr: 1 }}
-                                          >
-                                            {labelFor(appKey)}
-                                          </Typography>
+                                    <Paper
+                                      key={appKey}
+                                      variant="outlined"
+                                      sx={{
+                                        p: 1,
+                                        borderRadius: 1,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 1,
+                                        flexWrap: "wrap",
+                                      }}
+                                    >
+                                      <Typography variant="body2" sx={{ fontWeight: 600, mr: 0.5 }}>
+                                        {labelFor(appKey)}
+                                      </Typography>
 
-                                          <Chip
-                                            size="small"
-                                            label={
-                                              permLocked
-                                                ? "PERMANENT LOCK"
-                                                : tempLocked
-                                                ? "TEMP LOCKED"
-                                                : failLocked
-                                                ? "FAILED LOCK"
-                                                : "UNLOCKED"
-                                            }
-                                            color={locked ? "error" : "success"}
-                                            variant={locked ? "filled" : "outlined"}
-                                          />
-                                          <Chip
-                                            size="small"
-                                            variant="outlined"
-                                            label={`Failed: ${s.failedLoginCount ?? 0}`}
-                                          />
+                                      <Chip
+                                        size="small"
+                                        label={
+                                          permLocked
+                                            ? "PERMANENT LOCK"
+                                            : tempLocked
+                                            ? "TEMP LOCKED"
+                                            : failLocked
+                                            ? "FAILED LOCK"
+                                            : "UNLOCKED"
+                                        }
+                                        color={locked ? "error" : "success"}
+                                        variant={locked ? "filled" : "outlined"}
+                                      />
 
-                                          {tempLocked && (
-                                            <Typography
-                                              variant="body2"
-                                              color="text.secondary"
-                                              sx={{ ml: 1 }}
-                                            >
-                                              until {new Date(untilMs).toLocaleString()}
-                                            </Typography>
-                                          )}
+                                      <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        label={`Failed: ${s.failedLoginCount ?? 0}`}
+                                      />
 
-                                          <Box sx={{ flex: 1 }} />
-                                        </Stack>
-                                      </Box>
-                                    </Grid>
+                                      {tempLocked && (
+                                        <Typography variant="body2" color="text.secondary" sx={{ ml: 0.5 }}>
+                                          until {new Date(untilMs).toLocaleString()}
+                                        </Typography>
+                                      )}
+                                    </Paper>
                                   );
                                 })}
-                              </Grid>
-                            </Paper>
-                          ) : (
-                            <Typography variant="body2" color="text.secondary">
-                              No per-system lock states found.
-                            </Typography>
-                          )}
-
-                          {/* Legacy row only in migration edge-case (and only when locked) */}
-                          {showLegacy && (
-                            <Paper variant="outlined" sx={{ p: 1, mt: 1 }}>
-                              <Stack
-                                direction="row"
-                                alignItems="center"
-                                spacing={1}
-                                flexWrap="wrap"
-                              >
-                                <Typography
-                                  variant="body2"
-                                  sx={{ fontWeight: 600, mr: 1 }}
-                                >
-                                  Legacy/Global
-                                </Typography>
-                                <Chip
-                                  size="small"
-                                  label="LOCKED"
-                                  color="error"
-                                  variant="filled"
-                                />
-                                {legacyTemp && (
-                                  <Typography
-                                    variant="body2"
-                                    color="text.secondary"
-                                    sx={{ ml: 1 }}
-                                  >
-                                    until {new Date(row.lockUntil).toLocaleString()}
-                                  </Typography>
-                                )}
                               </Stack>
-                            </Paper>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </Grid>
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">
+                                No per-system lock states found.
+                              </Typography>
+                            )}
+
+                            {/* Legacy stays as-is (optional: you can also flatten it the same style) */}
+                            {showLegacy && (
+                              <Paper variant="outlined" sx={{ p: 1, mt: 1 }}>
+                                <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
+                                  <Typography variant="body2" sx={{ fontWeight: 600, mr: 1 }}>
+                                    Legacy/Global
+                                  </Typography>
+                                  <Chip size="small" label="LOCKED" color="error" variant="filled" />
+                                  {legacyTemp && (
+                                    <Typography variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                                      until {new Date(row.lockUntil).toLocaleString()}
+                                    </Typography>
+                                  )}
+                                </Stack>
+                              </Paper>
+                            )}
+                          </>
+                        );
+
+                      })()}
+                    </Grid>
+                  )}
                 </Grid>
               </>
             )}
@@ -2120,6 +2082,21 @@ export default function UserManagementPage() {
               Save these details. The ticket is shown once. If lost, generate a new one later.
             </Typography>
 
+            {/* Enabled login IDs hint */}
+            <Typography variant="caption" color="text.secondary">
+              Login ID(s) enabled:{" "}
+              {[
+                createResult?.loginVia?.employeeId ? "Employee ID" : null,
+                createResult?.loginVia?.username ? "Username" : null,
+                // Email is always required on your form; backend may also allow it as alias.
+                // If you track loginVia.email, show it. Otherwise assume it can be used.
+                createResult?.loginVia?.email ? "Email" : "Email",
+              ]
+                .filter(Boolean)
+                .join(", ")}
+            </Typography>
+
+            {/* 3 login identifiers */}
             <TextField
               size="small"
               label="Employee ID"
@@ -2128,15 +2105,24 @@ export default function UserManagementPage() {
               fullWidth
             />
 
-            {!!createResult?.username && (
-              <TextField
-                size="small"
-                label="Username"
-                value={createResult.username}
-                InputProps={{ readOnly: true }}
-                fullWidth
-              />
-            )}
+            <TextField
+              size="small"
+              label="Username"
+              value={createResult?.username || "—"}
+              InputProps={{ readOnly: true }}
+              helperText={!createResult?.username ? "Not set (optional)" : undefined}
+              fullWidth
+            />
+
+            <TextField
+              size="small"
+              label="Email"
+              value={createResult?.email || ""}
+              InputProps={{ readOnly: true }}
+              fullWidth
+            />
+
+            <Divider sx={{ my: 0.5 }} />
 
             <TextField
               size="small"
@@ -2146,20 +2132,49 @@ export default function UserManagementPage() {
               fullWidth
             />
 
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(createResult?.ticket?.token || "");
-                  alert.success("Copied ticket.");
-                } catch {
-                  alert.error("Copy failed.");
-                }
-              }}
-            >
-              Copy Ticket
-            </Button>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={async () => {
+                  try {
+                    const exp = createResult?.ticket?.expiresAt
+                      ? new Date(createResult.ticket.expiresAt).toLocaleString()
+                      : "—";
+
+                    const text =
+                      `New Cashier Account\n` +
+                      `Employee ID: ${createResult?.employeeId || ""}\n` +
+                      `Username: ${createResult?.username || "—"}\n` +
+                      `Email: ${createResult?.email || ""}\n` +
+                      `Setup Ticket (NEW POS PIN): ${createResult?.ticket?.token || ""}\n` +
+                      `Expires: ${exp}\n`;
+
+                    await navigator.clipboard.writeText(text);
+                    alert.success("Copied account details.");
+                  } catch {
+                    alert.error("Copy failed.");
+                  }
+                }}
+              >
+                Copy All
+              </Button>
+
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(createResult?.ticket?.token || "");
+                    alert.success("Copied ticket.");
+                  } catch {
+                    alert.error("Copy failed.");
+                  }
+                }}
+              >
+                Copy Ticket Only
+              </Button>
+            </Stack>
 
             <Typography variant="caption" color="text.secondary">
               Expires:{" "}
@@ -2171,10 +2186,7 @@ export default function UserManagementPage() {
         </DialogContent>
 
         <DialogActions>
-          <Button
-            variant="contained"
-            onClick={() => setCreateResult(null)}
-          >
+          <Button variant="contained" onClick={() => setCreateResult(null)}>
             Confirm & Close
           </Button>
         </DialogActions>
@@ -2183,7 +2195,13 @@ export default function UserManagementPage() {
       {/* ===== Reset Ticket (POS PIN) dialog ===== */}
       <Dialog
         open={rtOpen}
-        onClose={() => setRtOpen(false)}
+        onClose={() => {
+          setRtOpen(false);
+          setRtError("");
+          setRtChecking(false);
+          setRtGenerating(false);
+          setRtData(null); // ✅ reset snapshot so next open is clean
+        }}
         maxWidth="xs"
         fullWidth
         disableAutoFocus
@@ -2193,9 +2211,16 @@ export default function UserManagementPage() {
       >
         <DialogTitle sx={{ pb: 0.5 }}>Reset Ticket (POS PIN)</DialogTitle>
 
-        <DialogContent dividers sx={{ overflowY: "auto", overscrollBehaviorY: "contain" }}>
+        <DialogContent
+          dividers
+          sx={{
+            overflowY: "auto",
+            overscrollBehaviorY: "contain",
+            ...rtTypographySx,
+          }}
+        >
           <Stack spacing={1.5}>
-            <Typography variant="body2" color="text.secondary">
+            <Typography className="rt-desc" color="text.secondary">
               This generates a <b>one-time ticket</b>. Give it to the cashier so they can create a new PIN.
             </Typography>
 
@@ -2214,29 +2239,50 @@ export default function UserManagementPage() {
               </Stack>
             )}
 
-            <Paper variant="outlined" sx={{ p: 1 }}>
+            <Paper variant="outlined" sx={{ p: 1.25 }}>
               <Stack spacing={1}>
                 {/* Always show who this ticket is for */}
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {form.employeeId} — {form.firstName} {form.lastName}
-                </Typography>
+                <Box>
+                  <Typography className="rt-name">
+                    {form.firstName} {form.lastName}
+                  </Typography>
+
+                  <Stack spacing={0.35} sx={{ mt: 0.75 }}>
+                    <Typography className="rt-meta" color="text.secondary">
+                      Employee ID: <b>{form.employeeId}</b>
+                    </Typography>
+
+                    <Typography className="rt-meta" color="text.secondary">
+                      Username: <b>{form.username?.trim() ? form.username : "—"}</b>
+                    </Typography>
+
+                    <Typography className="rt-meta" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                      Email: <b>{form.email || "—"}</b>
+                    </Typography>
+                  </Stack>
+                  <Divider sx={{ my: 1 }} />  
+                </Box>
 
                 {/* ✅ If no ticket yet */}
                 {rtData?.__metaOnly ? (
                   <>
-                    <Chip size="small" color="warning" label="Active ticket exists" />
+                    <Chip
+                      size="small"
+                      color={isTicketActive(rtData) ? "warning" : "default"}
+                      label={isTicketActive(rtData) ? "Active ticket exists" : "Expired ticket found"}
+                    />
 
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography className="rt-note" variant="body2" color="text.secondary">
                       Expires: {rtData.expiresAt ? new Date(rtData.expiresAt).toLocaleString() : "—"}
                     </Typography>
 
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography className="rt-note" variant="body2" color="text.secondary">
                       The ticket code is shown only once at creation time. To get a new code, generate again
                       (this revokes the current one).
                     </Typography>
 
                     {/* ✅ ADD THIS: revoke even when token is not visible */}
-                    {!!rtData.requestId && (
+                    {hasExistingPin && isTicketActive(rtData) && !!rtData.requestId && (
                       <Stack direction="row" spacing={1} flexWrap="wrap">
                         <Button
                           size="small"
@@ -2252,14 +2298,25 @@ export default function UserManagementPage() {
                   </>
                 ) : rtData ? (
                   <>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography className="rt-label" color="text.secondary">
                       Ticket Code
                     </Typography>
 
                     <TextField
                       size="small"
                       value={rtData.token || ""}
-                      InputProps={{ readOnly: true }}
+                      InputProps={{
+                        readOnly: true,
+                        sx: {
+                          "& input": {
+                            fontSize: 18,
+                            fontWeight: 800,
+                            letterSpacing: 1.2,
+                            textAlign: "center",
+                            py: 1.1, // taller input
+                          },
+                        },
+                      }}
                       fullWidth
                     />
 
@@ -2279,7 +2336,7 @@ export default function UserManagementPage() {
                         Copy
                       </Button>
 
-                      {!!rtData.requestId && (
+                      {isTicketActive(rtData) && !!rtData.requestId && (
                         <Button
                           size="small"
                           color="error"
@@ -2292,16 +2349,16 @@ export default function UserManagementPage() {
                       )}
                     </Stack>
 
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography className="rt-note" variant="body2" color="text.secondary">
                       Expires: {rtData.expiresAt ? new Date(rtData.expiresAt).toLocaleString() : "—"}
                     </Typography>
 
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography className="rt-note" variant="body2" color="text.secondary">
                       Token is shown once. If lost, generate again.
                     </Typography>
                   </>
                 ) : (
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography className="rt-note" variant="body2" color="text.secondary">
                     Token will be shown once. If lost, generate again.
                   </Typography>
                 )}

@@ -1,4 +1,4 @@
-// Frontend/src/pages/Settings/Categories/Categories.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/Settings/Categories/Categories.jsx
 import { useState } from "react";
 import {
   Box,

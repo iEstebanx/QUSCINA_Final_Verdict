@@ -1,4 +1,4 @@
-// Backoffice/Backend/src/routes/Users/users.js
+// QUSCINA_BACKOFFICE/Backend/src/routes/Users/users.js
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { requireAuth } = require("../../auth/requireAuth");
