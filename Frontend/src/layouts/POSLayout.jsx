@@ -77,10 +77,12 @@ export default function POSLayout() {
             flexGrow: 1,
             display: "flex",
             boxSizing: "border-box",
-            pt: `${APPBAR_HEIGHT}px`,
-            // 👇 NEW: lock height to viewport minus header
-            height: `calc(100vh - ${APPBAR_HEIGHT}px)`,
-            overflow: "hidden",           // 👈 prevent main from scrolling; children will
+
+            // ✅ Main truly fills the viewport
+            height: "100vh",
+            overflow: "hidden",
+
+            // ✅ keep your sidebar offset
             ml: {
               xs: 0,
               sm: isFullScreenPos
@@ -90,36 +92,31 @@ export default function POSLayout() {
                 : `${SIDEBAR_WIDTH}px`,
             },
           }}
-          onClick={() => {
-            if (isMobile && mobileOpen) setMobileOpen(false);
-          }}
         >
-          {/* Left: page content (Menu, Orders, Refund, etc.) */}
+          {/* ✅ content area that sits under the header */}
           <Box
             sx={{
+              display: "flex",
               flex: 1,
               minWidth: 0,
-              display: "flex",
-              flexDirection: "column",
               minHeight: 0,
+              pt: `${APPBAR_HEIGHT}px`,
             }}
           >
-            <Outlet />
-          </Box>
-
-          {/* Right: Cart — hidden on charge + orders + refund */}
-          {!hideCart && (
-            <Box
-              sx={{
-                width: 360,
-                flexShrink: 0,
-                display: { xs: "none", sm: "block" },
-              }}
-            >
-              <Cart />
+            {/* Left */}
+            <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <Outlet />
             </Box>
-          )}
+
+            {/* Right */}
+            {!hideCart && (
+              <Box sx={{ width: 360, flexShrink: 0, display: { xs: "none", sm: "block" } }}>
+                <Cart />
+              </Box>
+            )}
+          </Box>
         </Box>
+
       </Box>
     </CartProvider>
   );

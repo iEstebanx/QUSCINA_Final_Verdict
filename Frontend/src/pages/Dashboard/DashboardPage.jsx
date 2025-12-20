@@ -1,4 +1,4 @@
-// Backoffice/Frontend/src/pages/Dashboard/DashboardPage.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/pages/Dashboard/DashboardPage.jsx
 import { useState, useEffect } from "react";
 import {
   Box,
@@ -71,52 +71,52 @@ const formatDateTime = (iso) => {
   }
 };
 
-// Quick Stats Component
+// Quick Stats Component (responsive: row on desktop, wrap on small screens)
 const QuickStats = ({ metrics }) => (
-  <Grid container spacing={2} sx={{ mb: 2 }}>
-    {/* Total Sales */}
-    <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: "center", p: 1 }}>
-        <CardContent>
-          <Typography variant="h6" fontWeight="bold" color="primary">
-            {peso(metrics.totalSales)}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Total Sales
-          </Typography>
-        </CardContent>
-      </Card>
-    </Grid>
+  <Stack
+    direction="row"
+    spacing={1.5}
+    useFlexGap
+    flexWrap="wrap"
+    justifyContent={{ xs: "flex-start", lg: "flex-end" }}
+    alignItems="stretch"
+    sx={{ height: "100%" }}
+  >
+    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 140, flex: "1 1 140px" }}>
+      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+        <Typography variant="h6" fontWeight="bold" color="primary">
+          {peso(metrics.totalSales)}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          Total Sales
+        </Typography>
+      </CardContent>
+    </Card>
 
-    {/* Total Orders */}
-    <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: "center", p: 1 }}>
-        <CardContent>
-          <Typography variant="h6" fontWeight="bold" color="secondary">
-            {metrics.totalOrders}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Total Orders
-          </Typography>
-        </CardContent>
-      </Card>
-    </Grid>
+    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 140, flex: "1 1 140px" }}>
+      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+        <Typography variant="h6" fontWeight="bold" color="secondary">
+          {metrics.totalOrders}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          Total Orders
+        </Typography>
+      </CardContent>
+    </Card>
 
-    {/* Total Accounts */}
-    <Grid item xs={6} sm={3}>
-      <Card sx={{ textAlign: "center", p: 1 }}>
-        <CardContent>
-          <Typography variant="h6" fontWeight="bold" color="info.main">
-            {metrics.customerCount}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Total User Accounts
-          </Typography>
-        </CardContent>
-      </Card>
-    </Grid>
-  </Grid>
+    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 160, flex: "1 1 160px" }}>
+      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+        <Typography variant="h6" fontWeight="bold" color="info.main">
+          {metrics.customerCount}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          Total User Accounts
+        </Typography>
+      </CardContent>
+    </Card>
+  </Stack>
 );
+
 
 export default function DashboardPage() {
   const theme = useTheme();
@@ -326,70 +326,83 @@ export default function DashboardPage() {
 
   return (
     <Box p={2}>
-      {/* Date Range Controls */}
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Stack
-          direction="row"
-          useFlexGap
-          alignItems="center"
-          flexWrap="wrap"
-          rowGap={1.5}
-          columnGap={2}
-        >
-          <FormControl size="small" sx={{ minWidth: 160 }}>
-            <InputLabel id="range-label">Range</InputLabel>
-            <Select
-              labelId="range-label"
-              value={range}
-              label="Range"
+      {/* Top row: Date controls (left) + quick stats (right on large screens) */}
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", lg: "minmax(0, 1fr) auto" },
+          gap: 2,
+          alignItems: "stretch",
+          mb: 2,
+        }}
+      >
+        {/* Date Range Controls (left) */}
+        <Paper sx={{ p: 2 }}>
+          <Stack
+            direction="row"
+            useFlexGap
+            alignItems="center"
+            flexWrap="wrap"
+            rowGap={1.5}
+            columnGap={2}
+          >
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel id="range-label">Range</InputLabel>
+              <Select
+                labelId="range-label"
+                value={range}
+                label="Range"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setRange(value);
+                  if (value !== "custom") {
+                    setCustomFrom("");
+                    setCustomTo("");
+                  }
+                }}
+              >
+                <MenuItem value="days">Day</MenuItem>
+                <MenuItem value="weeks">Week</MenuItem>
+                <MenuItem value="monthly">Monthly</MenuItem>
+                <MenuItem value="quarterly">Quarterly</MenuItem>
+                <MenuItem value="yearly">Yearly</MenuItem>
+                <MenuItem value="custom">Custom</MenuItem>
+              </Select>
+            </FormControl>
+
+            <TextField
+              size="small"
+              type="date"
+              label="From"
+              value={customFrom}
               onChange={(e) => {
                 const value = e.target.value;
-                setRange(value);
-                if (value !== "custom") {
-                  setCustomFrom("");
-                  setCustomTo("");
-                }
+                if (range !== "custom") setRange("custom");
+                setCustomFrom(value);
               }}
-            >
-              <MenuItem value="days">Day</MenuItem>
-              <MenuItem value="weeks">Week</MenuItem>
-              <MenuItem value="monthly">Monthly</MenuItem>
-              <MenuItem value="quarterly">Quarterly</MenuItem>
-              <MenuItem value="yearly">Yearly</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
-            </Select>
-          </FormControl>
+              InputLabelProps={{ shrink: true }}
+            />
 
-          <TextField
-            size="small"
-            type="date"
-            label="From"
-            value={customFrom}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (range !== "custom") setRange("custom");
-              setCustomFrom(value);
-            }}
-            InputLabelProps={{ shrink: true }}
-          />
+            <TextField
+              size="small"
+              type="date"
+              label="To"
+              value={customTo}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (range !== "custom") setRange("custom");
+                setCustomTo(value);
+              }}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Stack>
+        </Paper>
 
-          <TextField
-            size="small"
-            type="date"
-            label="To"
-            value={customTo}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (range !== "custom") setRange("custom");
-              setCustomTo(value);
-            }}
-            InputLabelProps={{ shrink: true }}
-          />
-        </Stack>
-      </Paper>
-
-      {/* Quick Stats */}
-      <QuickStats metrics={metricsWithAccounts} />
+        {/* Quick Stats (right on lg+, wraps below on small screens) */}
+        <Box sx={{ display: "flex", alignItems: "stretch" }}>
+          <QuickStats metrics={metricsWithAccounts} />
+        </Box>
+      </Box>
 
       <Box
         sx={{
