@@ -38,6 +38,8 @@ import { alpha } from "@mui/material/styles";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import SearchIcon from "@mui/icons-material/Search";
 import { useAlert } from "@/context/Snackbar/AlertContext";
+import { useSearchParams } from "react-router-dom";
+
 
 /** Validation must mirror backend */
 const NAME_MAX = 60;
@@ -122,7 +124,6 @@ const formatStockInline = (qty, unit) => {
 };
 
 const NOW = () => new Date().toISOString();
-const todayDate = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
 const ING_API = "/api/inventory/ingredients";
 const INV_ACTIVITY_API = "/api/inventory/inv-activity";
@@ -156,6 +157,9 @@ export default function InventoryPage() {
 
   const [ingredients, setIngredients] = useState([]);
   const [categories, setCategories] = useState([]);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  
   const [activity, setActivity] = useState([]);
 
   const [stockFilter, setStockFilter] = useState("all"); // "all" | "low" | "out"
@@ -169,13 +173,9 @@ export default function InventoryPage() {
   const [deleting, setDeleting] = useState(false);
 
   const addTouchedRef = useRef(false);
-  const stockTouchedRef = useRef(false);
 
   const markAddTouched = () => {
     if (!addTouchedRef.current) addTouchedRef.current = true;
-  };
-  const markStockTouched = () => {
-    if (!stockTouchedRef.current) stockTouchedRef.current = true;
   };
 
   // Load categories
@@ -341,6 +341,15 @@ export default function InventoryPage() {
     const validIds = new Set(ingredients.map((ing) => ing.id));
     setSelected((prev) => prev.filter((id) => validIds.has(id)));
   }, [ingredients]);
+  
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+
+    if (tab === "low-stock") {
+      setStockFilter("low");
+      setPageState((s) => ({ ...s, page: 0 }));
+    }
+  }, [searchParams]);
 
   const convertStockByUnitChange = (value, from, to) => {
     const n = Number(value || 0);
@@ -628,10 +637,9 @@ const [stockForm, setStockForm] = useState({
   qty: "",
   current: 0,
   low: "",
-  date: todayDate(),
   reason: "",
 });
-const [initialStockForm, setInitialStockForm] = useState(null);
+const initialStockFormRef = useRef(null);
 const [stockFormChanged, setStockFormChanged] = useState(false);
 const [showStockConfirm, setShowStockConfirm] = useState(false);
 
@@ -660,25 +668,24 @@ const resetStockForm = () => {
     qty: "",
     current: 0,
     low: "",
-    date: todayDate(),
     reason: "",
   });
-  setInitialStockForm(null);
+  initialStockFormRef.current = null;
   setStockFormChanged(false);
   setShowStockConfirm(false);
 };
 
 const handleStockFormChange = (newForm) => {
-  if (!stockFormChanged && initialStockForm) {
-    const hasChanges = JSON.stringify(newForm) !== JSON.stringify(initialStockForm);
+  const base = initialStockFormRef.current;
+  if (!stockFormChanged && base) {
+    const hasChanges = JSON.stringify(newForm) !== JSON.stringify(base);
     if (hasChanges) setStockFormChanged(true);
   }
 };
 
 const handleStockClose = () => {
-  if (stockFormChanged || stockTouchedRef.current) {
-    setShowStockConfirm(true);
-  } else {
+  if (stockFormChanged) setShowStockConfirm(true);
+  else {
     setOpenStock(false);
     resetStockForm();
   }
@@ -695,14 +702,12 @@ const handleRowClick = (ing) => {
     qty: "",
     current: Number(ing.currentStock || 0),
     low: ing.lowStock ?? "",
-    date: todayDate(),
     reason: "",
   };
   setStockForm(newForm);
-  setInitialStockForm(newForm);
+  initialStockFormRef.current = newForm;
   setStockFormChanged(false);
   setShowStockConfirm(false);
-  stockTouchedRef.current = false;
   setOpenStock(true);
 };
 
@@ -796,7 +801,6 @@ const [editForm, setEditForm] = useState({
   name: "",
   category: "",
   type: DEFAULT_UNIT,
-  currentStock: 0,
   lowStock: 0,
 });
 
@@ -821,7 +825,6 @@ const openEditDialog = (ing) => {
     name: ing.name || "",
     category: ing.category || "",
     type: ing.type || DEFAULT_UNIT,
-    currentStock: Number(ing.currentStock || 0),
     lowStock: Number(ing.lowStock || 0),
   };
   setEditForm(form);
@@ -962,6 +965,10 @@ const handleResetFilters = () => {
   setCategoryFilter("all");
   setStockFilter("all");
   setQuery("");
+
+  const next = new URLSearchParams(searchParams);
+  next.delete("tab");
+  setSearchParams(next, { replace: true });
 };
 
   return (
@@ -1058,7 +1065,16 @@ const handleResetFilters = () => {
                 id="stock-alert"
                 value={stockFilter}
                 label="Stock alert"
-                onChange={(e) => setStockFilter(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setStockFilter(v);
+
+                  // sync URL
+                  const next = new URLSearchParams(searchParams);
+                  if (v === "low") next.set("tab", "low-stock");
+                  else next.delete("tab");
+                  setSearchParams(next, { replace: true });
+                }}
               >
                 <MenuItem value="all">All items</MenuItem>
                 <MenuItem value="low">Low stock</MenuItem>
@@ -1549,10 +1565,7 @@ const handleResetFilters = () => {
           </Stack>
         </DialogTitle>
         <Divider />
-        <DialogContent
-          onInputCapture={markStockTouched}
-          onChangeCapture={markStockTouched}
-        >
+        <DialogContent>
           <Stack spacing={2}>
             <ToggleButtonGroup
               value={stockForm.direction}
@@ -1578,6 +1591,7 @@ const handleResetFilters = () => {
                 label="Ingredient"
                 value={stockForm.name || ""}
                 InputProps={{ readOnly: true }}
+                sx={readOnlySx}
               />
 
               <TextField
@@ -1585,6 +1599,7 @@ const handleResetFilters = () => {
                 label="Category"
                 value={stockForm.cat || ""}
                 InputProps={{ readOnly: true }}
+                sx={readOnlySx}
               />
 
               <TextField
@@ -1592,6 +1607,7 @@ const handleResetFilters = () => {
                 label="Unit"
                 value={UNIT_LABEL_MAP[stockForm.type] || stockForm.type}
                 InputProps={{ readOnly: true }}
+                sx={readOnlySx}
               />
             </Stack>
 
@@ -1658,6 +1674,7 @@ const handleResetFilters = () => {
                   stockForm.type
                 )}
                 InputProps={{ readOnly: true }}
+                sx={readOnlySx}
                 fullWidth
               />
             </Stack>
@@ -1678,21 +1695,6 @@ const handleResetFilters = () => {
                   handleStockFormChange(newForm);
                 }}
                 fullWidth
-              />
-            </Stack>
-
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={2}
-            >
-              <TextField
-                label="Date"
-                type="date"
-                value={stockForm.date}
-                fullWidth
-                InputLabelProps={{ shrink: true }}
-                InputProps={{ readOnly: true }}
-                disabled
               />
             </Stack>
           </Stack>
@@ -1879,31 +1881,43 @@ const handleResetFilters = () => {
           onChangeCapture={() => setEditTouched(true)}
         >
           <Stack spacing={2} mt={1}>
-            <TextField
-              label="Name"
-              value={editForm.name}
-              onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
-              fullWidth
-              error={editForm.name.trim().length > 0 && !isValidName(normalize(editForm.name))}
-              helperText={
-                editForm.name
-                  ? `${normalize(editForm.name).length}/${NAME_MAX}${
-                      !isValidName(normalize(editForm.name))
-                        ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
-                        : ""
-                    }`
-                  : `Max ${NAME_MAX} chars`
-              }
-            />
-
+            {/* Row 1: Name | Category */}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <FormControl fullWidth required error={editTouched && !normalize(editForm.category)}>
+              <TextField
+                label="Name"
+                value={editForm.name}
+                onChange={(e) =>
+                  setEditForm((f) => ({ ...f, name: e.target.value }))
+                }
+                fullWidth
+                error={
+                  editForm.name.trim().length > 0 &&
+                  !isValidName(normalize(editForm.name))
+                }
+                helperText={
+                  editForm.name
+                    ? `${normalize(editForm.name).length}/${NAME_MAX}${
+                        !isValidName(normalize(editForm.name))
+                          ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
+                          : ""
+                      }`
+                    : `Max ${NAME_MAX} chars`
+                }
+              />
+
+              <FormControl
+                fullWidth
+                required
+                error={editTouched && !normalize(editForm.category)}
+              >
                 <InputLabel id="edit-cat-label">Categories</InputLabel>
                 <Select
                   labelId="edit-cat-label"
                   label="Categories"
                   value={editForm.category}
-                  onChange={(e) => setEditForm((f) => ({ ...f, category: e.target.value }))}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, category: e.target.value }))
+                  }
                   MenuProps={dropdownMenuProps}
                 >
                   <MenuItem value="" disabled>
@@ -1919,14 +1933,19 @@ const handleResetFilters = () => {
                   <FormHelperText>Category is required</FormHelperText>
                 )}
               </FormControl>
+            </Stack>
 
+            {/* Row 2: Unit | Low Stock */}
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <FormControl fullWidth required>
                 <InputLabel id="edit-unit-label">Unit</InputLabel>
                 <Select
                   labelId="edit-unit-label"
                   label="Unit"
                   value={editForm.type || DEFAULT_UNIT}
-                  onChange={(e) => setEditForm((f) => ({ ...f, type: e.target.value }))}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, type: e.target.value }))
+                  }
                 >
                   {UNIT_OPTIONS.map((u) => (
                     <MenuItem key={u.value} value={u.value}>
@@ -1935,16 +1954,7 @@ const handleResetFilters = () => {
                   ))}
                 </Select>
               </FormControl>
-            </Stack>
 
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <TextField
-                label="Current Stock"
-                value={formatStockInline(editForm.currentStock, editForm.type)}
-                InputProps={{ readOnly: true }}
-                sx={readOnlySx}
-                fullWidth
-              />
               <TextField
                 label="Low Stock"
                 type="number"
@@ -1954,7 +1964,7 @@ const handleResetFilters = () => {
                 }
                 fullWidth
                 InputProps={{ inputProps: { min: 0 } }}
-                helperText='Set 0 to disable low stock alert'
+                helperText="Set 0 to disable low stock alert"
               />
             </Stack>
           </Stack>
@@ -2003,7 +2013,6 @@ const handleResetFilters = () => {
                 name: "",
                 category: "",
                 type: DEFAULT_UNIT,
-                currentStock: 0,
                 lowStock: 0,
               });
               setInitialEditForm(null);

@@ -25,7 +25,6 @@ import {
   Avatar,
   Card,
   CardContent,
-  Grid,
 } from "@mui/material";
 import {
   Tooltip,
@@ -516,7 +515,7 @@ export default function DashboardPage() {
                 sx={{ mt: 1, alignSelf: "flex-end" }}
                 onClick={() => navigate("/users")}
               >
-                Manage Accounts
+                View All Accounts
               </Button>
             </Box>
           </Paper>
@@ -652,16 +651,24 @@ export default function DashboardPage() {
                       />
                       <ListItemText
                         primary={
-                          <Typography variant="body2" fontWeight="medium" noWrap>
-                            {item.name}
-                          </Typography>
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "baseline",
+                              gap: 1,
+                              minWidth: 0,
+                            }}
+                          >
+                            <Typography variant="body2" fontWeight="medium" noWrap sx={{ minWidth: 0 }}>
+                              {item.name}
+                            </Typography>
+
+                            <Typography variant="caption" color="text.secondary" noWrap>
+                              Current: {item.currentStock} | Minimum: {item.lowStock}
+                            </Typography>
+                          </Box>
                         }
-                        secondary={`Current: ${item.currentStock} | Min: ${item.lowStock}`}
-                        secondaryTypographyProps={{
-                          variant: "caption",
-                          color: "text.secondary",
-                          component: "span",
-                        }}
+                        sx={{ my: 0 }} // remove extra vertical margins
                       />
                       <Chip
                         label={item.alert === "critical" ? "Critical" : "Warning"}
@@ -691,7 +698,7 @@ export default function DashboardPage() {
                 fullWidth
                 sx={{ mt: 1 }}
                 onClick={() =>
-                  navigate("/settings/inventory?tab=low-stock")
+                  navigate("/inventory?tab=low-stock")
                 }
               >
                 View Low Stock
