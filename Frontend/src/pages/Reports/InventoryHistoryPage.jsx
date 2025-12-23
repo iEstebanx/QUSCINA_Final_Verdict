@@ -15,17 +15,23 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  RadioGroup,
-  Radio,
-  FormControlLabel,
 } from "@mui/material";
 
+import dayjs from "dayjs";
+import isoWeek from "dayjs/plugin/isoWeek";
+import quarterOfYear from "dayjs/plugin/quarterOfYear";
+
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
-import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 
 import SearchIcon from "@mui/icons-material/Search";
@@ -34,18 +40,51 @@ import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import logo from "@/assets/LOGO.png";
+import { useAuth } from "@/context/AuthContext";
+
+dayjs.extend(isoWeek);
+dayjs.extend(quarterOfYear);
 
 const ING_API = "/api/inventory/ingredients";
 const ACT_API = "/api/inventory/inv-activity";
 
+const comfyCells = {
+  "& .MuiTableCell-root": { py: 1.25, px: 2 },
+  "& thead .MuiTableCell-root": {
+    fontWeight: 700,
+    position: "sticky",
+    top: 0,
+    background: "background.paper",
+    zIndex: 1,
+  },
+};
+
 const formatNumber = (n) =>
   Number(n || 0).toLocaleString("en-PH", { maximumFractionDigits: 3 });
 
-const formatPhp = (n) =>
-  `₱${Number(n || 0).toLocaleString("en-PH", {
+const formatNumberMoney = (n) =>
+  Number(n || 0).toLocaleString("en-PH", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  })}`;
+  });
+
+const peso = (n) => `₱${formatNumberMoney(n)}`;
+
+// PDF-safe: jsPDF default fonts can't reliably render ₱
+const pdfMoney = (n) => `PHP ${formatNumberMoney(n)}`;
+
+const pdfSafeText = (v) => {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replaceAll("₱", "PHP ")
+    .replaceAll("±", "PHP ")
+    .replaceAll("¤", "PHP ")
+    .replaceAll("−", "-")
+    .replaceAll("–", "-")
+    .replaceAll("—", "-")
+    .replace(/\s+/g, " ")
+    .trim();
+};
 
 const formatDateTime = (iso) => {
   const d = new Date(iso);
@@ -64,50 +103,64 @@ const pdfHeadStyles = {
   fontStyle: "bold",
 };
 
-// helper for YYYY-MM-DD
-const dateToYMD = (d) => {
-  if (!d || Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
-
 export default function InventoryHistoryPage() {
+  const { user } = useAuth();
+
   const [ingredients, setIngredients] = useState([]);
   const [activity, setActivity] = useState([]);
+
   const [search, setSearch] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
 
-  // dialog state
-  const [pdfOpen, setPdfOpen] = useState(false);
-  const [pdfMode, setPdfMode] = useState("all");
-  const [pdfFrom, setPdfFrom] = useState(null);
-  const [pdfTo, setPdfTo] = useState(null);
+  // ✅ Same setup as ReportsPage: Range preset + Custom From/To (ISO)
+  const [range, setRange] = useState("days"); // days | weeks | monthly | quarterly | yearly | custom
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
+  // dialogs
   const [noDataOpen, setNoDataOpen] = useState(false);
   const [noDataMessage, setNoDataMessage] = useState("");
 
+  const preparedBy = useMemo(() => {
+    if (!user) return "Prepared by: N/A";
+    const loginId = user.employeeId || user.username || user.email || user.id || "";
+    const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+    if (loginId && fullName) return `Prepared by: ${loginId} - ${fullName}`;
+    if (loginId) return `Prepared by: ${loginId}`;
+    if (fullName) return `Prepared by: ${fullName}`;
+    return "Prepared by: N/A";
+  }, [user]);
+
   /* LOAD INGREDIENTS */
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       try {
         const res = await fetch(ING_API);
         const j = await res.json();
-        if (j.ok) setIngredients(j.ingredients);
+        if (!alive) return;
+        if (j?.ok) setIngredients(j.ingredients || []);
       } catch (e) {
         console.error("load ingredients failed:", e);
       }
     })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   /* LOAD INVENTORY ACTIVITY */
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       try {
         const res = await fetch(`${ACT_API}?limit=2000`);
         const j = await res.json();
-        if (!j.ok) return;
+        if (!alive) return;
+        if (!j?.ok) return;
 
         const rows = (j.rows || []).map((r) => ({
           ...r,
@@ -120,6 +173,10 @@ export default function InventoryHistoryPage() {
         console.error("load activity failed:", e);
       }
     })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   /* MERGE + COMPUTE */
@@ -164,36 +221,127 @@ export default function InventoryHistoryPage() {
     return result.slice().reverse();
   }, [activity, ingredients]);
 
-  // all YYYY-MM-DD dates that have at least one history row
-  const activeDateSet = useMemo(() => {
+  // Build “active days” from computedRows (for disabling calendar dates like ReportsPage)
+  const activeDaySet = useMemo(() => {
     const s = new Set();
     for (const r of computedRows) {
-      const d = new Date(r.ts);
-      s.add(dateToYMD(d));
+      const key = dayjs(r.ts).format("YYYY-MM-DD");
+      s.add(key);
     }
     return s;
   }, [computedRows]);
 
-  const isDateDisabled = (date) => {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return true;
-    // if somehow no history at all, don't lock the calendar completely
-    if (!activeDateSet.size) return false;
-    return !activeDateSet.has(dateToYMD(date));
+  const dateBounds = useMemo(() => {
+    if (!computedRows.length) return { min: "", max: "" };
+    let minTs = computedRows[0].ts;
+    let maxTs = computedRows[0].ts;
+    for (const r of computedRows) {
+      if (new Date(r.ts) < new Date(minTs)) minTs = r.ts;
+      if (new Date(r.ts) > new Date(maxTs)) maxTs = r.ts;
+    }
+    return {
+      min: dayjs(minTs).format("YYYY-MM-DD"),
+      max: dayjs(maxTs).format("YYYY-MM-DD"),
+    };
+  }, [computedRows]);
+
+  const ensureCustomRangeComplete = () => {
+    if (range === "custom" && (!customFrom || !customTo)) {
+      setNoDataMessage("Please select both From and To dates for custom range.");
+      setNoDataOpen(true);
+      return false;
+    }
+    return true;
   };
 
-  /* SEARCH */
+  const displayDate = (s) => (dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s);
+
+  const currentRangeLabel = useMemo(() => {
+    if (range === "custom") {
+      if (customFrom && customTo) {
+        return `${displayDate(customFrom)} – ${displayDate(customTo)}`;
+      }
+      return "Custom date range";
+    }
+
+    switch (range) {
+      case "days":
+        return "Today";
+      case "weeks":
+        return "This Week";
+      case "monthly":
+        return "This Month";
+      case "quarterly":
+        return "This Quarter";
+      case "yearly":
+        return "This Year";
+      default:
+        return "All";
+    }
+  }, [range, customFrom, customTo]);
+
+  const shouldDisableDate = (d) => {
+    if (!activeDaySet.size) return false;
+    const key = d.format("YYYY-MM-DD");
+    return !activeDaySet.has(key);
+  };
+
+  // Filter by range (same idea as ReportsPage)
+  const rangeFilteredRows = useMemo(() => {
+    if (!computedRows.length) return [];
+
+    const now = dayjs();
+    let from = null;
+    let to = null;
+
+    if (range === "custom") {
+      if (!customFrom || !customTo) return computedRows; // let UI show; export will block if incomplete
+      from = dayjs(customFrom).startOf("day");
+      to = dayjs(customTo).endOf("day");
+    } else if (range === "days") {
+      from = now.startOf("day");
+      to = now.endOf("day");
+    } else if (range === "weeks") {
+      // ISO week (Mon–Sun)
+      from = now.startOf("isoWeek");
+      to = now.endOf("isoWeek");
+    } else if (range === "monthly") {
+      from = now.startOf("month");
+      to = now.endOf("month");
+    } else if (range === "quarterly") {
+      from = now.startOf("quarter");
+      to = now.endOf("quarter");
+    } else if (range === "yearly") {
+      from = now.startOf("year");
+      to = now.endOf("year");
+    }
+
+    if (!from || !to) return computedRows;
+
+    return computedRows.filter((r) => {
+      const dt = dayjs(r.ts);
+      return dt.isAfter(from.subtract(1, "millisecond")) && dt.isBefore(to.add(1, "millisecond"));
+    });
+  }, [computedRows, range, customFrom, customTo]);
+
+  /* SEARCH (applies after range filter) */
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return computedRows;
+    if (!q) return rangeFilteredRows;
 
-    return computedRows.filter((row) => {
+    return rangeFilteredRows.filter((row) => {
       return (
         row.ingredientName.toLowerCase().includes(q) ||
         row.category.toLowerCase().includes(q) ||
         (row.reason || "").toLowerCase().includes(q)
       );
     });
-  }, [search, computedRows]);
+  }, [search, rangeFilteredRows]);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setPageState((p) => ({ ...p, page: 0 }));
+  }, [search, range, customFrom, customTo]);
 
   /* PAGINATION */
   const paged = useMemo(() => {
@@ -201,120 +349,17 @@ export default function InventoryHistoryPage() {
     return filtered.slice(start, start + pageState.rowsPerPage);
   }, [filtered, pageState]);
 
-  /* PDF EXPORT */
-  const handlePdfExport = async ({ mode = "all", from, to } = {}) => {
-    // base rows respect search
-    let baseRows = filtered;
-    let rangeLabel = "All records";
+  /* PDF EXPORT (exports current filters: range + custom + search) */
+  const buildInventoryPdf = async () => {
+    if (!ensureCustomRangeComplete()) return;
 
-    const now = new Date();
-    const todayYMD = dateToYMD(now);
+    const baseRows = filtered;
 
-    const startOfToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      0, 0, 0, 0
-    );
-    const endOfToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      23, 59, 59, 999
-    );
-
-    if (mode === "today") {
-      // 🔹 STRICT today only
-      baseRows = filtered.filter((r) => {
-        const dt = new Date(r.ts);
-        return dateToYMD(dt) === todayYMD;
-      });
-      rangeLabel = `${todayYMD} (Today)`;
-    } else if (mode === "week") {
-      const startOfWeek = new Date(startOfToday);
-      const day = startOfToday.getDay(); // 0 = Sun, 1 = Mon, ...
-      const mondayDiff = (day + 6) % 7; // convert so 0 = Mon
-      startOfWeek.setDate(startOfToday.getDate() - mondayDiff);
-
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 6);
-      endOfWeek.setHours(23, 59, 59, 999);
-
-      baseRows = filtered.filter((r) => {
-        const dt = new Date(r.ts);
-        return dt >= startOfWeek && dt <= endOfWeek;
-      });
-
-      rangeLabel = `${dateToYMD(startOfWeek)} to ${dateToYMD(
-        endOfWeek
-      )} (This Week)`;
-    } else if (mode === "month") {
-      const startOfMonth = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        1,
-        0, 0, 0, 0
-      );
-      const endOfMonth = new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0,
-        23, 59, 59, 999
-      );
-
-      baseRows = filtered.filter((r) => {
-        const dt = new Date(r.ts);
-        return dt >= startOfMonth && dt <= endOfMonth;
-      });
-
-      rangeLabel = `${dateToYMD(startOfMonth)} to ${dateToYMD(
-        endOfMonth
-      )} (This Month)`;
-    } else if (mode === "range" && from && to) {
-      const fromDate = new Date(from);
-      const toDate = new Date(to);
-      fromDate.setHours(0, 0, 0, 0);
-      toDate.setHours(23, 59, 59, 999);
-
-      baseRows = filtered.filter((r) => {
-        const dt = new Date(r.ts);
-        return dt >= fromDate && dt <= toDate;
-      });
-
-      const fromYMD = dateToYMD(fromDate);
-      const toYMD = dateToYMD(toDate);
-      rangeLabel = `${fromYMD} to ${toYMD}`;
-    } else {
-      // "all" → keep all filtered rows
-      rangeLabel = "All records (current search results)";
-    }
-
-    // ❗ if the chosen range has no data, DO NOT export everything
     if (!baseRows.length) {
-      let humanRange = "the selected range";
-      if (mode === "today") humanRange = "today";
-      else if (mode === "week") humanRange = "this week";
-      else if (mode === "month") humanRange = "this month";
-      else if (mode === "range") humanRange = "the selected date range";
-
-      setNoDataMessage(
-        `No inventory history found for ${humanRange}. There is nothing to export.`
-      );
+      setNoDataMessage(`No inventory history found for "${currentRangeLabel}". There is nothing to export.`);
       setNoDataOpen(true);
       return;
     }
-
-    const rows = baseRows.map((r) => [
-      formatDateTime(r.ts),
-      r.reason,
-      r.ingredientName,
-      r.category,
-      formatNumber(r.beginStock),
-      r.adjust >= 0 ? `+${formatNumber(r.adjust)}` : formatNumber(r.adjust),
-      formatNumber(r.endStock),
-      r.unit,
-      formatPhp(r.totalValue),
-    ]);
 
     const doc = new jsPDF({
       orientation: "portrait",
@@ -322,6 +367,21 @@ export default function InventoryHistoryPage() {
       format: "a4",
     });
 
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const bottomMargin = 60;
+
+    let cursorY = 48;
+
+    function ensureSpace(requiredHeight = 80) {
+      if (cursorY + requiredHeight > pageHeight - bottomMargin) {
+        doc.addPage();
+        cursorY = 72;
+      }
+    }
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+
+    // logo
     const img = new Image();
     img.src = logo;
 
@@ -330,270 +390,301 @@ export default function InventoryHistoryPage() {
       img.onerror = resolve;
     });
 
-    doc.addImage(img, "PNG", 240, 20, 120, 120);
+    const logoW = 72;
+    const logoH = 72;
+    const logoX = (pageWidth - logoW) / 2;
+    doc.addImage(img, "PNG", logoX, cursorY, logoW, logoH);
+    cursorY += logoH + 10;
 
-    doc.setFont("helvetica", "bold");
+    doc.setFont("times", "bold");
+    doc.setFontSize(22);
+    doc.text("Quscina", pageWidth / 2, cursorY, { align: "center" });
+    cursorY += 26;
+
+    doc.setFont("times", "normal");
     doc.setFontSize(18);
-    doc.text("Inventory History Report", 300, 170, { align: "center" });
+    doc.text("Inventory history report", pageWidth / 2, cursorY, { align: "center" });
+    cursorY += 26;
 
-    // small date range text under title
-    doc.setFontSize(11);
     doc.setFont("helvetica", "normal");
-    doc.text(`Date range: ${rangeLabel}`, 300, 188, { align: "center" });
+    doc.setFontSize(11);
+
+    doc.setFont(undefined, "bold");
+    doc.text("Date range:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text(currentRangeLabel, 150, cursorY);
+    cursorY += 16;
+
+    const searchLabel = search.trim() ? `"${search.trim()}"` : "None";
+    doc.setFont(undefined, "bold");
+    doc.text("Search:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text(searchLabel, 120, cursorY);
+    cursorY += 18;
+
+    ensureSpace(120);
 
     autoTable(doc, {
-      startY: 210,
-      head: [
-        [
-          "Date",
-          "Reason",
-          "Ingredient",
-          "Category",
-          "Current Stock",
-          "Adjustment",
-          "New Stock",
-          "Unit"
-        ],
-      ],
-      body: rows,
+      startY: cursorY + 8,
+      head: [[
+        "Date",
+        "Reason",
+        "Ingredient",
+        "Category",
+        "Current Stock",
+        "Adjustment",
+        "New Stock",
+        "Unit",
+        "Value",
+      ]],
+      body: baseRows.map((r) => [
+        pdfSafeText(formatDateTime(r.ts)),
+        pdfSafeText(r.reason),
+        pdfSafeText(r.ingredientName),
+        pdfSafeText(r.category),
+        pdfSafeText(formatNumber(r.beginStock)),
+        pdfSafeText(r.adjust >= 0 ? `+${formatNumber(r.adjust)}` : formatNumber(r.adjust)),
+        pdfSafeText(formatNumber(r.endStock)),
+        pdfSafeText(r.unit),
+        pdfMoney(r.totalValue),
+      ]),
       theme: "grid",
-      styles: {
-        fontSize: 9,
-      },
+      styles: { fontSize: 9, cellPadding: 4 },
       headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 40 },
+      pageBreak: "auto",
     });
 
-    doc.save("inventory-history.pdf");
+    const footerY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 28 : cursorY + 28;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
+
+    doc.save(`inventory-history-${currentRangeLabel.replace(/\s+/g, "-")}.pdf`);
   };
 
-  const handlePdfDialogConfirm = () => {
-    if (pdfMode === "range" && (!pdfFrom || !pdfTo)) {
-      // no dates selected → do nothing (you can add snackbar here)
-      return;
-    }
-
-    handlePdfExport({
-      mode: pdfMode,
-      from: pdfFrom,
-      to: pdfTo,
-    });
-
-    setPdfOpen(false);
-  };
-
-  /* UI */
   return (
-    <Box p={2} display="grid" gap={2}>
+    <Box p={2} display="grid" gap={2} sx={{ overflowX: "hidden" }}>
       <Typography variant="h5" fontWeight={800}>
         Inventory Reports
       </Typography>
 
-      {/* SEARCH + PDF BAR */}
-      <Paper sx={{ p: 2, borderRadius: 3 }}>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <TextField
-            size="small"
-            placeholder="Search ingredient, category, reason"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            sx={{ width: 300 }}
-            InputProps={{
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" />
-                </InputAdornment>
-              ),
-            }}
-          />
-
-          <Button
-            variant="contained"
-            color="error"
-            startIcon={<PictureAsPdfIcon />}
-            onClick={() => setPdfOpen(true)}
+      <LocalizationProvider dateAdapter={AdapterDayjs}>
+        {/* Controls: Range + Custom dates + Search + PDF */}
+        <Paper sx={{ p: 2, borderRadius: 3, overflow: "hidden" }}>
+          <Stack
+            direction="row"
+            useFlexGap
+            alignItems="center"
+            flexWrap="wrap"
+            rowGap={1.5}
+            columnGap={2}
           >
-            PDF
-          </Button>
-        </Stack>
-      </Paper>
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel id="range-label">Range</InputLabel>
+              <Select
+                labelId="range-label"
+                value={range}
+                label="Range"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setRange(value);
+                  if (value !== "custom") {
+                    setCustomFrom("");
+                    setCustomTo("");
+                  }
+                }}
+              >
+                <MenuItem value="days">Day</MenuItem>
+                <MenuItem value="weeks">Week</MenuItem>
+                <MenuItem value="monthly">Monthly</MenuItem>
+                <MenuItem value="quarterly">Quarterly</MenuItem>
+                <MenuItem value="yearly">Yearly</MenuItem>
+                <MenuItem value="custom">Custom</MenuItem>
+              </Select>
+            </FormControl>
 
-      {/* TABLE */}
-      <Paper sx={{ overflow: "hidden" }}>
-        <Box p={2}>
-          <TableContainer>
-            <Table stickyHeader sx={{ minWidth: 1000 }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Reason</TableCell>
-                  <TableCell>Ingredient</TableCell>
-                  <TableCell>Category</TableCell>
-                  <TableCell>Current Stock</TableCell>
-                  <TableCell>Stock Adjustment</TableCell>
-                  <TableCell>New Stock</TableCell>
-                  <TableCell>Unit</TableCell>
-                </TableRow>
-              </TableHead>
+            <DatePicker
+              label="From"
+              views={["year", "month", "day"]}
+              format="MM/DD/YYYY"
+              value={customFrom ? dayjs(customFrom) : null}
+              onChange={(value) => {
+                if (!value) {
+                  setCustomFrom("");
+                  return;
+                }
 
-              <TableBody>
-                {paged.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell>{formatDateTime(row.ts)}</TableCell>
-                    <TableCell>{row.reason}</TableCell>
-                    <TableCell>{row.ingredientName}</TableCell>
-                    <TableCell>{row.category}</TableCell>
-                    <TableCell>{formatNumber(row.beginStock)}</TableCell>
+                let s = value.format("YYYY-MM-DD");
+                const { min, max } = dateBounds;
+                if (min && s < min) s = min;
+                if (max && s > max) s = max;
 
-                    <TableCell
-                      style={{
-                        color: row.adjust >= 0 ? "green" : "red",
-                        fontWeight: 700,
-                      }}
-                    >
-                      {row.adjust >= 0
-                        ? `+${formatNumber(row.adjust)}`
-                        : formatNumber(row.adjust)}
-                    </TableCell>
+                if (range !== "custom") setRange("custom");
+                setCustomFrom(s);
+              }}
+              minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
+              maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
+              shouldDisableDate={(d) => shouldDisableDate(d)}
+              slotProps={{ textField: { size: "small" } }}
+            />
 
-                    <TableCell>{formatNumber(row.endStock)}</TableCell>
-                    <TableCell>{row.unit}</TableCell>
-                  </TableRow>
-                ))}
+            <DatePicker
+              label="To"
+              views={["year", "month", "day"]}
+              format="MM/DD/YYYY"
+              value={customTo ? dayjs(customTo) : null}
+              onChange={(value) => {
+                if (!value) {
+                  setCustomTo("");
+                  return;
+                }
 
-                {filtered.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={9} align="center">
-                      <Typography>No history records found.</Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                let s = value.format("YYYY-MM-DD");
+                const { min, max } = dateBounds;
+                if (min && s < min) s = min;
+                if (max && s > max) s = max;
 
-          <TablePagination
-            component="div"
-            count={filtered.length}
-            page={pageState.page}
-            rowsPerPage={pageState.rowsPerPage}
-            onPageChange={(_, p) =>
-              setPageState({ ...pageState, page: p })
-            }
-            onRowsPerPageChange={(e) =>
-              setPageState({
-                page: 0,
-                rowsPerPage: parseInt(e.target.value, 10),
-              })
-            }
-            rowsPerPageOptions={[5, 10, 25]}
-          />
-        </Box>
-      </Paper>
+                if (range !== "custom") setRange("custom");
+                setCustomTo(s);
+              }}
+              minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
+              maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
+              shouldDisableDate={(d) => shouldDisableDate(d)}
+              slotProps={{ textField: { size: "small" } }}
+            />
 
-      {/* PDF EXPORT DIALOG */}
-      <Dialog
-        open={pdfOpen}
-        onClose={() => setPdfOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Export Inventory History</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2} mt={1}>
-            <RadioGroup
-              value={pdfMode}
-              onChange={(e) => setPdfMode(e.target.value)}
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`Range: ${currentRangeLabel}`}
+              sx={{ ml: { xs: 0, sm: 0 } }}
+            />
+
+            <Box sx={{ flexGrow: 1 }} />
+
+            <TextField
+              size="small"
+              placeholder="Search ingredient, category, reason"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              sx={{ width: { xs: "100%", sm: 320 } }}
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+            />
+
+            <Button
+              variant="contained"
+              color="error"
+              startIcon={<PictureAsPdfIcon />}
+              onClick={buildInventoryPdf}
             >
-              <FormControlLabel
-                value="all"
-                control={<Radio />}
-                label="All dates (current search results)"
-              />
-              <FormControlLabel
-                value="today"
-                control={<Radio />}
-                label="Today"
-              />
-              <FormControlLabel
-                value="week"
-                control={<Radio />}
-                label="This week"
-              />
-              <FormControlLabel
-                value="month"
-                control={<Radio />}
-                label="This month"
-              />
-              <FormControlLabel
-                value="range"
-                control={<Radio />}
-                label="Custom date range"
-              />
-            </RadioGroup>
-
-            {pdfMode === "range" && (
-              <LocalizationProvider dateAdapter={AdapterDateFns}>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  <DatePicker
-                    label="From"
-                    value={pdfFrom}
-                    onChange={(newVal) => setPdfFrom(newVal)}
-                    slotProps={{
-                      textField: {
-                        size: "small",
-                        fullWidth: true,
-                      },
-                    }}
-                    shouldDisableDate={isDateDisabled}
-                  />
-
-                  <DatePicker
-                    label="To"
-                    value={pdfTo}
-                    onChange={(newVal) => setPdfTo(newVal)}
-                    slotProps={{
-                      textField: {
-                        size: "small",
-                        fullWidth: true,
-                      },
-                    }}
-                    shouldDisableDate={isDateDisabled}
-                  />
-                </Stack>
-              </LocalizationProvider>
-            )}
+              PDF
+            </Button>
           </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPdfOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={handlePdfDialogConfirm}
-          >
-            Download PDF
-          </Button>
-        </DialogActions>
-      </Dialog>
+        </Paper>
 
-      {/* NO DATA TO EXPORT DIALOG */}
-      <Dialog
-        open={noDataOpen}
-        onClose={() => setNoDataOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>No data to export</DialogTitle>
-        <DialogContent dividers>
-          <Typography>{noDataMessage}</Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setNoDataOpen(false)} autoFocus>
-            OK
-          </Button>
-        </DialogActions>
-      </Dialog>
+        {/* Table */}
+        <Paper sx={{ overflow: "hidden" }}>
+          <Box p={2}>
+            <TableContainer className="scroll-x" sx={{ overflowX: "auto" }}>
+              <Table
+                stickyHeader
+                size="small"
+                sx={{
+                  minWidth: { xs: 900, md: 1100 },
+                  ...comfyCells,
+                }}
+              >
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Reason</TableCell>
+                    <TableCell>Ingredient</TableCell>
+                    <TableCell>Category</TableCell>
+                    <TableCell>Current Stock</TableCell>
+                    <TableCell>Stock Adjustment</TableCell>
+                    <TableCell>New Stock</TableCell>
+                    <TableCell>Unit</TableCell>
+                    <TableCell align="right">Value</TableCell>
+                  </TableRow>
+                </TableHead>
 
+                <TableBody>
+                  {paged.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell>{formatDateTime(row.ts)}</TableCell>
+                      <TableCell>{row.reason}</TableCell>
+                      <TableCell>{row.ingredientName}</TableCell>
+                      <TableCell>{row.category}</TableCell>
+                      <TableCell>{formatNumber(row.beginStock)}</TableCell>
+
+                      <TableCell
+                        sx={{
+                          color: row.adjust >= 0 ? "success.main" : "error.main",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {row.adjust >= 0
+                          ? `+${formatNumber(row.adjust)}`
+                          : formatNumber(row.adjust)}
+                      </TableCell>
+
+                      <TableCell>{formatNumber(row.endStock)}</TableCell>
+                      <TableCell>{row.unit}</TableCell>
+                      <TableCell align="right">{peso(row.totalValue)}</TableCell>
+                    </TableRow>
+                  ))}
+
+                  {filtered.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={9} align="center">
+                        <Typography color="text.secondary">
+                          No history records found for this range/search.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            <TablePagination
+              component="div"
+              count={filtered.length}
+              page={pageState.page}
+              rowsPerPage={pageState.rowsPerPage}
+              onPageChange={(_, p) => setPageState((s) => ({ ...s, page: p }))}
+              onRowsPerPageChange={(e) =>
+                setPageState({
+                  page: 0,
+                  rowsPerPage: parseInt(e.target.value, 10),
+                })
+              }
+              rowsPerPageOptions={[5, 10, 25, { label: "All", value: filtered.length || -1 }]}
+              labelRowsPerPage="Rows per page:"
+            />
+          </Box>
+        </Paper>
+
+        {/* No data / validation dialog */}
+        <Dialog open={noDataOpen} onClose={() => setNoDataOpen(false)} maxWidth="xs" fullWidth>
+          <DialogTitle>No export available</DialogTitle>
+          <DialogContent dividers>
+            <Typography>{noDataMessage}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setNoDataOpen(false)} autoFocus>
+              OK
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </LocalizationProvider>
     </Box>
   );
 }

@@ -150,6 +150,55 @@ const parseLowStock = (val) => {
   return n;
 };
 
+const REASON_TYPE_OPTIONS = [
+  // BOTH (can increase or decrease based on counting)
+  {
+    value: "inventory_count",
+    label: "Inventory Count",
+    defaultReason: "Inventory count adjustment",
+    dirs: ["IN", "OUT"],
+  },
+
+  // OUT-only
+  {
+    value: "production_use",
+    label: "Production Use",
+    defaultReason: "Used in production",
+    dirs: ["OUT"],
+  },
+  {
+    value: "damage",
+    label: "Damage",
+    defaultReason: "Damaged items",
+    dirs: ["OUT"],
+  },
+  {
+    value: "loss",
+    label: "Loss / Missing",
+    defaultReason: "Lost / missing stock",
+    dirs: ["OUT"],
+  },
+  {
+    value: "expired",
+    label: "Expired",
+    defaultReason: "Expired stock",
+    dirs: ["OUT"],
+  },
+
+  // always available
+  { value: "other", label: "Other", defaultReason: "", dirs: ["IN", "OUT"] },
+];
+
+const REASON_TYPE_LABEL = REASON_TYPE_OPTIONS.reduce((m, x) => {
+  m[x.value] = x.label;
+  return m;
+}, {});
+
+const getReasonOptionsFor = (direction) =>
+  REASON_TYPE_OPTIONS.filter((x) =>
+    (x.dirs || ["IN", "OUT"]).includes(direction)
+  );
+
 export default function InventoryPage() {
   const [query, setQuery] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
@@ -637,6 +686,7 @@ const [stockForm, setStockForm] = useState({
   qty: "",
   current: 0,
   low: "",
+  reasonType: "other",
   reason: "",
 });
 const initialStockFormRef = useRef(null);
@@ -658,6 +708,11 @@ const canSaveStock = useMemo(() => {
   return true;
 }, [stockForm]);
 
+  const reasonOptions = useMemo(
+    () => getReasonOptionsFor(stockForm.direction),
+    [stockForm.direction]
+  );
+
 const resetStockForm = () => {
   setStockForm({
     ingId: "",
@@ -668,6 +723,7 @@ const resetStockForm = () => {
     qty: "",
     current: 0,
     low: "",
+    reasonType: "other",
     reason: "",
   });
   initialStockFormRef.current = null;
@@ -702,6 +758,7 @@ const handleRowClick = (ing) => {
     qty: "",
     current: Number(ing.currentStock || 0),
     low: ing.lowStock ?? "",
+    reasonType: "other",
     reason: "",
   };
   setStockForm(newForm);
@@ -732,12 +789,16 @@ const handleStockSave = async () => {
       return;
     }
 
+    const typeLabel = REASON_TYPE_LABEL[stockForm.reasonType] || "Other";
+    const details = String(stockForm.reason || "").trim();
+    const reason = details ? `${typeLabel} — ${details}` : typeLabel;
+
     const res = await fetch(INV_ACTIVITY_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         employee: "Chef",
-        reason: (stockForm.reason || "").trim() || (io === "In" ? "Stock In" : "Stock Out"),
+        reason,
         io,
         qty,
         ingredientId: picked.id,
@@ -1572,7 +1633,18 @@ const handleResetFilters = () => {
               exclusive
               onChange={(_, v) => {
                 if (!v) return;
-                const newForm = { ...stockForm, direction: v };
+
+                const allowed = getReasonOptionsFor(v);
+                const stillValid = allowed.some((x) => x.value === stockForm.reasonType);
+                const nextType = stillValid ? stockForm.reasonType : "other";
+
+                const newForm = {
+                  ...stockForm,
+                  direction: v,
+                  reasonType: nextType,
+                  // ✅ DO NOT touch stockForm.reason
+                };
+
                 setStockForm(newForm);
                 handleStockFormChange(newForm);
               }}
@@ -1679,24 +1751,52 @@ const handleResetFilters = () => {
               />
             </Stack>
 
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={2}
-            >
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <FormControl fullWidth>
+                <InputLabel id="reason-type-label">Reason Type</InputLabel>
+                <Select
+                  labelId="reason-type-label"
+                  label="Reason Type"
+                  value={stockForm.reasonType || "other"}
+                  onChange={(e) => {
+                    const nextType = e.target.value;
+
+                    const newForm = {
+                      ...stockForm,
+                      reasonType: nextType,
+                      // ✅ DO NOT touch stockForm.reason
+                    };
+
+                    setStockForm(newForm);
+                    handleStockFormChange(newForm);
+                  }}
+                  MenuProps={dropdownMenuProps}
+                >
+                  {reasonOptions.map((x) => (
+                    <MenuItem key={x.value} value={x.value}>
+                      {x.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
               <TextField
                 label="Reason"
                 value={stockForm.reason ?? ""}
                 onChange={(e) => {
-                  const newForm = {
-                    ...stockForm,
-                    reason: e.target.value,
-                  };
+                  const newForm = { ...stockForm, reason: e.target.value };
                   setStockForm(newForm);
                   handleStockFormChange(newForm);
                 }}
                 fullWidth
+                placeholder={
+                  stockForm.reasonType && stockForm.reasonType !== "other"
+                    ? `Optional: add details for ${REASON_TYPE_LABEL[stockForm.reasonType]}`
+                    : "Enter reason"
+                }
               />
             </Stack>
+
           </Stack>
         </DialogContent>
 
