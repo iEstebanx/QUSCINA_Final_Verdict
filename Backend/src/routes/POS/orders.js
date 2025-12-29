@@ -171,6 +171,214 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
     };
   }
 
+  // ---------- JSON + inventory helpers (Option 2 stockMode) ----------
+function safeJsonParse(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return fallback;
+  const s = value.trim();
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return fallback;
+  }
+}
+
+// Build inventory deduction map for a cart of items [{id, qty}]
+// - ingredients mode: items.ingredients JSON is recipe rows {ingredientId, qty}
+// - direct mode: items.inventoryIngredientId + items.inventoryDeductQty
+async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
+  const items = Array.isArray(cartItems) ? cartItems : [];
+  const itemIds = items
+    .map((it) => Number(it?.id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  if (!itemIds.length) return { deduceByInvId: new Map(), details: [] };
+
+  const placeholders = itemIds.map(() => "?").join(",");
+
+  // Pull stockMode + recipe/direct linkage from items table
+  const itemRows = asArray(
+    await conn.query(
+      `
+      SELECT
+        id,
+        stockMode,
+        ingredients,
+        inventoryIngredientId,
+        inventoryDeductQty
+      FROM items
+      WHERE id IN (${placeholders})
+      `,
+      itemIds
+    )
+  );
+
+  const byItemId = new Map(itemRows.map((r) => [Number(r.id), r]));
+
+  const deduceByInvId = new Map(); // invId -> qtyToDeduct (DECIMAL)
+  const details = []; // optional debug
+
+  for (const it of items) {
+    const id = Number(it?.id);
+    const orderQty = safeNumber(it?.qty ?? it?.quantity, 1);
+
+    const meta = byItemId.get(id);
+    const stockMode = String(meta?.stockMode || "ingredients").toLowerCase();
+
+    if (!meta) {
+      // If missing item row, skip silently (or throw if you want)
+      details.push({ itemId: id, stockMode: "missing_item_row" });
+      continue;
+    }
+
+    if (stockMode === "ingredients") {
+      let recipe = safeJsonParse(meta.ingredients, []);
+      if (!Array.isArray(recipe)) recipe = [];
+
+      // normalize recipe rows; ingredientId stored as string in your design
+      recipe = recipe
+        .map((r) => ({
+          ingredientId: String(r?.ingredientId ?? "").trim(),
+          qty: safeNumber(r?.qty ?? r?.quantity ?? r?.amount, 0),
+        }))
+        .filter((r) => r.ingredientId && r.qty > 0);
+
+      // enforce recipe existence for ingredients mode (matches CHECK)
+      if (!recipe.length) {
+        details.push({ itemId: id, stockMode, error: "no_recipe" });
+        continue;
+      }
+
+      for (const r of recipe) {
+        const invId = Number(r.ingredientId);
+        if (!Number.isFinite(invId) || invId <= 0) continue;
+
+        const need = (safeNumber(r.qty, 0) * orderQty);
+        if (!need) continue;
+
+        const prev = deduceByInvId.get(invId) || 0;
+        deduceByInvId.set(invId, round2(prev + need));
+      }
+
+      details.push({ itemId: id, stockMode, recipeRows: recipe.length });
+    } else if (stockMode === "direct") {
+      const invId = Number(meta.inventoryIngredientId);
+      const deductPerUnit = safeNumber(meta.inventoryDeductQty, 1);
+
+      if (!invId) {
+        details.push({ itemId: id, stockMode, error: "no_direct_link" });
+        continue;
+      }
+
+      const need = (deductPerUnit > 0 ? deductPerUnit : 1) * orderQty;
+      const prev = deduceByInvId.get(invId) || 0;
+      deduceByInvId.set(invId, round2(prev + need));
+
+      details.push({ itemId: id, stockMode, invId, deductPerUnit });
+    } else {
+      details.push({ itemId: id, stockMode, error: "unknown_stockmode" });
+    }
+  }
+
+  return { deduceByInvId, details };
+}
+
+async function assertEnoughInventoryForCart(conn, cartItems = []) {
+  const { deduceByInvId, details } =
+    await buildInventoryDeductionsFromCartItems(conn, cartItems);
+
+  const invIds = Array.from(deduceByInvId.keys());
+  if (!invIds.length) return;
+
+  const placeholders = invIds.map(() => "?").join(",");
+
+  const invRows = asArray(
+    await conn.query(
+      `
+      SELECT id, kind, currentStock
+      FROM inventory_ingredients
+      WHERE id IN (${placeholders})
+      `,
+      invIds
+    )
+  );
+
+  const invById = new Map(
+    invRows.map((r) => [
+      Number(r.id),
+      {
+        kind: String(r.kind || "ingredient"),
+        currentStock: safeNumber(r.currentStock, 0),
+      },
+    ])
+  );
+
+  // validate:
+  // - direct links must be kind='product'
+  // - currentStock must be >= required deduction
+  const problems = [];
+
+  for (const [invId, required] of deduceByInvId.entries()) {
+    const inv = invById.get(invId);
+    if (!inv) {
+      problems.push({ invId, required, reason: "missing_inventory_row" });
+      continue;
+    }
+
+    // "direct must link to product" rule: we can only know which invIds are direct
+    // by looking at details. We'll be strict: if ANY detail indicates direct invId, enforce kind.
+    const usedAsDirect = details.some((d) => d?.stockMode === "direct" && Number(d?.invId) === invId);
+    if (usedAsDirect && inv.kind !== "product") {
+      problems.push({ invId, required, reason: "direct_not_product", kind: inv.kind });
+      continue;
+    }
+
+    if (inv.currentStock + 0.0001 < required) {
+      problems.push({
+        invId,
+        required,
+        currentStock: inv.currentStock,
+        reason: "insufficient_stock",
+      });
+    }
+  }
+
+  if (problems.length) {
+    const err = new Error("INSUFFICIENT_INVENTORY");
+    err.httpStatus = 409;
+    err.code = "INSUFFICIENT_INVENTORY";
+    err.problems = problems;
+    throw err;
+  }
+}
+
+async function applyInventoryFromCartItems(conn, cartItems = [], direction = "out") {
+  // direction: "out" (deduct) or "in" (restock)
+  const { deduceByInvId } =
+    await buildInventoryDeductionsFromCartItems(conn, cartItems);
+
+  const sign = String(direction).toLowerCase() === "in" ? 1 : -1;
+
+  for (const [invId, qtyDeltaAbs] of deduceByInvId.entries()) {
+    const delta = round2(sign * safeNumber(qtyDeltaAbs, 0));
+    if (!delta) continue;
+
+    // update stock
+    await conn.query(
+      `
+      UPDATE inventory_ingredients
+      SET currentStock = currentStock + ?
+      WHERE id = ?
+      `,
+      [delta, invId]
+    );
+
+    // optionally: log inventory_activity here if you want (you currently don't in this backoffice POS router)
+  }
+}
+
   // ---- cash change helpers (Backoffice POS) ----
   async function computeExpectedCashForShift(shiftId) {
     // Goal: estimate cash currently in drawer BEFORE this request is applied.
@@ -1955,6 +2163,10 @@ router.post("/charge", async (req, res) => {
       mode,
     });
 
+    if (!isSplit || isFinalPayment) {
+      await assertEnoughInventoryForCart(conn, items);
+    }
+
     let finalOrderId = orderId || null;
     let allocatedOrderNo = null;
 
@@ -2179,12 +2391,10 @@ router.post("/charge", async (req, res) => {
       );
 
       try {
-        await applyInventoryFromOrder(finalOrderId, "out");
+        // Option 2: deduct inventory by stockMode (ingredients recipe OR direct link)
+        await applyInventoryFromCartItems(conn, items, "out");
       } catch (invErr) {
-        console.error(
-          "[Backoffice POS orders/charge] inventory update failed:",
-          invErr
-        );
+        console.error("[Backoffice POS orders/charge] inventory update failed:", invErr);
         // don't fail sale on inventory error
       }
     }
@@ -2229,12 +2439,20 @@ router.post("/charge", async (req, res) => {
         ok: false,
         code: "INSUFFICIENT_CHANGE",
         requiredChange: Number(e.requiredChange) || 0,
-
         drawerCashBefore: Number(e.drawerCashBefore) || 0,
         cashReceivedThis: Number(e.cashReceivedThis) || 0,
         availableCashForChange: Number(e.availableCash) || 0,
-
         error: "Insufficient cash for change",
+      });
+    }
+
+    // ✅ ADD THIS RIGHT HERE
+    if (e?.code === "INSUFFICIENT_INVENTORY") {
+      return res.status(409).json({
+        ok: false,
+        code: "INSUFFICIENT_INVENTORY",
+        problems: e.problems || [],
+        error: "Insufficient inventory to complete the sale",
       });
     }
 

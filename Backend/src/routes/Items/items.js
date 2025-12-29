@@ -21,36 +21,29 @@ const upload = multer({
 /* ============================================================
    COMMON HELPERS
    ============================================================ */
-// Friendly labels for audit "changed fields"
+
 const ITEM_FIELD_LABELS = {
   name: "name",
   description: "description",
   categoryId: "category",
   categoryName: "category",
   price: "price",
-  // 🔸 costOverall / profit removed from labels (no more costing in audit)
+  stockMode: "stock mode",
+  inventoryIngredientId: "inventory link",
+  inventoryDeductQty: "deduct qty",
+  active: "active",
 };
 
-/**
- * Turn raw changed keys into a nice comma-separated list:
- *   ['description','categoryId','categoryName','price']
- * → 'description, category, price'
- */
 function summarizeItemChangedFields(changedKeys = []) {
-  // Map → friendly labels, de-duplicate (categoryId + categoryName → category)
   const labels = [];
   for (const key of changedKeys) {
     const label = ITEM_FIELD_LABELS[key];
     if (!label) continue;
     if (!labels.includes(label)) labels.push(label);
   }
-
   if (!labels.length) return "";
-
   if (labels.length === 1) return labels[0];
   if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-
-  // 3+ → "a, b, c" etc.
   return labels.join(", ");
 }
 
@@ -73,22 +66,128 @@ function cleanMoney(x) {
   return Number(String(x).replace(/[^0-9.]/g, "")) || 0;
 }
 
-// 🔸 Costing helper kept but no longer used for inventory costing.
-//     (Safe to remove later if you want totally clean.)
-function computeCostOverall(ingredients) {
-  if (!Array.isArray(ingredients)) return 0;
-  return ingredients.reduce((s, it) => {
-    if (!it) return s;
-    const hasCost = it.cost != null && it.cost !== "";
-    const cost = hasCost
-      ? Number(it.cost) || 0
-      : (Number(it.qty || 0) * Number(it.price || 0)) || 0; // fallback
-    return s + cost;
-  }, 0);
+function cleanDecimalQty(x, fallback = 1.0) {
+  if (x == null || x === "") return fallback;
+  const n = Number(String(x).replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(n)) return fallback;
+  // 3 dp like your schema, but keep as Number here
+  return n;
+}
+
+function parseJsonArrayMaybe(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+const STOCK_MODES = new Set(["ingredients", "direct"]);
+
+function normalizeStockMode(v) {
+  const s = String(v ?? "").trim().toLowerCase();
+  return STOCK_MODES.has(s) ? s : null;
+}
+
+async function getInventoryRow(db, id) {
+  const rows = await db.query(
+    `SELECT id, name, kind, currentStock
+       FROM inventory_ingredients
+      WHERE id = ?
+      LIMIT 1`,
+    [id]
+  );
+  return rows?.[0] || null;
+}
+
+/**
+ * Enforce Option 2 rules for stockMode.
+ * - ingredients: must have recipe (>=1 ingredient row)
+ * - direct: must have inventoryIngredientId and (optionally) kind='product'
+ * - none/manual: clear inventory link + reset deduct qty
+ *
+ * Returns normalized fields ready for INSERT/UPDATE:
+ * { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients }
+ */
+async function validateAndNormalizeStockFields(db, input) {
+  const stockMode =
+    normalizeStockMode(input.stockMode) || "ingredients";
+
+ const rawIngredients = parseJsonArrayMaybe(input.ingredients);
+
+  // ✅ Normalize ingredients for consistent frontend behavior
+  const ingredients = rawIngredients
+    .map((r) => ({
+      ingredientId: String(r?.ingredientId ?? "").trim(), // KEEP AS STRING
+      name: normalize(r?.name),
+      category: normalize(r?.category),
+      unit: normalize(r?.unit),
+      qty: cleanDecimalQty(r?.qty, 0),
+    }))
+    .filter((r) => r.ingredientId && r.qty > 0);
+
+  let inventoryIngredientId = null;
+  if (input.inventoryIngredientId != null && input.inventoryIngredientId !== "") {
+    const n = Number(input.inventoryIngredientId);
+    if (Number.isFinite(n) && n > 0) inventoryIngredientId = n;
+  }
+
+  let inventoryDeductQty = cleanDecimalQty(input.inventoryDeductQty, 1.0);
+
+  // Basic numeric constraints
+  if (inventoryDeductQty <= 0) {
+    throw new Error("inventoryDeductQty must be greater than 0.");
+  }
+  // keep it within DECIMAL(12,3) practical sanity
+  if (inventoryDeductQty > 999999999.999) {
+    throw new Error("inventoryDeductQty is too large.");
+  }
+
+  if (stockMode === "ingredients") {
+    if (!ingredients || ingredients.length === 0) {
+      // your DB CHECK will also reject this; backend gives nicer message
+      throw new Error("stockMode=ingredients requires at least 1 ingredient in recipe.");
+    }
+    // For ingredients mode, ignore direct-link fields
+    inventoryIngredientId = null;
+    inventoryDeductQty = 1.0;
+  }
+
+  if (stockMode === "direct") {
+    if (!inventoryIngredientId) {
+      throw new Error("stockMode=direct requires inventoryIngredientId.");
+    }
+
+    const inv = await getInventoryRow(db, inventoryIngredientId);
+    if (!inv) {
+      throw new Error("Selected inventory item does not exist.");
+    }
+
+    // ✅ Recommended: force direct-mode to use only inventory.kind='product'
+    // If you want to allow ingredients too, remove this block.
+    if (String(inv.kind || "ingredient") !== "product") {
+      throw new Error(
+        "Direct stock mode can only link to inventory items marked as kind='product'."
+      );
+    }
+
+    // For direct mode, recipe is optional but typically empty
+    // (You can keep ingredients as-is if you want, but best to keep recipe empty)
+    // We'll keep whatever was provided, but you can force empty if you prefer:
+    // ingredients = [];
+  }
+
+  return { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients };
 }
 
 /* ============================================================
-   AUDIT HELPERS FOR ITEMS
+   AUDIT HELPERS
    ============================================================ */
 
 function getAuditUserFromReq(req) {
@@ -120,9 +219,7 @@ function mapItemForAudit(row) {
         ? JSON.parse(row.ingredients || "[]")
         : row.ingredients || [];
     if (Array.isArray(raw)) ingredientsCount = raw.length;
-  } catch {
-    // ignore bad JSON
-  }
+  } catch {}
 
   return {
     id: String(row.id),
@@ -130,29 +227,25 @@ function mapItemForAudit(row) {
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     price: Number(row.price || 0),
-    // 🔸 costOverall / profit removed from audit payload
+    stockMode: row.stockMode || "ingredients",
+    inventoryIngredientId: row.inventoryIngredientId != null ? Number(row.inventoryIngredientId) : null,
+    inventoryDeductQty: row.inventoryDeductQty != null ? Number(row.inventoryDeductQty) : 1,
     ingredientsCount,
   };
 }
 
-/**
- * Core audit writer for items module.
- * All logs go to audit_trail with: employee, role, action, detail(JSON)
- */
-async function logItemsAudit(
-  db,
-  req,
-  {
-    action, // e.g. "Inventory - Item Created"
-    actionType, // "create" | "update" | "delete" | "bulk-delete"
-    item, // single row
-    items, // array of rows (for bulk delete)
+async function logItemsAudit(db, req, payload) {
+  const {
+    action,
+    actionType,
+    item,
+    items,
     before,
     after,
     changes,
-    extra = {}, // { statusMessage, actionDetails: {...} }
-  }
-) {
+    extra = {},
+  } = payload;
+
   const user = getAuditUserFromReq(req);
   const employee = user?.employeeName || "System";
   const role = user?.role || "—";
@@ -221,10 +314,7 @@ module.exports = ({ db } = {}) => {
 
   const router = express.Router();
 
-  // Ensure JSON body is parsed for bulk DELETE (and any JSON posts without multipart)
   router.use(express.json());
-
-  // 🔐 protect all item routes so req.user is populated
   router.use(requireAuth);
 
   /* ===================== GET /api/items ===================== */
@@ -236,7 +326,9 @@ module.exports = ({ db } = {}) => {
         .toLowerCase();
 
       let sql = `SELECT id, name, description, categoryId, categoryName, categoryKey, imageDataUrl,
-                        createdAt, updatedAt, price, ingredients, costOverall, profit
+                        createdAt, updatedAt, price, ingredients,
+                        stockMode, inventoryIngredientId, inventoryDeductQty,
+                        active
                    FROM items`;
       const params = [];
       const where = [];
@@ -253,7 +345,67 @@ module.exports = ({ db } = {}) => {
       sql += " ORDER BY updatedAt DESC, nameLower ASC";
       const rows = await db.query(sql, params);
 
-      const items = rows.map((x) => ({
+      const items = rows.map((x) => {
+        const parsedIngredients =
+          typeof x.ingredients === "string"
+            ? JSON.parse(x.ingredients || "[]")
+            : x.ingredients || [];
+
+        const normalizedIngredients = Array.isArray(parsedIngredients)
+          ? parsedIngredients.map((r) => ({
+              ...r,
+              ingredientId: String(r?.ingredientId ?? "").trim(),
+            }))
+          : [];
+
+        return {
+          id: String(x.id),
+          name: x.name || "",
+          description: x.description || "",
+          categoryId: x.categoryId || "",
+          categoryName: x.categoryName || "",
+          imageUrl: x.imageDataUrl || "",
+          createdAt: x.createdAt ? new Date(x.createdAt).getTime() : 0,
+          updatedAt: x.updatedAt ? new Date(x.updatedAt).getTime() : 0,
+          price: Number(x.price || 0),
+          ingredients: normalizedIngredients,
+          stockMode: x.stockMode || "ingredients",
+          inventoryIngredientId:
+            x.inventoryIngredientId != null ? String(x.inventoryIngredientId) : "",
+          inventoryDeductQty: Number(x.inventoryDeductQty || 1),
+          active: Number(x.active || 0) ? 1 : 0,
+        };
+      });
+
+      res.json({ ok: true, items });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  /* ===================== GET /api/items/:id ===================== */
+  router.get("/:id", async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({ ok: false, error: "invalid id" });
+      }
+
+      const rows = await db.query(
+        `SELECT id, name, description, categoryId, categoryName, categoryKey, imageDataUrl,
+                createdAt, updatedAt, price, ingredients,
+                stockMode, inventoryIngredientId, inventoryDeductQty,
+                active
+          FROM items
+          WHERE id = ?
+          LIMIT 1`,
+        [id]
+      );
+
+      const x = rows?.[0];
+      if (!x) return res.status(404).json({ ok: false, error: "not found" });
+
+      const item = {
         id: String(x.id),
         name: x.name || "",
         description: x.description || "",
@@ -267,12 +419,13 @@ module.exports = ({ db } = {}) => {
           typeof x.ingredients === "string"
             ? JSON.parse(x.ingredients || "[]")
             : x.ingredients || [],
-        // 🔸 Still returned, but now always 0 unless old data exists
-        costOverall: Number(x.costOverall || 0),
-        profit: Number(x.profit || 0),
-      }));
+        stockMode: x.stockMode || "ingredients",
+        inventoryIngredientId: x.inventoryIngredientId != null ? String(x.inventoryIngredientId) : "",
+        inventoryDeductQty: Number(x.inventoryDeductQty || 1),
+        active: Number(x.active || 0) ? 1 : 0,
+      };
 
-      res.json({ ok: true, items });
+      res.json({ ok: true, item });
     } catch (e) {
       next(e);
     }
@@ -283,7 +436,6 @@ module.exports = ({ db } = {}) => {
     try {
       const b = req.body || {};
 
-      // name
       const name = normalize(b.name);
       if (!isValidName(name)) {
         return res.status(400).json({
@@ -293,7 +445,7 @@ module.exports = ({ db } = {}) => {
         });
       }
 
-      // 🔴 Category is REQUIRED on CREATE
+      // Category required
       const rawCategoryId = Number(b.categoryId);
       const categoryId =
         Number.isFinite(rawCategoryId) && rawCategoryId > 0
@@ -301,41 +453,35 @@ module.exports = ({ db } = {}) => {
           : null;
       const categoryName = normalize(b.categoryName);
       if (!categoryId || !categoryName) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Category is required." });
+        return res.status(400).json({ ok: false, error: "Category is required." });
       }
       if (!isValidName(categoryName)) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Invalid category name." });
+        return res.status(400).json({ ok: false, error: "Invalid category name." });
       }
       const categoryKey = categoryName.toLowerCase();
 
       const description = String(b.description || "").trim().slice(0, 300);
       const price = cleanMoney(b.price);
 
-      // ingredients (composition only, no more cost-based calculations)
-      let ingredients = [];
-      if (typeof b.ingredients === "string" && b.ingredients.trim()) {
-        try {
-          const parsed = JSON.parse(b.ingredients);
-          if (Array.isArray(parsed)) ingredients = parsed;
-        } catch {}
-      } else if (Array.isArray(b.ingredients)) {
-        ingredients = b.ingredients;
-      }
+      // ✅ Stock normalization (Option 2)
+      const norm = await validateAndNormalizeStockFields(db, {
+        stockMode: b.stockMode,
+        inventoryIngredientId: b.inventoryIngredientId,
+        inventoryDeductQty: b.inventoryDeductQty,
+        ingredients: b.ingredients,
+      });
 
-      // 🔸 Inventory costing disabled: store zeros for costOverall/profit
-      const costOverall = 0;
-      const profit = 0;
       const now = new Date();
 
       const result = await db.query(
         `INSERT INTO items
           (name, description, categoryId, categoryName, categoryKey,
-           imageDataUrl, price, ingredients, costOverall, profit, active, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?)`,
+           imageDataUrl, price, ingredients,
+           stockMode, inventoryIngredientId, inventoryDeductQty,
+           costOverall, profit, active, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, '', ?, ?,
+                 ?, ?, ?,
+                 0, 0, 1, ?, ?)`,
         [
           name,
           description,
@@ -343,9 +489,10 @@ module.exports = ({ db } = {}) => {
           categoryName,
           categoryKey,
           price,
-          JSON.stringify(ingredients || []),
-          costOverall,
-          profit,
+          JSON.stringify(norm.ingredients || []),
+          norm.stockMode,
+          norm.inventoryIngredientId,
+          norm.inventoryDeductQty,
           now,
           now,
         ]
@@ -371,23 +518,18 @@ module.exports = ({ db } = {}) => {
         imageUrl = dataUrl;
       }
 
-      // Fetch full row for audit
       const createdRows = await db.query(
         `SELECT * FROM items WHERE id = ? LIMIT 1`,
         [id]
       );
       const created = createdRows[0] || null;
 
-      const statusMessage = created
-        ? `Item "${created.name}" created.`
-        : "Item created.";
-
       await logItemsAuditSafe(db, req, {
         action: "Item Created",
         actionType: "create",
         item: created || { id },
         extra: {
-          statusMessage,
+          statusMessage: created ? `Item "${created.name}" created.` : "Item created.",
           actionDetails: created
             ? {
                 itemId: String(created.id),
@@ -395,7 +537,9 @@ module.exports = ({ db } = {}) => {
                 categoryId: created.categoryId,
                 categoryName: created.categoryName,
                 price: created.price,
-                // 🔸 costOverall / profit removed from actionDetails
+                stockMode: created.stockMode,
+                inventoryIngredientId: created.inventoryIngredientId,
+                inventoryDeductQty: created.inventoryDeductQty,
               }
             : { itemId: String(id) },
         },
@@ -403,6 +547,17 @@ module.exports = ({ db } = {}) => {
 
       res.status(201).json({ ok: true, id: String(id), imageUrl });
     } catch (e) {
+      if (e?.message) {
+        // validation-style errors
+        if (
+          /stockMode=ingredients requires|stockMode=direct requires|Direct stock mode|Selected inventory item does not exist|inventoryDeductQty/i.test(
+            e.message
+          )
+        ) {
+          return res.status(400).json({ ok: false, error: e.message });
+        }
+      }
+
       if (
         e?.code === "ER_DUP_ENTRY" &&
         /uq_items_name_lower/i.test(e?.message || "")
@@ -425,7 +580,6 @@ module.exports = ({ db } = {}) => {
       if (!Number.isFinite(id))
         return res.status(400).json({ ok: false, error: "invalid id" });
 
-      // Fetch "before" snapshot for audit
       const beforeRows = await db.query(
         `SELECT * FROM items WHERE id = ? LIMIT 1`,
         [id]
@@ -438,7 +592,13 @@ module.exports = ({ db } = {}) => {
       const b = req.body || {};
       const sets = ["updatedAt = ?"];
       const params = [new Date()];
-      const patchForAudit = {};
+
+      // track if stock-related fields were touched so we can normalize
+      const touchingStock =
+        Object.prototype.hasOwnProperty.call(b, "stockMode") ||
+        Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId") ||
+        Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty") ||
+        Object.prototype.hasOwnProperty.call(b, "ingredients");
 
       if (typeof b.name === "string") {
         const n = normalize(b.name);
@@ -451,25 +611,16 @@ module.exports = ({ db } = {}) => {
         }
         sets.push("name = ?");
         params.push(n);
-        patchForAudit.name = n;
       }
 
       if (typeof b.description === "string") {
         const desc = String(b.description).trim().slice(0, 300);
         sets.push("description = ?");
         params.push(desc);
-        patchForAudit.description = desc;
       }
 
-      // If either categoryId or categoryName is present, require BOTH and validate
-      const touchingCatId = Object.prototype.hasOwnProperty.call(
-        b,
-        "categoryId"
-      );
-      const touchingCatName = Object.prototype.hasOwnProperty.call(
-        b,
-        "categoryName"
-      );
+      const touchingCatId = Object.prototype.hasOwnProperty.call(b, "categoryId");
+      const touchingCatName = Object.prototype.hasOwnProperty.call(b, "categoryName");
       if (touchingCatId || touchingCatName) {
         const rawCategoryId = Number(b.categoryId);
         const categoryId =
@@ -479,51 +630,57 @@ module.exports = ({ db } = {}) => {
         const categoryName = normalize(b.categoryName);
 
         if (!categoryId || !categoryName) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Category is required." });
+          return res.status(400).json({ ok: false, error: "Category is required." });
         }
         if (!isValidName(categoryName)) {
-          return res
-            .status(400)
-            .json({ ok: false, error: "Invalid category name." });
+          return res.status(400).json({ ok: false, error: "Invalid category name." });
         }
 
         sets.push("categoryId = ?", "categoryName = ?", "categoryKey = ?");
         params.push(categoryId, categoryName, categoryName.toLowerCase());
-
-        patchForAudit.categoryId = categoryId;
-        patchForAudit.categoryName = categoryName;
       }
 
       if (typeof b.price !== "undefined") {
         const price = cleanMoney(b.price);
         sets.push("price = ?");
         params.push(price);
-        patchForAudit.price = price;
       }
 
-      // 🔸 Ingredients can still be updated (composition),
-      //     but we no longer recompute costOverall/profit from them.
-      let ingredients = null;
-      if (typeof b.ingredients === "string") {
-        try {
-          const parsed = JSON.parse(b.ingredients);
-          if (Array.isArray(parsed)) {
-            ingredients = parsed;
-          }
-        } catch {}
-      } else if (Array.isArray(b.ingredients)) {
-        ingredients = b.ingredients;
-      }
+      // ✅ Stock normalization if any related field touched
+      if (touchingStock) {
+        // Use incoming values if present, otherwise fallback to existing row
+        const incoming = {
+          stockMode:
+            Object.prototype.hasOwnProperty.call(b, "stockMode")
+              ? b.stockMode
+              : before.stockMode,
+          inventoryIngredientId:
+            Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId")
+              ? b.inventoryIngredientId
+              : before.inventoryIngredientId,
+          inventoryDeductQty:
+            Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty")
+              ? b.inventoryDeductQty
+              : before.inventoryDeductQty,
+          ingredients:
+            Object.prototype.hasOwnProperty.call(b, "ingredients")
+              ? b.ingredients
+              : before.ingredients,
+        };
 
-      if (ingredients) {
-        sets.push("ingredients = ?");
-        params.push(JSON.stringify(ingredients));
-        patchForAudit.ingredients = ingredients;
-      }
+        const norm = await validateAndNormalizeStockFields(db, incoming);
 
-      // 🔸 No more profit / costOverall recompute on PATCH
+        sets.push("stockMode = ?", "inventoryIngredientId = ?", "inventoryDeductQty = ?", "ingredients = ?");
+        params.push(
+          norm.stockMode,
+          norm.inventoryIngredientId,
+          norm.inventoryDeductQty,
+          JSON.stringify(norm.ingredients || [])
+        );
+      } else {
+        // If ingredients came alone (shouldn't), keep old behavior: ignore
+        // (touchingStock covers it)
+      }
 
       if (req.file && req.file.buffer && req.file.mimetype) {
         const raw = req.file.buffer;
@@ -536,7 +693,6 @@ module.exports = ({ db } = {}) => {
         const dataUrl = bufferToDataUrl(raw, req.file.mimetype);
         sets.push("imageDataUrl = ?");
         params.push(dataUrl);
-        patchForAudit.imageUpdated = true;
       }
 
       if (sets.length === 1) {
@@ -544,40 +700,33 @@ module.exports = ({ db } = {}) => {
       }
 
       params.push(id);
-      await db.query(
-        `UPDATE items SET ${sets.join(", ")} WHERE id = ?`,
-        params
-      );
+      await db.query(`UPDATE items SET ${sets.join(", ")} WHERE id = ?`, params);
 
-      // Extra safety: ensure item has a category after update
+      // category safety
       if (!touchingCatId && !touchingCatName) {
-        const chk = await db.query(
-          `SELECT categoryId, categoryName FROM items WHERE id = ?`,
-          [id]
-        );
+        const chk = await db.query(`SELECT categoryId, categoryName FROM items WHERE id = ?`, [id]);
         const row = chk && chk[0];
         if (!row || !row.categoryId || !row.categoryName) {
-          return res
-            .status(409)
-            .json({ ok: false, error: "Item must have a category." });
+          return res.status(409).json({ ok: false, error: "Item must have a category." });
         }
       }
 
-      // Fetch "after" snapshot
       const afterRows = await db.query(
         `SELECT * FROM items WHERE id = ? LIMIT 1`,
         [id]
       );
       const after = afterRows[0] || null;
 
-      // Compute field-level changes for audit
       const fieldsToCompare = [
         "name",
         "description",
         "categoryId",
         "categoryName",
         "price",
-        // 🔸 costOverall / profit removed from change summary
+        "stockMode",
+        "inventoryIngredientId",
+        "inventoryDeductQty",
+        "active",
       ];
       const changes = {};
       for (const field of fieldsToCompare) {
@@ -590,13 +739,7 @@ module.exports = ({ db } = {}) => {
 
       const changedKeys = Object.keys(changes);
       const targetName = (after && after.name) || before.name;
-
-      // ✅ use friendly labels instead of raw field names
       const friendlyFields = summarizeItemChangedFields(changedKeys);
-
-      const statusMessage = friendlyFields
-        ? `Item "${targetName}" updated (${friendlyFields}).`
-        : `Item "${targetName}" updated.`;
 
       await logItemsAuditSafe(db, req, {
         action: "Item Updated",
@@ -606,7 +749,9 @@ module.exports = ({ db } = {}) => {
         after,
         changes: changedKeys.length ? changes : undefined,
         extra: {
-          statusMessage,
+          statusMessage: friendlyFields
+            ? `Item "${targetName}" updated (${friendlyFields}).`
+            : `Item "${targetName}" updated.`,
           actionDetails: {
             itemId: String(before.id),
             name: targetName,
@@ -617,6 +762,16 @@ module.exports = ({ db } = {}) => {
 
       res.json({ ok: true });
     } catch (e) {
+      if (e?.message) {
+        if (
+          /stockMode=ingredients requires|stockMode=direct requires|Direct stock mode|Selected inventory item does not exist|inventoryDeductQty/i.test(
+            e.message
+          )
+        ) {
+          return res.status(400).json({ ok: false, error: e.message });
+        }
+      }
+
       if (
         e?.code === "ER_DUP_ENTRY" &&
         /uq_items_name_lower/i.test(e?.message || "")
@@ -639,22 +794,16 @@ module.exports = ({ db } = {}) => {
         ? req.body.ids.map((x) => Number(x)).filter(Number.isFinite)
         : [];
       if (!ids.length)
-        return res
-          .status(400)
-          .json({ ok: false, error: "ids is required" });
+        return res.status(400).json({ ok: false, error: "ids is required" });
 
       const placeholders = ids.map(() => "?").join(",");
 
-      // Fetch rows for audit before deletion
       const existingRows = await db.query(
         `SELECT * FROM items WHERE id IN (${placeholders})`,
         ids
       );
 
-      await db.query(
-        `DELETE FROM items WHERE id IN (${placeholders})`,
-        ids
-      );
+      await db.query(`DELETE FROM items WHERE id IN (${placeholders})`, ids);
 
       await logItemsAuditSafe(db, req, {
         action: "Items Bulk Deleted",
@@ -664,11 +813,7 @@ module.exports = ({ db } = {}) => {
           statusMessage: `Deleted ${ids.length} item(s).`,
           actionDetails: {
             ids,
-            deleted:
-              (existingRows || []).map((r) => ({
-                id: String(r.id),
-                name: r.name,
-              })) || [],
+            deleted: (existingRows || []).map((r) => ({ id: String(r.id), name: r.name })) || [],
           },
         },
       });
@@ -686,31 +831,20 @@ module.exports = ({ db } = {}) => {
       if (!Number.isFinite(id))
         return res.status(400).json({ ok: false, error: "id is required" });
 
-      // Fetch row for audit before deletion
-      const rows = await db.query(
-        `SELECT * FROM items WHERE id = ? LIMIT 1`,
-        [id]
-      );
+      const rows = await db.query(`SELECT * FROM items WHERE id = ? LIMIT 1`, [id]);
       const itemRow = rows[0] || null;
-      if (!itemRow) {
-        return res.status(404).json({ ok: false, error: "not found" });
-      }
+      if (!itemRow) return res.status(404).json({ ok: false, error: "not found" });
 
       await db.query(`DELETE FROM items WHERE id = ?`, [id]);
 
       const displayName = itemRow.name || `ID ${id}`;
-      const statusMessage = `Item "${displayName}" deleted.`;
-
       await logItemsAuditSafe(db, req, {
         action: "Item Deleted",
         actionType: "delete",
         item: itemRow,
         extra: {
-          statusMessage,
-          actionDetails: {
-            itemId: String(id),
-            name: itemRow.name,
-          },
+          statusMessage: `Item "${displayName}" deleted.`,
+          actionDetails: { itemId: String(id), name: itemRow.name },
         },
       });
 

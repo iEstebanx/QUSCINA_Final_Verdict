@@ -292,46 +292,70 @@ ON DUPLICATE KEY UPDATE answer_hash=VALUES(answer_hash);
 -- Menu (Items referencing categories)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS `items` (
-  `id`                INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name`              VARCHAR(60)  NOT NULL,
-  `nameLower`         VARCHAR(60)  AS (LOWER(`name`)) STORED,
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `nameLower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`name`)) STORED,
 
-  `description`       VARCHAR(300) NULL,
+  `description` VARCHAR(300) NULL,
 
-  `categoryId`        INT UNSIGNED NULL,                      -- FK → categories.id
-  `categoryName`      VARCHAR(60)  NULL,                      -- denormalized for caching
-  `categoryNameLower` VARCHAR(60)  NULL,
-  `categoryKey`       VARCHAR(60)  NULL,
+  `categoryId` INT UNSIGNED NULL,
+  `categoryName` VARCHAR(60) NULL,
+  `categoryNameLower` VARCHAR(60) NULL,
+  `categoryKey` VARCHAR(60) NULL,
 
-  `imageDataUrl`      LONGTEXT     NULL,                      -- base64 image
-  `price`             DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- selling price
+  `imageDataUrl` LONGTEXT NULL,
+  `price` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
 
-  `ingredients`       JSON         NULL,                      -- [{ingredientId,name,qty,price,...}]
-  `costOverall`       DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- total ingredient cost
-  `profit`            DECIMAL(12,2) NOT NULL DEFAULT 0.00,    -- price - costOverall
+  -- Recipe-based stock
+  `ingredients` JSON NULL,
+  `costOverall` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `profit` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
 
-  `active`            TINYINT(1)   NOT NULL DEFAULT 1,
-  'manualAvailable'   TINYINT(1) NOT NULL DEFAULT 1,
+  `active` TINYINT(1) NOT NULL DEFAULT 1,
 
-  `createdAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updatedAt`         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  -- STOCK MODE (OPTION 2)
+  `stockMode` ENUM('ingredients','direct')
+    NOT NULL DEFAULT 'ingredients',
+
+  -- Direct inventory link
+  `inventoryIngredientId` INT UNSIGNED NULL,
+  `inventoryDeductQty` DECIMAL(12,3) NOT NULL DEFAULT 1.000,
+
+  `manualAvailable` TINYINT(1) NOT NULL DEFAULT 1,
+
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
 
   PRIMARY KEY (`id`),
 
-  KEY `idx_items_categoryId`   (`categoryId`),
-  KEY `idx_items_categoryKey`  (`categoryKey`),
-  KEY `idx_items_updatedAt`    (`updatedAt`),
-
-  -- 🔒 Enforce case-insensitive unique item names
   UNIQUE KEY `uq_items_name_lower` (`nameLower`),
+
+  KEY `idx_items_categoryId` (`categoryId`),
+  KEY `idx_items_categoryKey` (`categoryKey`),
+  KEY `idx_items_updatedAt` (`updatedAt`),
+  KEY `idx_items_stockMode` (`stockMode`),
+  KEY `idx_items_inventoryIngredientId` (`inventoryIngredientId`),
 
   CONSTRAINT `fk_items_category_opt`
     FOREIGN KEY (`categoryId`)
-    REFERENCES `categories`(`id`)
+    REFERENCES `categories` (`id`)
     ON UPDATE CASCADE
-    ON DELETE SET NULL
-)
-ENGINE=InnoDB
+    ON DELETE SET NULL,
+
+  CONSTRAINT `fk_items_inventoryIngredient_opt`
+    FOREIGN KEY (`inventoryIngredientId`)
+    REFERENCES `inventory_ingredients` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL,
+
+  -- ✅ Enforce recipe when stockMode = ingredients
+  CONSTRAINT `chk_items_stockmode_ingredients_requires_recipe`
+    CHECK (
+      `stockMode` <> 'ingredients'
+      OR (`ingredients` IS NOT NULL AND JSON_LENGTH(`ingredients`) > 0)
+    )
+) ENGINE=InnoDB
 DEFAULT CHARSET=utf8mb4
 COLLATE=utf8mb4_unicode_ci;
 
@@ -339,20 +363,19 @@ COLLATE=utf8mb4_unicode_ci;
 -- Categories (for Menu / Items)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `categories` (
-  `id`              INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name`            VARCHAR(60)  NOT NULL,
-  `name_lower`      VARCHAR(60)  AS (LOWER(`name`)) STORED,  -- generated lower name
-  `image_data_url`  LONGTEXT     NULL,                        -- base64 data:<mime>;base64,...
-  `active`          TINYINT(1)   NOT NULL DEFAULT 1,
-  `created_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+  `image_data_url` LONGTEXT NULL,
+  `active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_categories_name_lower` (`name_lower`),
   KEY `idx_categories_active` (`active`),
   KEY `idx_categories_updated_at` (`updated_at`)
-)
-ENGINE=InnoDB
+) ENGINE=InnoDB
 DEFAULT CHARSET=utf8mb4
 COLLATE=utf8mb4_unicode_ci;
 
@@ -375,6 +398,97 @@ BEGIN
 END$$
 
 DELIMITER ;
+
+-- ============================================================
+-- INVENTORY CATEGORIES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `inventory_categories` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+  `active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL,
+  `updated_at` DATETIME NOT NULL,
+
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_inventory_categories_name_lower` (`name_lower`)
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- INVENTORY INGREDIENTS
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+
+  -- 🔥 NEW: ingredient vs product
+  `kind` ENUM('ingredient','product')
+    NOT NULL DEFAULT 'ingredient',
+
+  `category` VARCHAR(60) NOT NULL,
+  `category_lower` VARCHAR(60)
+    GENERATED ALWAYS AS (LOWER(`category`)) STORED,
+
+  `type` VARCHAR(30) NOT NULL DEFAULT 'pack',
+  `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
+  `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
+
+  `createdAt` DATETIME NOT NULL,
+  `updatedAt` DATETIME NOT NULL,
+
+  PRIMARY KEY (`id`),
+
+  UNIQUE KEY `uq_inventory_ingredients_name_lower` (`name_lower`),
+  KEY `idx_inventory_ingredients_category` (`category`),
+  KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
+  KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`),
+  KEY `idx_inventory_ingredients_kind` (`kind`),
+
+  CONSTRAINT `chk_category_nonempty`
+    CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
+
+  CONSTRAINT `chk_type_pack_or_pcs`
+    CHECK (`type` IN ('pack', 'pcs'))
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- INVENTORY ACTIVITY LOG
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `inventory_activity` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ts` DATETIME NULL,
+  `employee` VARCHAR(60) NULL,
+  `reason` VARCHAR(255) NULL,
+  `io` ENUM('In','Out') NOT NULL DEFAULT 'In',
+  `qty` DECIMAL(12,3) NOT NULL DEFAULT 0,
+
+  `ingredientId` INT UNSIGNED NULL,
+  `ingredientName` VARCHAR(60) NULL,
+
+  `createdAt` DATETIME NOT NULL,
+  `updatedAt` DATETIME NOT NULL,
+
+  PRIMARY KEY (`id`),
+
+  KEY `idx_inventory_activity_ts` (`ts`),
+  KEY `idx_inventory_activity_ingredientId` (`ingredientId`),
+  KEY `idx_inventory_activity_io` (`io`),
+
+  CONSTRAINT `fk_activity_ingredient`
+    FOREIGN KEY (`ingredientId`)
+    REFERENCES `inventory_ingredients` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
 -- Discounts (Menu)
@@ -404,81 +518,6 @@ CREATE TABLE IF NOT EXISTS `discounts` (
       (type <> 'percent') OR (value >= 0 AND value <= 100)
     )
 ) ENGINE=InnoDB;
-
--- ============================================================
--- INVENTORY CATEGORIES
--- ============================================================
-CREATE TABLE IF NOT EXISTS `inventory_categories` (
-  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name` VARCHAR(60) NOT NULL,
-  `name_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
-  `active` TINYINT(1) NOT NULL DEFAULT 1,
-  `created_at` DATETIME NOT NULL,
-  `updated_at` DATETIME NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_inventory_categories_name_lower` (`name_lower`)
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
-
--- ------------------------------------------------------------
--- INVENTORY INGREDIENTS
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
-  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name` VARCHAR(60) NOT NULL,
-  `name_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
-  `category` VARCHAR(60) NOT NULL,
-  `category_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`category`)) STORED,
-  `type` VARCHAR(30) NOT NULL DEFAULT 'pack',
-  `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
-  `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
-  `createdAt` DATETIME NOT NULL,
-  `updatedAt` DATETIME NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_inventory_ingredients_name_lower` (`name_lower`),
-  KEY `idx_inventory_ingredients_category` (`category`),
-  KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
-  KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`),
-
-  CONSTRAINT `chk_category_nonempty`
-    CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
-
-  CONSTRAINT `chk_type_pack_or_pcs`
-    CHECK (`type` IN ('pack', 'pcs'))
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
-
--- ------------------------------------------------------------
--- INVENTORY ACTIVITY LOG
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `inventory_activity` (
-  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `ts` DATETIME NULL,
-  `employee` VARCHAR(60) NULL,
-  `reason` VARCHAR(255) NULL,
-  `io` ENUM('In','Out') NOT NULL DEFAULT 'In',
-  `qty` DECIMAL(12,3) NOT NULL DEFAULT 0,
-  `ingredientId` INT UNSIGNED NULL,
-  `ingredientName` VARCHAR(60) NULL,
-  `createdAt` DATETIME NOT NULL,
-  `updatedAt` DATETIME NOT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_inventory_activity_ts` (`ts`),
-  KEY `idx_inventory_activity_ingredientId` (`ingredientId`),
-  KEY `idx_inventory_activity_io` (`io`),
-  CONSTRAINT `fk_activity_ingredient`
-    FOREIGN KEY (`ingredientId`)
-    REFERENCES `inventory_ingredients`(`id`)
-    ON UPDATE CASCADE
-    ON DELETE SET NULL
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
 -- POS SHIFTS

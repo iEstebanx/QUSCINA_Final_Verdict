@@ -1589,7 +1589,7 @@ export default function ReportsPage() {
 
                   {!exportAll && (
                     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                      Tip: uncheck items you don’t want included in the export.
+                      Tip: uncheck section you don’t want included in the export.
                     </Typography>
                   )}
                 </Paper>

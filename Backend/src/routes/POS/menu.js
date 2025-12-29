@@ -1,47 +1,33 @@
 // QUSCINA_BACKOFFICE/Backend/src/routes/POS/menu.js
 const express = require("express");
 
-// Safe JSON parse helper
-function safeJsonParse(str, fallback) {
-  if (!str) return fallback;
-  try {
-    return JSON.parse(str);
-  } catch {
-    return fallback;
-  }
-}
-
 // Normalize any db.query result into an array of rows
 function asArray(result) {
   if (!result) return [];
-  // Case 1: mysql2/promise style: [rows, fields]
-  if (Array.isArray(result[0]) && result.length >= 1) {
-    return result[0];
-  }
-  // Case 2: already rows array
+  // mysql2/promise style: [rows, fields]
+  if (Array.isArray(result[0]) && result.length >= 1) return result[0];
+  // already rows array
   if (Array.isArray(result)) return result;
-  // Fallback: unknown shape
   return [];
 }
 
-// Safe JSON parse helper
+// Safe JSON parse helper (supports MySQL JSON returning object)
 function safeJsonParse(value, fallback) {
   if (value == null) return fallback;
-
-  // If it's already an object/array (MySQL JSON column auto-parsed)
   if (typeof value === "object") return value;
-
-  // If it's not a string, we can't JSON.parse it
   if (typeof value !== "string") return fallback;
-
   const str = value.trim();
   if (!str) return fallback;
-
   try {
     return JSON.parse(str);
   } catch {
     return fallback;
   }
+}
+
+function num(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 module.exports = function posMenuRouterFactory({ db } = {}) {
@@ -55,45 +41,48 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
 
   /**
    * GET /pos/menu
-   *
-   * Used by Frontend POS Menu.jsx via /api/pos/menu
+   * Used by POS frontend via /api/pos/menu
    */
-  router.get("/", async (_req, res) => {
+  router.get("/", async (req, res) => {
     if (!db) {
       return res
         .status(500)
         .json({ ok: false, error: "DB not available for POS menu." });
     }
 
+    const wantDebug =
+      String(req.query.debug || "").trim() === "1" ||
+      String(req.query.debug || "").trim().toLowerCase() === "true";
+
     try {
-      // 1) Load base items (non-deleted / active)
+      // 1) Load active items (categoryName is denormalized already)
       const rawItems = await db.query(
         `
         SELECT
-          i.id,
-          i.name,
-          i.description,
-          i.price,
-          i.imageDataUrl     AS imageUrl,
-          i.ingredients      AS ingredientsJson,
-          i.costOverall      AS costOverall,
-          i.profit           AS profit,
-          i.manualAvailable  AS manualAvailable,
-          i.active           AS isActive,
-          c.name             AS category
-        FROM items i
-        LEFT JOIN categories c
-          ON c.id = i.categoryId
-        WHERE i.active = 1
+          id,
+          name,
+          description,
+          price,
+          imageDataUrl     AS imageUrl,
+          ingredients      AS ingredientsJson,
+          stockMode,
+          inventoryIngredientId,
+          inventoryDeductQty,
+          costOverall,
+          profit,
+          manualAvailable,
+          active           AS isActive,
+          categoryName     AS category
+        FROM items
+        WHERE active = 1
+        ORDER BY updatedAt DESC, nameLower ASC
         `
       );
 
-      // 2) Load inventory stocks
+      // 2) Load inventory stocks + kind
       const rawInv = await db.query(
         `
-        SELECT
-          id,
-          currentStock
+        SELECT id, kind, currentStock
         FROM inventory_ingredients
         `
       );
@@ -101,99 +90,129 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
       const itemRows = asArray(rawItems);
       const invRows = asArray(rawInv);
 
-      const stockById = new Map(
-        invRows.map((r) => [Number(r.id), Number(r.currentStock || 0)])
+      const invById = new Map(
+        invRows.map((r) => [
+          Number(r.id),
+          {
+            id: Number(r.id),
+            kind: String(r.kind || "ingredient"),
+            currentStock: num(r.currentStock, 0),
+          },
+        ])
       );
 
-      // 3) Build final items array
       const items = itemRows.map((row) => {
-        // Parse ingredients JSON safely
+        const price = num(row.price, 0);
+        const isActive = num(row.isActive, 0) === 1;
+
+        const manualAvailable =
+          row.manualAvailable == null ? 1 : num(row.manualAvailable, 0) ? 1 : 0;
+
+        const stockMode = String(row.stockMode || "ingredients").toLowerCase();
+
         let ingredients = safeJsonParse(row.ingredientsJson, []);
         if (!Array.isArray(ingredients)) ingredients = [];
 
-        const hasIngredients = ingredients.length > 0;
+        // Normalize ingredientId as string (matches your Option 2 normalization)
+        ingredients = ingredients
+          .map((r) => ({
+            ...r,
+            ingredientId: String(r?.ingredientId ?? "").trim(),
+            qty: num(r?.qty ?? r?.quantity ?? r?.amount, 0),
+          }))
+          .filter((r) => r.ingredientId && r.qty > 0);
 
-        // We compute stock, but we’re NOT blocking availability with it for now
-        let hasStock = false;
-        if (hasIngredients) {
-          hasStock = ingredients.every((ing) => {
-            const ingId = Number(
-              ing.ingredientId ?? ing.id ?? ing.inventoryId ?? 0
-            );
-            if (!ingId) return false;
+        // ---------- stock checks ----------
+        let hasStock = true;
+        let stockReason = "ok";
 
-            const current = stockById.get(ingId) ?? 0;
+        if (stockMode === "ingredients") {
+          const hasIngredients = ingredients.length > 0;
 
-            const neededRaw = ing.qty ?? ing.quantity ?? ing.amount;
-            const needed =
-              neededRaw != null && neededRaw !== ""
-                ? Number(neededRaw)
-                : null;
+          if (!hasIngredients) {
+            hasStock = false;
+            stockReason = "no-recipe";
+          } else {
+            hasStock = ingredients.every((ing) => {
+              const ingId = Number(ing.ingredientId);
+              if (!Number.isFinite(ingId) || ingId <= 0) return false;
 
-            if (needed && needed > 0) {
+              const inv = invById.get(ingId);
+              const current = inv?.currentStock ?? 0;
+              const needed = num(ing.qty, 0);
+
+              // need >= qty (qty already > 0 due to filter)
               return current >= needed;
+            });
+
+            if (!hasStock) stockReason = "insufficient-ingredients-stock";
+          }
+        } else if (stockMode === "direct") {
+          const invIdNum = num(row.inventoryIngredientId, 0);
+          const deductQty = num(row.inventoryDeductQty, 1);
+
+          if (!invIdNum) {
+            hasStock = false;
+            stockReason = "no-direct-link";
+          } else {
+            const inv = invById.get(invIdNum);
+            if (!inv) {
+              hasStock = false;
+              stockReason = "direct-link-missing";
+            } else if (String(inv.kind || "ingredient") !== "product") {
+              // matches your backend rule: direct must link to kind='product'
+              hasStock = false;
+              stockReason = "direct-link-not-product";
+            } else {
+              const current = num(inv.currentStock, 0);
+              hasStock = current >= (deductQty > 0 ? deductQty : 1);
+              if (!hasStock) stockReason = "insufficient-direct-stock";
             }
-            return current >= 1;
-          });
+          }
+        } else {
+          // Unknown/unsupported stockMode → safest is mark unavailable
+          hasStock = false;
+          stockReason = "unknown-stockmode";
         }
 
-        const price = Number(row.price ?? 0);
+        // Base availability gates
+        const baseAvailable = isActive && price > 0 && !!manualAvailable;
 
-        // ⚠️ This might be the culprit – manualAvailable from DB
-        const manualAvailable =
-          row.manualAvailable == null
-            ? 1
-            : Number(row.manualAvailable)
-            ? 1
-            : 0;
+        // Final availability (now *enforced* by stock mode concept)
+        const available = baseAvailable && hasStock;
 
-        const isActive = Number(row.isActive || 0) === 1;
-
-        // Base availability (stock not enforced here)
-        const baseAvailable =
-          isActive &&
-          price > 0 &&
-          hasIngredients &&
-          !!manualAvailable;
-
-        // Also log in backend console so you can see it in Node terminal
-        console.log("[POS menu] item availability check:", {
-          id: row.id,
-          name: row.name,
-          price,
-          isActive,
-          manualAvailable,
-          hasIngredients,
-          hasStock,
-          baseAvailable,
-          rawIngredients: row.ingredientsJson,
-        });
-
-        return {
-          id: row.id,
+        const out = {
+          id: String(row.id),
           name: row.name,
           description: row.description || "",
           price,
           imageUrl: row.imageUrl || null,
           category: row.category || "Uncategorized",
-          costOverall: Number(row.costOverall ?? 0),
-          profit: Number(row.profit ?? 0),
+          costOverall: num(row.costOverall, 0),
+          profit: num(row.profit, 0),
           manualAvailable,
           isActive: isActive ? 1 : 0,
-          available: baseAvailable ? 1 : 0,
+          stockMode,
+          inventoryIngredientId:
+            row.inventoryIngredientId != null ? String(row.inventoryIngredientId) : "",
+          inventoryDeductQty: num(row.inventoryDeductQty, 1),
+          available: available ? 1 : 0,
+          ingredients,
+        };
 
-          // 🔹 DEBUG: include why this item is / isn’t available
-          debug: {
+        if (wantDebug) {
+          out.debug = {
             price,
             isActive,
             manualAvailable,
-            hasIngredients,
+            stockMode,
             hasStock,
+            stockReason,
             baseAvailable,
-          },
+          };
+        }
 
-          ingredients,
-        };
+        return out;
       });
 
       return res.json({ ok: true, items });
@@ -202,8 +221,8 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
       return res.status(500).json({
         ok: false,
         error: "Failed to load menu items.",
-        debug: err.message || String(err),
-        code: err.code || null,
+        debug: err?.message || String(err),
+        code: err?.code || null,
       });
     }
   });
@@ -211,6 +230,10 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
   /**
    * POST /pos/menu/toggle
    * Body: { id, available }
+   *
+   * Turning ON requires:
+   *  - price > 0
+   *  - stockMode rules satisfied + hasStock
    */
   router.post("/toggle", async (req, res) => {
     if (!db) {
@@ -224,143 +247,172 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
 
       const itemId = Number(id);
       if (!itemId || typeof available === "undefined") {
-        return res.status(400).json({
-          ok: false,
-          error: "id and available are required.",
-        });
+        return res.status(400).json({ ok: false, error: "id and available are required." });
       }
 
       const wantAvailable =
         available === true ||
         available === 1 ||
         available === "1" ||
-        available === "true";
+        String(available).toLowerCase() === "true";
 
-      // Load item including ingredients JSON
       const rawSelect = await db.query(
         `
-          SELECT
-            id,
-            price,
-            manualAvailable,
-            active AS isActive,
-            ingredients AS ingredientsJson
-          FROM items
-          WHERE id = ?
-          LIMIT 1
-          `,
+        SELECT
+          id,
+          price,
+          active AS isActive,
+          manualAvailable,
+          ingredients AS ingredientsJson,
+          stockMode,
+          inventoryIngredientId,
+          inventoryDeductQty
+        FROM items
+        WHERE id = ?
+        LIMIT 1
+        `,
         [itemId]
       );
 
       const rows = asArray(rawSelect);
       const item = rows[0];
 
-      if (!item) {
-        return res
-          .status(404)
-          .json({ ok: false, error: "Item not found." });
+      if (!item) return res.status(404).json({ ok: false, error: "Item not found." });
+
+      const price = num(item.price, 0);
+      const isActive = num(item.isActive, 0) === 1;
+
+      if (!isActive) {
+        return res.status(400).json({
+          ok: false,
+          error: "Cannot change availability: item is not active.",
+        });
       }
 
-      const price = Number(item.price ?? 0);
-
       if (wantAvailable) {
-        // 1) Must have positive price
         if (price <= 0) {
           return res.status(400).json({
             ok: false,
-            error:
-              "Cannot mark this item as available because it has no valid price.",
+            error: "Cannot mark this item as available because it has no valid price.",
           });
         }
 
-        // 2) Must have at least one ingredient
-        let ingredients = safeJsonParse(item.ingredientsJson, []);
-        if (!Array.isArray(ingredients)) ingredients = [];
+        const stockMode = String(item.stockMode || "ingredients").toLowerCase();
 
-        const cleaned = ingredients.filter(
-          (ing) =>
-            ing &&
-            (ing.ingredientId != null ||
-              ing.id != null ||
-              ing.inventoryId != null)
-        );
+        if (stockMode === "ingredients") {
+          let ingredients = safeJsonParse(item.ingredientsJson, []);
+          if (!Array.isArray(ingredients)) ingredients = [];
 
-        if (cleaned.length === 0) {
-          return res.status(400).json({
-            ok: false,
-            error:
-              "This item cannot be marked available because it has no ingredients.",
-          });
-        }
+          ingredients = ingredients
+            .map((r) => ({
+              ingredientId: String(r?.ingredientId ?? "").trim(),
+              qty: num(r?.qty ?? r?.quantity ?? r?.amount, 0),
+            }))
+            .filter((r) => r.ingredientId && r.qty > 0);
 
-        // 3) All ingredients must have enough stock
-        const ids = cleaned.map((ing) =>
-          Number(ing.ingredientId ?? ing.id ?? ing.inventoryId)
-        );
-        const placeholders = ids.map(() => "?").join(",");
+          if (ingredients.length === 0) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because it has no recipe ingredients.",
+            });
+          }
 
-        // 🔹 Only load the ingredients we care about, and use correct column names
-        const rawInv = await db.query(
-          `
-            SELECT
-              id,
-              currentStock
+          const ids = ingredients
+            .map((r) => Number(r.ingredientId))
+            .filter((n) => Number.isFinite(n) && n > 0);
+
+          if (!ids.length) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because its recipe has invalid ingredient ids.",
+            });
+          }
+
+          const placeholders = ids.map(() => "?").join(",");
+          const rawInv = await db.query(
+            `
+            SELECT id, currentStock
             FROM inventory_ingredients
             WHERE id IN (${placeholders})
-          `,
-          ids
-        );
-
-        const invRows = asArray(rawInv);
-        const stockById = new Map(
-          invRows.map((r) => [Number(r.id), Number(r.currentStock || 0)])
-        );
-
-        const hasEnoughIngredients = cleaned.every((ing) => {
-          const ingId = Number(
-            ing.ingredientId ?? ing.id ?? ing.inventoryId ?? 0
+            `,
+            ids
           );
-          const current = stockById.get(ingId) ?? 0;
-          if (current <= 0) return false;
 
-          const neededRaw =
-            ing.qty ?? ing.quantity ?? ing.amount;
-          const needed =
-            neededRaw != null && neededRaw !== ""
-              ? Number(neededRaw)
-              : null;
+          const invRows = asArray(rawInv);
+          const stockById = new Map(
+            invRows.map((r) => [Number(r.id), num(r.currentStock, 0)])
+          );
 
-          if (needed && needed > 0) {
-            return current >= needed;
+          const okStock = ingredients.every((ing) => {
+            const ingId = Number(ing.ingredientId);
+            const current = stockById.get(ingId) ?? 0;
+            return current >= num(ing.qty, 0);
+          });
+
+          if (!okStock) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because one or more ingredients are out of stock.",
+            });
           }
-          return current >= 1;
-        });
+        } else if (stockMode === "direct") {
+          const invIdNum = num(item.inventoryIngredientId, 0);
+          const deductQty = num(item.inventoryDeductQty, 1);
 
-        if (!hasEnoughIngredients) {
+          if (!invIdNum) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because it has no Direct inventory link.",
+            });
+          }
+
+          const invRows = await db.query(
+            `SELECT id, kind, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+            [invIdNum]
+          );
+          const inv = asArray(invRows)[0];
+
+          if (!inv) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because its linked inventory record was not found.",
+            });
+          }
+
+          if (String(inv.kind || "ingredient") !== "product") {
+            return res.status(400).json({
+              ok: false,
+              error: "Direct stock mode can only link to inventory items marked as kind='product'.",
+            });
+          }
+
+          const current = num(inv.currentStock, 0);
+          const need = deductQty > 0 ? deductQty : 1;
+
+          if (current < need) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because the linked inventory is out of stock.",
+            });
+          }
+        } else {
           return res.status(400).json({
             ok: false,
-            error:
-              "This item cannot be marked available because one or more ingredients are out of stock.",
+            error: "This item cannot be marked available because it has an unsupported stockMode.",
           });
         }
       }
 
-      // If we get here: either turning OFF, or turning ON and all checks passed
+      // Persist manual toggle
       await db.query(
-        `
-          UPDATE items
-          SET manualAvailable = ?
-          WHERE id = ?
-          `,
+        `UPDATE items SET manualAvailable = ? WHERE id = ?`,
         [wantAvailable ? 1 : 0, itemId]
       );
 
       return res.json({ ok: true });
     } catch (err) {
       console.error("[POS menu] POST /pos/menu/toggle failed:", err);
-      return res
-        .status(500)
-        .json({ ok: false, error: "Failed to update availability." });
+      return res.status(500).json({ ok: false, error: "Failed to update availability." });
     }
   });
 

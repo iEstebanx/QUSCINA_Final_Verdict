@@ -123,6 +123,16 @@ const formatStockInline = (qty, unit) => {
   return secondary ? `${primary} (${secondary})` : primary;
 };
 
+const KIND_OPTIONS = [
+  { value: "ingredient", label: "INGREDIENT" },
+  { value: "product", label: "PRODUCT" },
+];
+
+const KIND_LABEL_MAP = KIND_OPTIONS.reduce((m, k) => {
+  m[k.value] = k.label;
+  return m;
+}, {});
+
 const NOW = () => new Date().toISOString();
 
 const ING_API = "/api/inventory/ingredients";
@@ -221,6 +231,9 @@ export default function InventoryPage() {
   const [deleteCheckResult, setDeleteCheckResult] = useState(null); // still here for legacy dialog, but we mainly use blocked modal now
   const [deleting, setDeleting] = useState(false);
 
+  const [kindFilter, setKindFilter] = useState("all");
+  const [newKind, setNewKind] = useState("ingredient");
+
   const addTouchedRef = useRef(false);
 
   const markAddTouched = () => {
@@ -264,6 +277,7 @@ export default function InventoryPage() {
         const list = (data.ingredients ?? []).map((x) => ({
           id: x.id,
           name: x.name || "",
+          kind: x.kind || "ingredient",  
           category: x.category,
           type: x.type,
           currentStock: Number(x.currentStock || 0),
@@ -332,6 +346,12 @@ export default function InventoryPage() {
       );
     }
 
+    if (kindFilter !== "all") {
+      filteredList = filteredList.filter(
+        (ing) => (ing.kind || "ingredient") === kindFilter
+      );
+    }
+
     if (stockFilter === "low") {
       filteredList = filteredList.filter((ing) => {
         const low = Number(ing.lowStock || 0);
@@ -355,11 +375,11 @@ export default function InventoryPage() {
       });
     }
     return filteredList;
-  }, [ingredients, qLower, stockFilter, categoryFilter]);
+  }, [ingredients, qLower, stockFilter, categoryFilter, kindFilter]);
 
   useEffect(() => {
     setPageState((s) => ({ ...s, page: 0 }));
-  }, [query, stockFilter, categoryFilter]);
+  }, [query, stockFilter, categoryFilter, kindFilter]);
 
   const paged = useMemo(() => {
     const start = pageState.page * pageState.rowsPerPage;
@@ -419,28 +439,34 @@ export default function InventoryPage() {
     setIngredientToDelete(ingredient);
 
     try {
-      const res = await fetch(`${ING_API}/${ingredient.id}/usage`);
+      const res = await fetch(`${ING_API}/${ingredient.id}/usage`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data?.ok && data.isUsed) {
+        const usedInItems = Array.isArray(data.usedInItems) ? data.usedInItems : [];
+
+        const recipeCount = Number(data.usedRecipeCount || 0);
+        const directCount = Number(data.usedDirectCount || 0);
+
+        let msg = "Cannot delete inventory record because it is linked to item(s).";
+        if (recipeCount > 0 && directCount > 0) msg = "Cannot delete; linked to items via Recipe and Direct mode.";
+        else if (recipeCount > 0) msg = "Cannot delete; linked to items via Recipe (ingredients) mode.";
+        else if (directCount > 0) msg = "Cannot delete; linked to items via Direct inventory mode.";
+
         showBlockedModal({
           ingredientName: ingredient.name,
-          countItems: Array.isArray(data.usedInItems)
-            ? data.usedInItems.length
-            : 0,
-          countActivity: Number.isFinite(data.activityCount)
-            ? data.activityCount
-            : 0,
-          sampleItems: Array.isArray(data.usedInItems)
-            ? data.usedInItems.slice(0, 6)
-            : [],
-          message: "Cannot delete ingredient; item(s) are assigned to it.",
+          recipeCount,
+          directCount,
+          activityCount: 0, // usage endpoint doesn't provide this
+          sampleItems: usedInItems.slice(0, 6),
+          message: msg,
         });
 
         setSelected((s) => s.filter((id) => id !== ingredient.id));
         return;
       }
 
+      // not used → proceed to confirm dialog
       setDeleteDialogOpen(true);
     } catch (e) {
       console.error("usage check error:", e);
@@ -463,16 +489,32 @@ export default function InventoryPage() {
         setSelected((prev) =>
           prev.filter((id) => id !== ingredientToDelete.id)
         );
-        alert.success(
-          `Ingredient "${ingredientToDelete.name}" deleted successfully`
-        );
+        alert.success(`Inventory item "${ingredientToDelete.name}" deleted successfully`);
         setDeleteDialogOpen(false);
       } else {
-        alert.error(data?.error || "Failed to delete ingredient");
+        // If backend blocks deletion, show the same blocked modal
+        if (res.status === 409 && data?.reason) {
+          const reason = data.reason;
+          const sample = Array.isArray(data.sample) ? data.sample : [];
+
+          showBlockedModal({
+            ingredientName: ingredientToDelete.name,
+            recipeCount: reason === "item-linked" ? sample.length : 0,
+            directCount: reason === "direct-linked" ? sample.length : 0,
+            activityCount: reason === "activity-linked" ? (Number(data.count) || 0) : 0,
+            sampleItems: sample.slice(0, 6),
+            message: data?.error || "Cannot delete; inventory record is linked.",
+          });
+
+          setDeleteDialogOpen(false);
+          return;
+        }
+
+        alert.error(data?.error || "Failed to delete inventory item");
       }
     } catch (e) {
       console.error("delete error:", e);
-      alert.error("Failed to delete ingredient");
+      alert.error("Failed to delete inventory item");
     } finally {
       setDeleting(false);
     }
@@ -482,8 +524,9 @@ export default function InventoryPage() {
   const [blockedDialog, setBlockedDialog] = useState({
     open: false,
     ingredientName: "",
-    countItems: 0,
-    countActivity: 0,
+    recipeCount: 0,
+    directCount: 0,
+    activityCount: 0,
     sampleItems: [],
     message: "",
   });
@@ -491,16 +534,19 @@ export default function InventoryPage() {
   function showBlockedModal(payload = {}) {
     const {
       ingredientName = "",
-      countItems = 0,
-      countActivity = 0,
+      recipeCount = 0,
+      directCount = 0,
+      activityCount = 0,
       sampleItems = [],
       message = "",
     } = payload || {};
+
     setBlockedDialog({
       open: true,
       ingredientName,
-      countItems: Number.isFinite(countItems) ? countItems : 0,
-      countActivity: Number.isFinite(countActivity) ? countActivity : 0,
+      recipeCount: Number.isFinite(recipeCount) ? recipeCount : 0,
+      directCount: Number.isFinite(directCount) ? directCount : 0,
+      activityCount: Number.isFinite(activityCount) ? activityCount : 0,
       sampleItems: Array.isArray(sampleItems) ? sampleItems.slice(0, 6) : [],
       message: String(message || ""),
     });
@@ -530,6 +576,7 @@ export default function InventoryPage() {
           const list = (j.ingredients ?? []).map((x) => ({
             id: x.id,
             name: x.name || "",
+            kind: x.kind || "ingredient",
             category: x.category || "Uncategorized",
             type: x.type || "",
             currentStock: Number(x.currentStock || 0),
@@ -543,7 +590,7 @@ export default function InventoryPage() {
       const deleted = Number(data.deleted || 0);
 
       if (deleted) {
-        alert.success(`Deleted ${deleted} ingredient${deleted > 1 ? "s" : ""}`);
+        alert.success(`Deleted ${deleted} inventory item${deleted > 1 ? "s" : ""}`);
       }
 
       if (blocked.length) {
@@ -553,16 +600,22 @@ export default function InventoryPage() {
         if (blocked.length === 1) {
           const b = blocked[0];
           const name = namesById.get(String(b.id)) || "This ingredient";
-          const message =
-            b.reason === "activity-linked"
-              ? `Cannot delete ingredient; ${b.count} activity record(s) are linked to it.`
-              : `Cannot delete ingredient; it is currently used in menu item(s).`;
+          let message = "Cannot delete ingredient; it is currently linked.";
+          if (b.reason === "activity-linked") {
+            message = `Cannot delete ingredient; ${Number(b.count) || 0} activity record(s) are linked to it and it still has stock.`;
+          } else if (b.reason === "item-linked") {
+            message = `Cannot delete ingredient; it is used in item recipes.`;
+          } else if (b.reason === "direct-linked") {
+            message = `Cannot delete ingredient; it is linked to item(s) in Direct mode.`;
+          } else if (b.reason === "not-found") {
+            message = `Cannot delete ingredient; it was not found.`;
+          }
+
           showBlockedModal({
             ingredientName: name,
-            countItems:
-              b.reason === "item-linked" ? Number(b.count) || 0 : 0,
-            countActivity:
-              b.reason === "activity-linked" ? Number(b.count) || 0 : 0,
+            recipeCount: b.reason === "item-linked" ? Number(b.count) || 0 : 0,
+            directCount: b.reason === "direct-linked" ? Number(b.count) || 0 : 0,
+            activityCount: b.reason === "activity-linked" ? Number(b.count) || 0 : 0,
             sampleItems: Array.isArray(b.sample) ? b.sample : [],
             message,
           });
@@ -591,7 +644,7 @@ export default function InventoryPage() {
     }
   };
 
-  // Add Ingredient dialog
+  // Add Inventory Item dialog
   const [openAdd, setOpenAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCat, setNewCat] = useState("");
@@ -605,6 +658,7 @@ export default function InventoryPage() {
   const resetAddForm = () => {
     setNewName("");
     setNewCat("");
+    setNewKind("ingredient");
     setNewUnit(DEFAULT_UNIT);
     setAddFormChanged(false);
     setShowAddConfirm(false);
@@ -642,10 +696,12 @@ export default function InventoryPage() {
     }
 
     try {
+      const kind = newKind || "ingredient";
+      
       const res = await fetch(ING_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, category, type: unit }),
+        body: JSON.stringify({ name, category, type: unit, kind }), 
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok !== true)
@@ -656,6 +712,7 @@ export default function InventoryPage() {
         {
           id,
           name,
+          kind,
           category,
           type: unit,
           currentStock: 0,
@@ -768,6 +825,13 @@ const handleRowClick = (ing) => {
   setOpenStock(true);
 };
 
+function moveIdToFront(arr, id) {
+  const idx = arr.findIndex((x) => x.id === id);
+  if (idx < 0) return arr;
+  const item = arr[idx];
+  return [item, ...arr.slice(0, idx), ...arr.slice(idx + 1)];
+}
+
 // HANDLE STOCK SAVE
 const handleStockSave = async () => {
   try {
@@ -860,6 +924,7 @@ const [showEditConfirm, setShowEditConfirm] = useState(false);
 const [editForm, setEditForm] = useState({
   id: "",
   name: "",
+  kind: "ingredient", 
   category: "",
   type: DEFAULT_UNIT,
   lowStock: 0,
@@ -884,6 +949,7 @@ const openEditDialog = (ing) => {
   const form = {
     id: ing.id,
     name: ing.name || "",
+    kind: ing.kind || "ingredient",
     category: ing.category || "",
     type: ing.type || DEFAULT_UNIT,
     lowStock: Number(ing.lowStock || 0),
@@ -911,6 +977,7 @@ const handleEditSave = async () => {
 
     const body = {
       name: normalize(editForm.name),
+      kind: editForm.kind || "ingredient",
       category: normalize(editForm.category),
       type: editForm.type,
       lowStock: parseLowStock(editForm.lowStock),
@@ -937,6 +1004,7 @@ const handleEditSave = async () => {
           ? {
               ...i,
               name: body.name,
+              kind: body.kind,
               category: body.category,
               type: body.type,
               lowStock: Number(body.lowStock || 0),
@@ -982,13 +1050,6 @@ const handleEditSave = async () => {
     },
   };
 
-  const moveIdToFront = (arr, id) => {
-    const idx = arr.findIndex((x) => x.id === id);
-    if (idx < 0) return arr;
-    const item = arr[idx];
-    return [item, ...arr.slice(0, idx), ...arr.slice(idx + 1)];
-  };
-
 const readOnlySx = (theme) => ({
   // keep background unchanged
   "& .MuiInputBase-root": {
@@ -1020,10 +1081,11 @@ const readOnlySx = (theme) => ({
   },
 });
 
-const filtersAreDefault = categoryFilter === "all" && stockFilter === "all";
+const filtersAreDefault = categoryFilter === "all" && stockFilter === "all" && kindFilter === "all";
 
 const handleResetFilters = () => {
   setCategoryFilter("all");
+  setKindFilter("all");
   setStockFilter("all");
   setQuery("");
 
@@ -1055,7 +1117,7 @@ const handleResetFilters = () => {
               }}
               sx={{ flexShrink: 0 }}
             >
-              Add Ingredient
+              Add Inventory Item
             </Button>
 
             <Box sx={{ flexGrow: 1, minWidth: 0 }} />
@@ -1063,10 +1125,8 @@ const handleResetFilters = () => {
             <Tooltip
               title={
                 selected.length
-                  ? `Delete ${selected.length} selected ingredient${
-                      selected.length > 1 ? "s" : ""
-                    }`
-                  : "Select ingredients to delete"
+                  ? `Delete ${selected.length} selected inventory item${selected.length > 1 ? "s" : ""}`
+                  : "Select inventory items to delete"
               }
             >
               <span>
@@ -1083,7 +1143,7 @@ const handleResetFilters = () => {
 
             <TextField
               size="small"
-              placeholder="Search ingredient or category"
+              placeholder="Search inventory name or category"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               sx={{
@@ -1116,6 +1176,21 @@ const handleResetFilters = () => {
                     {c}
                   </MenuItem>
                 ))}
+              </Select>
+            </FormControl>
+
+            <FormControl size="small" sx={{ minWidth: 150, flexShrink: 0 }}>
+              <InputLabel id="inv-kind-filter-label">Inventory Type</InputLabel>
+              <Select
+                labelId="inv-kind-filter-label"
+                id="inv-kind-filter"
+                value={kindFilter}
+                label="Inventory Type"
+                onChange={(e) => setKindFilter(e.target.value)}
+              >
+                <MenuItem value="all">All</MenuItem>
+                <MenuItem value="ingredient">Ingredient</MenuItem>
+                <MenuItem value="product">Product</MenuItem>
               </Select>
             </FormControl>
 
@@ -1185,6 +1260,7 @@ const handleResetFilters = () => {
               <colgroup>
                 <col style={{ width: 50 }} />
                 <col style={{ width: 220 }} />
+                <col style={{ width: 130 }} />
                 <col style={{ width: 170 }} />
                 <col style={{ width: 110 }} />
                 <col style={{ width: 180 }} />
@@ -1205,8 +1281,12 @@ const handleResetFilters = () => {
 
                   <TableCell>
                     <Typography fontWeight={600}>
-                      Ingredient Name
+                      Inventory Name
                     </Typography>
+                  </TableCell>
+
+                  <TableCell>
+                    <Typography fontWeight={600}>Inventory Type</Typography>
                   </TableCell>
 
                   <TableCell>
@@ -1269,6 +1349,10 @@ const handleResetFilters = () => {
                       </TableCell>
 
                       <TableCell onClick={() => handleRowClick(ing)}>
+                        <Typography>{KIND_LABEL_MAP[ing.kind] || KIND_LABEL_MAP.ingredient}</Typography>
+                      </TableCell>
+
+                      <TableCell onClick={() => handleRowClick(ing)}>
                         <Typography>{ing.category}</Typography>
                       </TableCell>
 
@@ -1315,7 +1399,7 @@ const handleResetFilters = () => {
                       </TableCell>
 
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <Tooltip title="Edit ingredient details">
+                        <Tooltip title="Edit inventory details">
                           <IconButton
                             size="small"
                             onClick={(e) => {
@@ -1328,7 +1412,7 @@ const handleResetFilters = () => {
                           </IconButton>
                         </Tooltip>
 
-                        <Tooltip title="Delete ingredient">
+                        <Tooltip title="Delete inventory item">
                           <IconButton
                             size="small"
                             onClick={(e) => {
@@ -1348,7 +1432,7 @@ const handleResetFilters = () => {
 
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Box py={6} textAlign="center">
                         <Typography
                           variant="body2"
@@ -1392,7 +1476,7 @@ const handleResetFilters = () => {
       >
         <DialogTitle component="div">
           <Typography variant="h6" fontWeight={600}>
-            Delete Ingredient
+            Delete Inventory Item
           </Typography>
         </DialogTitle>
         <DialogContent>
@@ -1465,12 +1549,12 @@ const handleResetFilters = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Add Ingredient Dialog */}
+      {/* Add Inventory Item Dialog */}
       <Dialog open={openAdd} onClose={handleAddClose} maxWidth="xs" fullWidth>
         <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>
-              Add Ingredient
+              Add Inventory Item
             </Typography>
           </Stack>
         </DialogTitle>
@@ -1480,38 +1564,57 @@ const handleResetFilters = () => {
           onChangeCapture={markAddTouched}
         >
           <Stack spacing={2} mt={1}>
-            <TextField
-              label="Name"
-              value={newName}
-              onChange={(e) => {
-                setNewName(e.target.value);
-                handleAddFormChange();
-              }}
-              autoFocus
-              fullWidth
-              error={
-                newName.trim().length > 0 &&
-                !isValidName(normalize(newName))
-              }
-              helperText={
-                newName
-                  ? `${normalize(newName).length}/${NAME_MAX}${
-                      !isValidName(normalize(newName))
-                        ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
-                        : ""
-                    }`
-                  : `Max ${NAME_MAX} chars`
-              }
-            />
+            {/* Row 1: Name | Kind */}
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <TextField
+                label="Inventory Name"
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  handleAddFormChange();
+                }}
+                autoFocus
+                fullWidth
+                error={newName.trim().length > 0 && !isValidName(normalize(newName))}
+                helperText={
+                  newName
+                    ? `${normalize(newName).length}/${NAME_MAX}${
+                        !isValidName(normalize(newName))
+                          ? " • Allowed: letters, numbers, spaces, - ' & . , ( ) /"
+                          : ""
+                      }`
+                    : `Max ${NAME_MAX} chars`
+                }
+                sx={{ flex: 1.6 }}
+              />
 
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              spacing={2}
-            >
+              <FormControl fullWidth required sx={{ flex: 1 }}>
+                <InputLabel id="kind-add-label">Inventory Type</InputLabel>
+                <Select
+                  labelId="kind-add-label"
+                  label="Kind"
+                  value={newKind}
+                  onChange={(e) => {
+                    setNewKind(e.target.value);
+                    handleAddFormChange();
+                  }}
+                >
+                  {KIND_OPTIONS.map((k) => (
+                    <MenuItem key={k.value} value={k.value}>
+                      {k.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+
+            {/* Row 2: Categories | Unit */}
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <FormControl
                 fullWidth
                 required
                 error={addFormChanged && !normalize(newCat)}
+                sx={{ flex: 1.3 }}
               >
                 <InputLabel id="cat-label">Categories</InputLabel>
                 <Select
@@ -1539,6 +1642,7 @@ const handleResetFilters = () => {
                 fullWidth
                 required
                 error={addFormChanged && !newUnit}
+                sx={{ flex: 1 }}
               >
                 <InputLabel id="unit-add-label">Unit</InputLabel>
                 <Select
@@ -1560,6 +1664,7 @@ const handleResetFilters = () => {
             </Stack>
           </Stack>
         </DialogContent>
+
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button variant="outlined" onClick={handleAddClose}>
             CANCEL
@@ -1579,7 +1684,7 @@ const handleResetFilters = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Confirm Discard Dialog for Add Ingredient */}
+      {/* Confirm Discard Dialog for Add Inventory Item */}
       <Dialog
         open={showAddConfirm}
         onClose={handleAddCancelClose}
@@ -1866,8 +1971,8 @@ const handleResetFilters = () => {
         <DialogTitle component="div" sx={{ pb: 1 }}>
           <Typography variant="h6" fontWeight={700}>
             {blockedDialog.ingredientName
-              ? "Cannot Delete Ingredient"
-              : "Cannot Delete Ingredients"}
+              ? "Cannot Delete Inventory Item"
+              : "Cannot Delete Inventory Item"}
           </Typography>
         </DialogTitle>
 
@@ -1884,25 +1989,23 @@ const handleResetFilters = () => {
             </Typography>
           )}
 
-          {(blockedDialog.countItems > 0 ||
-            blockedDialog.countActivity > 0) && (
+          {(blockedDialog.recipeCount > 0 ||
+            blockedDialog.directCount > 0 ||
+            blockedDialog.activityCount > 0) && (
             <Box sx={{ mb: 1 }}>
-              {blockedDialog.countItems > 0 && (
-                <Typography
-                  variant="body2"
-                  sx={{ mb: 0.25 }}
-                >
-                  <strong>Linked items:</strong>{" "}
-                  {blockedDialog.countItems}
+              {blockedDialog.recipeCount > 0 && (
+                <Typography variant="body2" sx={{ mb: 0.25 }}>
+                  <strong>Linked recipe items:</strong> {blockedDialog.recipeCount}
                 </Typography>
               )}
-              {blockedDialog.countActivity > 0 && (
-                <Typography
-                  variant="body2"
-                  sx={{ mb: 0.25 }}
-                >
-                  <strong>Linked activity records:</strong>{" "}
-                  {blockedDialog.countActivity}
+              {blockedDialog.directCount > 0 && (
+                <Typography variant="body2" sx={{ mb: 0.25 }}>
+                  <strong>Linked direct items:</strong> {blockedDialog.directCount}
+                </Typography>
+              )}
+              {blockedDialog.activityCount > 0 && (
+                <Typography variant="body2" sx={{ mb: 0.25 }}>
+                  <strong>Linked activity records:</strong> {blockedDialog.activityCount}
                 </Typography>
               )}
             </Box>
@@ -1966,12 +2069,12 @@ const handleResetFilters = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Edit Ingredient Details Dialog */}
+      {/* Edit Inventory Details Dialog */}
       <Dialog open={openEdit} onClose={handleEditClose} maxWidth="sm" fullWidth>
         <DialogTitle component="div">
           <Stack alignItems="center" spacing={1}>
             <Typography variant="h5" fontWeight={800}>
-              Edit Ingredient Details
+              Edit Inventory Details
             </Typography>
           </Stack>
         </DialogTitle>
@@ -1984,7 +2087,7 @@ const handleResetFilters = () => {
             {/* Row 1: Name | Category */}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <TextField
-                label="Name"
+                label="Inventory Name"
                 value={editForm.name}
                 onChange={(e) =>
                   setEditForm((f) => ({ ...f, name: e.target.value }))
@@ -2037,6 +2140,25 @@ const handleResetFilters = () => {
 
             {/* Row 2: Unit | Low Stock */}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+
+              <FormControl fullWidth required>
+                <InputLabel id="edit-kind-label">Inventory Type</InputLabel>
+                <Select
+                  labelId="edit-kind-label"
+                  label="Inventory Type"
+                  value={editForm.kind || "ingredient"}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, kind: e.target.value }))
+                  }
+                >
+                  {KIND_OPTIONS.map((k) => (
+                    <MenuItem key={k.value} value={k.value}>
+                      {k.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
               <FormControl fullWidth required>
                 <InputLabel id="edit-unit-label">Unit</InputLabel>
                 <Select

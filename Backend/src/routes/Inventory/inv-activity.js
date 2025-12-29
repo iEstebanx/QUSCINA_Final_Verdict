@@ -12,6 +12,16 @@ try {
    SHARED AUDIT HELPERS (copied from ingredients.js, no pricing)
    ============================================================ */
 
+const normalize = (s) =>
+  String(s ?? "").replace(/\s+/g, " ").trim();
+
+const KIND_ALLOWED = new Set(["ingredient", "product"]);
+const normalizeKind = (v) => {
+  const k = String(v ?? "").trim().toLowerCase();
+  return KIND_ALLOWED.has(k) ? k : null;
+};
+
+
 function getAuditUserFromReq(req) {
   const authUser = req?.user || null;
   if (!authUser) return null;
@@ -36,11 +46,11 @@ function mapIngredientItem(row) {
   return {
     id: String(row.id),
     name: row.name,
+    kind: row.kind || "ingredient", 
     category: row.category,
     type: row.type,
     currentStock: Number(row.currentStock || 0),
     lowStock: Number(row.lowStock || 0),
-    // 🔴 price removed – inventory is now quantity-only
   };
 }
 
@@ -134,33 +144,64 @@ module.exports = ({ db } = {}) => {
   // GET /api/inventory/inv-activity?limit=1000
   router.get("/", async (req, res) => {
     try {
-      const limit = Math.max(
-        1,
-        Math.min(1000, parseInt(req.query.limit || "200", 10))
-      );
+      // ✅ helpers MUST exist in this file:
+      // const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+      // const normalizeKind = (...) => "ingredient"|"product"|null;
+
+      const category = normalize(req.query.category);
+      const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
+      const kind = rawKind === "all" ? "all" : normalizeKind(rawKind);
+
+      const params = [];
+      const where = [];
+
+      // We filter via inventory_ingredients (joined as ii)
+      if (kind && kind !== "all") {
+        where.push("ii.kind = ?");
+        params.push(kind);
+      }
+      if (category && category !== "all") {
+        where.push("ii.category = ?");
+        params.push(category);
+      }
+
+      const sqlWhere = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+      const limitRaw = Number(req.query.limit);
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 5000) : 1000;
 
       const rows = await db.query(
-        `SELECT id, ts, employee, reason, io, qty,
-                ingredientId, ingredientName, createdAt, updatedAt
-           FROM inventory_activity
-          ORDER BY COALESCE(ts, createdAt) DESC
-          LIMIT ${limit}`
+        `
+        SELECT
+          ia.id,
+          ia.ts,
+          ia.employee,
+          ia.reason,
+          ia.io,
+          ia.qty,
+          ia.ingredientId,
+          ia.ingredientName
+        FROM inventory_activity ia
+        LEFT JOIN inventory_ingredients ii
+          ON ii.id = ia.ingredientId
+        ${sqlWhere}
+        ORDER BY ia.ts DESC, ia.id DESC
+        LIMIT ${limit}
+        `,
+        params
       );
 
-      const out = rows.map((r) => ({
+      const out = (rows || []).map((r) => ({
         id: String(r.id),
         ts: r.ts
           ? typeof r.ts === "string"
             ? r.ts
             : new Date(r.ts).toISOString()
-          : r.createdAt
-          ? new Date(r.createdAt).toISOString()
           : new Date().toISOString(),
-        employee: r.employee,
-        reason: r.reason,
-        io: r.io,
+        employee: r.employee || "",
+        reason: r.reason || "",
+        io: String(r.io || "In") === "Out" ? "Out" : "In",
         qty: Number(r.qty || 0),
-        // 🔴 price removed from API response
         ingredientId: r.ingredientId ? String(r.ingredientId) : "",
         ingredientName: r.ingredientName || "",
       }));
@@ -218,7 +259,7 @@ module.exports = ({ db } = {}) => {
             (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            now,
+            tsVal || now,
             employee,
             reason,
             io,

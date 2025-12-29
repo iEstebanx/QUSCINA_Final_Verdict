@@ -42,6 +42,7 @@ function mapIngredientItem(row) {
   return {
     id: String(row.id),
     name: row.name,
+    kind: row.kind || "ingredient",
     category: row.category,
     type: row.type,
     currentStock: Number(row.currentStock || 0),
@@ -138,6 +139,12 @@ const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const isValidName = (s) =>
   !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
+const KIND_ALLOWED = new Set(["ingredient", "product"]);
+const normalizeKind = (v) => {
+  const k = String(v ?? "").trim().toLowerCase();
+  return KIND_ALLOWED.has(k) ? k : null;
+};
+
 module.exports = ({ db } = {}) => {
   db = db || sharedDb;
   if (!db) throw new Error("DB pool not available");
@@ -162,6 +169,12 @@ module.exports = ({ db } = {}) => {
   router.get("/low-stock", async (req, res) => {
     try {
       const { category, limit } = req.query;
+
+      // allow: ingredient | product | all
+      const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
+      const kind =
+        rawKind === "all" ? "all" : (normalizeKind(rawKind) || "ingredient");
+
       const L = Math.min(Number(limit) || 50, 200);
 
       const params = [];
@@ -171,14 +184,20 @@ module.exports = ({ db } = {}) => {
         AND currentStock <= lowStock
       `;
 
+      // only filter by kind when NOT "all"
+      if (kind !== "all") {
+        where = `kind = ? AND ` + where;
+        params.push(kind);
+      }
+
       if (category) {
-        where += " AND category_lower = ?";
+        where += " AND LOWER(category) = ?";
         params.push(String(category).toLowerCase());
       }
 
       const rows = await db.query(
         `
-        SELECT id, name, category, type, currentStock, lowStock, updatedAt
+        SELECT id, name, kind, category, type, currentStock, lowStock, updatedAt
         FROM inventory_ingredients
         WHERE ${where}
         ORDER BY (currentStock / lowStock) ASC, updatedAt DESC
@@ -202,6 +221,7 @@ module.exports = ({ db } = {}) => {
         return {
           id: r.id,
           name: r.name,
+          kind: r.kind || "ingredient",
           category: r.category,
           type: r.type,
           currentStock,
@@ -225,7 +245,7 @@ module.exports = ({ db } = {}) => {
   router.get("/", async (_req, res) => {
     try {
       const rows = await db.query(
-        `SELECT id, name, category, type, currentStock, lowStock, createdAt, updatedAt
+        `SELECT id, name, kind, category, type, currentStock, lowStock, createdAt, updatedAt
            FROM inventory_ingredients
           ORDER BY updatedAt DESC, createdAt DESC, name ASC`
       );
@@ -233,6 +253,7 @@ module.exports = ({ db } = {}) => {
       const ingredients = rows.map((r) => ({
         id: String(r.id),
         name: r.name,
+        kind: r.kind || "ingredient",
         category: r.category,
         type: r.type || "",
         currentStock: Number(r.currentStock || 0),
@@ -250,17 +271,41 @@ module.exports = ({ db } = {}) => {
     }
   });
 
-  // Helper: check if an ingredient is used by any item JSON
+  // Helper: check if an inventory id is used inside item recipes (stockMode=ingredients)
   async function ingredientUsage(ingredientId) {
+    const idStr = String(ingredientId || "").trim();
+    if (!idStr) return [];
+
+    // STRICT: only look at $[*].ingredientId values
+    const rows = await db.query(
+      `
+      SELECT id, name
+      FROM items
+      WHERE (stockMode IS NULL OR stockMode = 'ingredients')
+        AND JSON_CONTAINS(
+              JSON_EXTRACT(ingredients, '$[*].ingredientId'),
+              CAST(? AS JSON)
+            )
+      LIMIT 5
+      `,
+      [idStr]
+    );
+
+    return rows || [];
+  }
+
+  async function directUsage(inventoryId) {
+    const idNum = Number(inventoryId);
+    if (!Number.isFinite(idNum)) return [];
     const rows = await db.query(
       `SELECT id, name
-         FROM items
-        WHERE JSON_CONTAINS(ingredients, JSON_QUOTE(?))
-           OR JSON_SEARCH(ingredients, 'one', ?, NULL, '$[*].ingredientId') IS NOT NULL
+        FROM items
+        WHERE stockMode = 'direct'
+          AND inventoryIngredientId = ?
         LIMIT 5`,
-      [ingredientId, ingredientId]
+      [idNum]
     );
-    return rows;
+    return rows || [];
   }
 
   // GET /api/inventory/ingredients/:id/usage
@@ -271,14 +316,28 @@ module.exports = ({ db } = {}) => {
         return res.json({ ok: true, isUsed: false, usedInItems: [] });
       }
 
-      const rows = await ingredientUsage(ingredientId);
-      const isUsed = rows.length > 0;
-      const usedInItems = [...new Set(rows.map((r) => r.name || "Unnamed Item"))];
+      const usedRecipe = await ingredientUsage(ingredientId);
+      const usedDirect = await directUsage(ingredientId);
 
-      res.json({ ok: true, isUsed, usedInItems });
+      const usedInItems = [
+        ...new Set([
+          ...usedRecipe.map((r) => r.name || "Unnamed Item"),
+          ...usedDirect.map((r) => r.name || "Unnamed Item"),
+        ]),
+      ];
+
+      const isUsed = usedInItems.length > 0;
+
+      return res.json({
+        ok: true,
+        isUsed,
+        usedInItems,
+        usedRecipeCount: usedRecipe.length,
+        usedDirectCount: usedDirect.length,
+      });
     } catch (e) {
       console.error("[ingredients] usage check failed:", e);
-      res
+      return res
         .status(500)
         .json({ ok: false, error: e.message || "Usage check failed" });
     }
@@ -290,6 +349,7 @@ module.exports = ({ db } = {}) => {
       const name = normalize(req.body?.name);
       const category = normalize(req.body?.category);
       const type = normalize(req.body?.type);
+      const kind = normalizeKind(req.body?.kind) || "ingredient";
 
       if (!isValidName(name)) {
         return res.status(400).json({
@@ -319,9 +379,9 @@ module.exports = ({ db } = {}) => {
       );
       const result = await db.query(
         `INSERT INTO inventory_ingredients
-          (name, category, type, currentStock, lowStock, createdAt, updatedAt)
-         VALUES (?, ?, ?, 0, 0, ?, ?)`,
-        [name, category, type, now, now]
+          (name, kind, category, type, currentStock, lowStock, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
+        [name, kind, category, type, now, now]
       );
 
       const newId = result.insertId;
@@ -406,6 +466,40 @@ module.exports = ({ db } = {}) => {
           });
         }
         u.name = name;
+      }
+
+      if (req.body?.kind !== undefined) {
+        const k = normalizeKind(req.body.kind);
+        if (!k) {
+          return res.status(400).json({ ok: false, error: "kind must be 'ingredient' or 'product'." });
+        }
+
+        // needs directUsage() to be INSIDE module.exports so it can use db
+        if ((before.kind || "ingredient") !== k && k === "product") {
+          const usedInRecipe = await ingredientUsage(String(id));
+          if (usedInRecipe.length) {
+            return res.status(409).json({
+              ok: false,
+              error: "Cannot set kind='product' because this inventory record is used in item recipes.",
+              reason: "recipe-linked",
+              sample: [...new Set(usedInRecipe.map(r => r.name || "Unnamed Item"))].slice(0, 5),
+            });
+          }
+        }
+
+        if ((before.kind || "ingredient") !== k && k === "ingredient") {
+          const usedDirect = await directUsage(id);
+          if (usedDirect.length) {
+            return res.status(409).json({
+              ok: false,
+              error: "Cannot set kind='ingredient' because this inventory record is linked to items in Direct mode.",
+              reason: "direct-linked",
+              sample: [...new Set(usedDirect.map(r => r.name || "Unnamed Item"))].slice(0, 5),
+            });
+          }
+        }
+
+        u.kind = k;
       }
 
       // Category
@@ -495,6 +589,7 @@ module.exports = ({ db } = {}) => {
       // Compute field-level changes for audit
       const fieldsToCompare = [
         "name",
+        "kind",
         "category",
         "type",
         "currentStock",
@@ -518,7 +613,7 @@ module.exports = ({ db } = {}) => {
       // 🔹 We only want this route to log **metadata** edits
       //    (name, category, unit, lowStock). Stock movements are
       //    logged exclusively by inv-activity.js.
-      const META_FIELDS = ["name", "category", "type", "lowStock"];
+      const META_FIELDS = ["name", "kind", "category", "type", "lowStock"];
       const metaChangedKeys = changedKeys.filter((k) =>
         META_FIELDS.includes(k)
       );
@@ -595,16 +690,26 @@ module.exports = ({ db } = {}) => {
 
       const currentStock = Number(ingredientRow.currentStock || 0);
 
-      // (1) Check if used in menu items
+      // (1) Check if used in menu items (recipe JSON)
       const usedIn = await ingredientUsage(String(id));
       if (usedIn.length) {
         const names = [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))];
         return res.status(409).json({
           ok: false,
-          error: `Cannot delete ingredient: It is currently used in menu items (${names.join(
-            ", "
-          )}).`,
+          error: `Cannot delete ingredient: It is currently used in menu items (${names.join(", ")}).`,
           reason: "item-linked",
+          sample: names.slice(0, 5),
+        });
+      }
+
+      // (1b) Check if used as DIRECT inventory link
+      const usedDirect = await directUsage(id);
+      if (usedDirect.length) {
+        const names = [...new Set(usedDirect.map((r) => r.name || "Unnamed Item"))];
+        return res.status(409).json({
+          ok: false,
+          error: `Cannot delete inventory record: It is linked to items in Direct mode (${names.join(", ")}).`,
+          reason: "direct-linked",
           sample: names.slice(0, 5),
         });
       }
@@ -614,6 +719,7 @@ module.exports = ({ db } = {}) => {
         `SELECT id, reason FROM inventory_activity WHERE ingredientId = ? LIMIT 5`,
         [id]
       );
+      
       const hasActivity = activityRows.length > 0;
       if (hasActivity && currentStock > 0) {
         const reasons = activityRows.map(
@@ -742,6 +848,17 @@ module.exports = ({ db } = {}) => {
             reason: "item-linked",
             count: usedIn.length,
             sample: [...new Set(usedIn.map((r) => r.name || "Unnamed Item"))].slice(0, SAMPLE_LIMIT),
+          });
+          continue;
+        }
+
+        const usedDirect = await directUsage(id);
+        if (usedDirect.length) {
+          blocked.push({
+            id: String(id),
+            reason: "direct-linked",
+            count: usedDirect.length,
+            sample: [...new Set(usedDirect.map((r) => r.name || "Unnamed Item"))].slice(0, SAMPLE_LIMIT),
           });
           continue;
         }

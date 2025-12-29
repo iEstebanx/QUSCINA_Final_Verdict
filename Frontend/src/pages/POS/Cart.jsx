@@ -962,10 +962,15 @@ const terminalId = "TERMINAL-1";
     if (!item) return;
 
     const qty = item.quantity ?? 1;
+    const maxQty = Number(item.maxQty);
     const baseQty = lockedBaseQty[id] || 0;
 
     // 🔼 Increase → always local
     if (delta > 0) {
+      if (Number.isFinite(maxQty) && qty >= maxQty) {
+        // optional: show snackbar
+        return;
+      }
       incrementItem(id);
       return;
     }

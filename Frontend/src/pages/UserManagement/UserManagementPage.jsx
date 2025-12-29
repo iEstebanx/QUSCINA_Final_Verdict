@@ -482,13 +482,18 @@ export default function UserManagementPage() {
       }
     }
 
-    const uname = form.username.trim().toLowerCase();
-    if (uname) {
-      const taken = rows.some(
-        (r) => (r.username || "").toLowerCase() === uname && String(r.employeeId) !== String(form.employeeId)
-      );
-      if (taken) e.username = "Username already in use";
-    }
+  const uname = form.username.trim().toLowerCase();
+  if (!uname) {
+    e.username = "Required";
+  } else {
+    const taken = rows.some(
+      (r) =>
+        (r.username || "").toLowerCase() === uname &&
+        String(r.employeeId) !== String(form.employeeId)
+    );
+    if (taken) e.username = "Username already in use";
+  }
+
     const email = form.email.trim();
     if (!email) {
       e.email = "Required";
@@ -1124,7 +1129,7 @@ export default function UserManagementPage() {
 
             <Grid container spacing={1.5} alignItems="flex-start" wrap="nowrap">
               {/* LEFT: Photo */}
-              <Grid size={{ xs: 12, md: "auto" }} sx={{ width: { md: 280 }, flexShrink: 0 }}>
+              <Grid item xs={12} md="auto" sx={{ width: { md: 280 }, flexShrink: 0 }}>
                 <Paper sx={{ p: 1, height: "100%" }}>
                   <Stack alignItems="center" spacing={1}>
                     <Avatar
@@ -1168,10 +1173,10 @@ export default function UserManagementPage() {
               </Grid>
 
               {/* RIGHT: Employee ID / Username / Email */}
-              <Grid size={{ xs: true }} sx={{ minWidth: 0 }}>
+              <Grid item xs sx={{ minWidth: 0 }}>
                 <Grid container spacing={1.5}>
                   {/* Employee ID */}
-                  <Grid size={{ xs: 12 }}>
+                  <Grid item xs={12}>
                     <TextField
                       sx={{ width: 250 }}
                       size="small"
@@ -1205,20 +1210,24 @@ export default function UserManagementPage() {
                   </Grid>
 
                   {/* Username */}
-                  <Grid size={{ xs: 12 }} sx={{ minWidth: 0 }}>
+                  <Grid item xs={12} sx={{ minWidth: 0 }}>
                     <TextField
                       sx={{ width: 300 }}
                       size="small"
-                      label="Username"
+                      label={
+                        <>
+                          Username<span style={{ color: "#d32f2f" }}> *</span>
+                        </>
+                      }
                       value={form.username}
                       error={!!errors.username}
-                      helperText={errors.username || "Optional — must be unique"}
+                      helperText={errors.username || "Required — must be unique"}
                       onChange={(e) =>
                         setForm((f) => ({ ...f, username: e.target.value }))
                       }
                       slotProps={{
                         htmlInput: {
-                          readOnly: !form.loginVia.username,
+                          readOnly: false,
                           autoComplete: "username",
                           inputMode: "text",
                           "aria-label": "Username",
@@ -1242,9 +1251,7 @@ export default function UserManagementPage() {
                               />
                             </InputAdornment>
                           ) : null,
-                          sx: !form.loginVia.username
-                            ? { bgcolor: "action.disabledBackground" }
-                            : undefined,
+                          sx: undefined,
                         },
                       }}
                     />
@@ -1290,7 +1297,7 @@ export default function UserManagementPage() {
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>First Name, Last Name</Typography>
             
             <Grid container spacing={3}>
-              <Grid size={{ xs: 12, md: 6 }}>
+              <Grid item xs={12} md={6}>
                 <TextField
                   size="small"
                   label={
@@ -1318,7 +1325,7 @@ export default function UserManagementPage() {
                   }}
                 />
               </Grid>
-              <Grid size={{ xs: 12, md: 6 }}>
+              <Grid item xs={12} md={6}>
                 <TextField
                   size="small"
                   label={<>Last Name<span style={{ color: "#d32f2f" }}> *</span></>}
@@ -1335,7 +1342,7 @@ export default function UserManagementPage() {
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Contact & Access</Typography>
             <Grid container spacing={3}>
-              <Grid size={{ xs: 12, md: 4 }}>
+              <Grid item xs={12} md={4}>
                 <TextField
                   sx={{ width: 200 }}
                   size="small"
@@ -1384,7 +1391,7 @@ export default function UserManagementPage() {
                 <Grid container spacing={2} alignItems="flex-start">
                   {/* LEFT COLUMN — Credentials */}
                   {showCredentialsSection && (
-                    <Grid size={{ xs: 12, md: 6 }}>
+                    <Grid item xs={12} md={6}>
                       <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
                         Credentials
                       </Typography>
@@ -1497,7 +1504,7 @@ export default function UserManagementPage() {
 
                   {/* RIGHT COLUMN — Security & Lock */}
                   {isEditingExisting && (
-                    <Grid size={{ xs: 12, md: 6 }}>
+                    <Grid item xs={12} md={6}>
                       {/* ✅ NOTE: this is your same logic, just without the md:8 limiter */}
                       {(() => {
                         const row = rows.find((r) => String(r.employeeId) === String(form.employeeId));
@@ -2108,9 +2115,9 @@ export default function UserManagementPage() {
             <TextField
               size="small"
               label="Username"
-              value={createResult?.username || "—"}
+              value={createResult?.username || ""}
               InputProps={{ readOnly: true }}
-              helperText={!createResult?.username ? "Not set (optional)" : undefined}
+              helperText={createResult?.username ? undefined : "Username is required"}
               fullWidth
             />
 
@@ -2253,7 +2260,7 @@ export default function UserManagementPage() {
                     </Typography>
 
                     <Typography className="rt-meta" color="text.secondary">
-                      Username: <b>{form.username?.trim() ? form.username : "—"}</b>
+                      Username: <b>{form.username?.trim() ? form.username : "(missing)"}</b>
                     </Typography>
 
                     <Typography className="rt-meta" color="text.secondary" sx={{ wordBreak: "break-word" }}>

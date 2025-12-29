@@ -118,17 +118,6 @@ export default function Menu() {
         // normalize to what Menu.jsx expects
         const normalized = list.map((it) => {
           const price = Number(it.price ?? 0);
-          const ingredients = Array.isArray(it.ingredients) ? it.ingredients : [];
-          const hasIngredients = ingredients.length > 0;
-
-          // backend flag, with fallback to "has price"
-          const backendAvailable =
-            it.available !== undefined && it.available !== null
-              ? !!it.available
-              : price > 0;
-
-          // Frontend safety net: cannot be available without ingredients
-          const available = backendAvailable && hasIngredients;
 
           return {
             id: it.id,
@@ -137,10 +126,26 @@ export default function Menu() {
             price,
             category: it.category || "Uncategorized",
             image: it.image || it.imageUrl || null,
-            available,
-            costOverall: Number(it.costOverall ?? 0),
-            profit: Number(it.profit ?? 0),
-            ingredients,
+
+            // NEW — keep these from backend
+            stockMode: it.stockMode || it.stock_mode || "ingredients",
+            manualAvailable: Number(it.manualAvailable ?? it.manual_available ?? 1),
+            isActive: Number(it.isActive ?? it.active ?? 1),
+
+            inventoryIngredientId:
+              it.inventoryIngredientId ?? it.inventory_ingredient_id ?? null,
+            inventoryDeductQty:
+              Number(it.inventoryDeductQty ?? it.inventory_deduct_qty ?? 1),
+
+            ingredients: Array.isArray(it.ingredients) ? it.ingredients : [],
+
+            // source of truth from backend
+            available: !!it.available,
+
+            // OPTIONAL but recommended if backend provides
+            stockState: it.stockState || "unknown", // 'ok' | 'low' | 'out' | 'unknown'
+            canAddToCart:
+              it.canAddToCart !== undefined ? !!it.canAddToCart : !!it.available,
           };
         });
 
@@ -246,24 +251,27 @@ export default function Menu() {
   const handleToggleAvailability = async (item) => {
     if (!item) return;
 
-    const wantAvailable = !item.available;
+    const wantAvailable = !(Number(item.manualAvailable) === 1);
 
     // If trying to turn ON availability, run some quick validations
     if (wantAvailable) {
-      // 1) No price → block & show dialog
       if (item.price <= 0) {
-        showError(
-          "This item cannot be marked as available because it has no valid price."
-        );
+        showError("This item cannot be marked as available because it has no valid price.");
         return;
       }
 
-      // 2) No ingredients → block & show dialog
-      if (!item.ingredients || item.ingredients.length === 0) {
-        showError(
-          "This item cannot be marked as available because it has no ingredients set up yet.\n\nGo to Items > Edit and add at least one ingredient first."
-        );
-        return;
+      if (item.stockMode === "ingredients") {
+        if (!item.ingredients || item.ingredients.length === 0) {
+          showError("Cannot mark available: recipe (ingredients) is required for this item.");
+          return;
+        }
+      }
+
+      if (item.stockMode === "direct") {
+        if (!item.inventoryIngredientId) {
+          showError("Cannot mark available: this item is Direct stock but has no linked inventory product.");
+          return;
+        }
       }
     }
 
@@ -289,7 +297,9 @@ export default function Menu() {
       // Update list
       setItems((prev) =>
         prev.map((it) =>
-          it.id === item.id ? { ...it, available: wantAvailable } : it
+          it.id === item.id
+            ? { ...it, manualAvailable: wantAvailable ? 1 : 0 }
+            : it
         )
       );
 
@@ -520,87 +530,105 @@ export default function Menu() {
             sx: (t) => ({ ...cssVars(t), backgroundColor: "var(--bg)" }),
           }}
         >
-          {selectedItem && (
-            <DialogContent className={styles.dialogContent}>
-              {viewMode === "image" && selectedItem.image && (
-                <Box className={styles.dialogImageWrapper}>
-                  <img
-                    src={selectedItem.image}
-                    alt={selectedItem.name}
-                    className={styles.dialogImage}
-                  />
-                </Box>
-              )}
-              <Box className={styles.dialogDetails}>
-                <Typography variant="h6" className={styles.dialogTitle}>
-                  {selectedItem.name}
-                  {!selectedItem.available && (
-                    <Chip
-                      label="Unavailable"
-                      size="small"
-                      variant="outlined"
-                      className={styles.outChip}
+          {selectedItem && (() => {
+            const canAdd = !!selectedItem?.canAddToCart;
+
+            return (
+              <DialogContent className={styles.dialogContent}>
+                {viewMode === "image" && selectedItem.image && (
+                  <Box className={styles.dialogImageWrapper}>
+                    <img
+                      src={selectedItem.image}
+                      alt={selectedItem.name}
+                      className={styles.dialogImage}
                     />
-                  )}
-                </Typography>
-                {selectedItem.description && (
-                  <Typography variant="body2" className={styles.dialogDesc}>
-                    {selectedItem.description}
-                  </Typography>
+                  </Box>
                 )}
-                <Box className={styles.dialogPriceQty}>
-                  <Typography variant="h6" className={styles.priceText}>
-                    ₱{selectedItem.price.toFixed(2)}
+
+                <Box className={styles.dialogDetails}>
+                  <Typography variant="h6" className={styles.dialogTitle}>
+                    {selectedItem.name}
+
+                    {!selectedItem.available && (
+                      <Chip
+                        label="Unavailable"
+                        size="small"
+                        variant="outlined"
+                        className={styles.outChip}
+                      />
+                    )}
+
+                    {selectedItem.stockState === "low" && (
+                      <Chip label="Low stock" size="small" variant="outlined" sx={{ ml: 1 }} />
+                    )}
+                    {selectedItem.stockState === "out" && (
+                      <Chip label="Out of stock" size="small" color="error" variant="outlined" sx={{ ml: 1 }} />
+                    )}
                   </Typography>
-                  <Box className={styles.qtyControl}>
-                    <IconButton
-                      onClick={() => changeQty(-1)}
-                      size="small"
-                      disabled={!selectedItem.available}
-                    >
-                      <Remove />
-                    </IconButton>
-                    <Typography variant="body1" className={styles.qtyText}>
-                      {dialogQty}
+
+                  {selectedItem.description && (
+                    <Typography variant="body2" className={styles.dialogDesc}>
+                      {selectedItem.description}
                     </Typography>
-                    <IconButton
-                      onClick={() => changeQty(1)}
-                      size="small"
-                      disabled={!selectedItem.available}
+                  )}
+
+                  <Box className={styles.dialogPriceQty}>
+                    <Typography variant="h6" className={styles.priceText}>
+                      ₱{selectedItem.price.toFixed(2)}
+                    </Typography>
+
+                    <Box className={styles.qtyControl}>
+                      <IconButton
+                        onClick={() => changeQty(-1)}
+                        size="small"
+                        disabled={!canAdd}
+                      >
+                        <Remove />
+                      </IconButton>
+
+                      <Typography variant="body1" className={styles.qtyText}>
+                        {dialogQty}
+                      </Typography>
+
+                      <IconButton
+                        onClick={() => changeQty(1)}
+                        size="small"
+                        disabled={!canAdd}
+                      >
+                        <Add />
+                      </IconButton>
+                    </Box>
+                  </Box>
+
+                  <Box className={styles.dialogActions}>
+                    <Button
+                      variant="contained"
+                      onClick={handleAddToCart}
+                      disabled={!canAdd}
+                      className={styles.addToCartBtn}
                     >
-                      <Add />
-                    </IconButton>
+                      Add to Cart
+                    </Button>
+
+                    {selectedItem.price > 0 && (
+                      <Button
+                        variant="outlined"
+                        onClick={() => handleToggleAvailability(selectedItem)}
+                      >
+                        {Number(selectedItem.manualAvailable) === 1
+                          ? "Mark as Unavailable"
+                          : "Mark as Available"}
+                      </Button>
+                    )}
+
+                    <Button onClick={closeDialog} className={styles.cancelBtn}>
+                      Cancel
+                    </Button>
                   </Box>
                 </Box>
-                <Box className={styles.dialogActions}>
-                  <Button
-                    variant="contained"
-                    onClick={handleAddToCart}
-                    disabled={!selectedItem?.available}
-                    className={styles.addToCartBtn}
-                  >
-                    Add to Cart
-                  </Button>
-
-                  {/* Only show this if the item actually has a price */}
-                  {selectedItem.price > 0 && (
-                    <Button
-                      variant="outlined"
-                      onClick={() => handleToggleAvailability(selectedItem)}
-                    >
-                      {selectedItem.available
-                        ? "Mark as Unavailable"
-                        : "Mark as Available"}
-                    </Button>
-                  )}
-
-                  <Button onClick={closeDialog} className={styles.cancelBtn}>
-                    Cancel
-                  </Button>
-                </Box>
-              </Box>
-            </DialogContent>
-          )}
+              </DialogContent>
+            );
+          })()}
         </Dialog>
 
         {/* Error dialog for availability problems */}
