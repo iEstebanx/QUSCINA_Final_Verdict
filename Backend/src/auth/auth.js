@@ -781,7 +781,7 @@ module.exports = function authRouterFactory({ db } = {}) {
   });
 
   // POST /api/auth/logout
-  router.post("/logout", (req, res) => {
+  router.post("/logout", async (req, res) => {
     const ip =
       req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
       req.ip ||
@@ -795,14 +795,93 @@ module.exports = function authRouterFactory({ db } = {}) {
 
     let payload = null;
     try {
-      if (token) {
-        payload = jwt.verify(token, JWT_SECRET);
-      }
+      if (token) payload = jwt.verify(token, JWT_SECRET);
     } catch {
-      // ignore; still proceed with logout
+      payload = null;
     }
 
     const app = getAppRealm(req); // "backoffice" by default
+
+    // ✅ NO LOGOUT UNTIL REMIT (only when authenticated)
+    if (payload?.employeeId) {
+      const employeeId = String(payload.employeeId);
+
+      // optional terminal filter (supports query/body)
+      const terminalIdRaw =
+        String(req.query?.terminal_id || req.body?.terminal_id || "").trim();
+      const terminalId = terminalIdRaw ? terminalIdRaw : null;
+
+      try {
+        // Block if there's ANY open shift for this employee
+        // (and if terminal_id provided, also ensure it matches that terminal)
+        const rows = await db.query(
+          `
+          SELECT shift_id, terminal_id, employee_id, opened_at
+            FROM pos_shifts
+          WHERE status = 'Open'
+            AND employee_id = ?
+            ${terminalId ? "AND terminal_id = ?" : ""}
+          ORDER BY opened_at DESC, shift_id DESC
+          LIMIT 1
+          `,
+          terminalId ? [employeeId, terminalId] : [employeeId]
+        );
+
+        if (rows && rows.length > 0) {
+          const sh = rows[0];
+
+          // Audit (optional)
+          await logAuditLogin({
+            employeeName:
+              payload.name ||
+              payload.username ||
+              payload.email ||
+              payload.employeeId ||
+              "Unknown",
+            role: payload.role,
+            action: "Auth - Logout Blocked (Open Shift)",
+            detail: {
+              statusMessage: "Logout blocked because a shift is still open.",
+              actionDetails: {
+                actionType: "logout",
+                app,
+                result: "blocked_open_shift",
+              },
+              affectedData: {
+                statusChange: "LOGOUT_BLOCKED_OPEN_SHIFT",
+                shift: {
+                  shift_id: sh.shift_id,
+                  terminal_id: sh.terminal_id,
+                  opened_at: sh.opened_at,
+                },
+              },
+              meta: { ip, userAgent: ua, app },
+            },
+          }).catch(() => {});
+
+          return res.status(409).json({
+            ok: false,
+            code: "NO_LOGOUT_UNTIL_REMIT",
+            error:
+              "Cannot logout while there is a running shift. Please end shift first.",
+            shift: {
+              shift_id: sh.shift_id,
+              terminal_id: sh.terminal_id,
+              opened_at: sh.opened_at,
+            },
+          });
+        }
+      } catch (e) {
+        console.error("[auth/logout] open shift check failed:", e?.message || e);
+        // fail-safe: if we can't verify, block logout (safer than allowing)
+        return res.status(409).json({
+          ok: false,
+          code: "NO_LOGOUT_UNTIL_REMIT",
+          error:
+            "Cannot logout right now because shift status could not be verified. Please go to Shift Management.",
+        });
+      }
+    }
 
     // If we have a decoded token, log logout event
     if (payload) {
@@ -830,14 +909,12 @@ module.exports = function authRouterFactory({ db } = {}) {
           },
           meta: { ip, userAgent: ua, app },
         },
-      }).catch(() => {
-        // don't block logout if audit insert fails
-      });
+      }).catch(() => {});
     }
 
     // Clear cookie and return ok
     res.clearCookie("qd_token", { path: "/api" });
-    res.json({ ok: true });
+    return res.json({ ok: true });
   });
 
   // POST /api/auth/forgot/start (Email OTP - start)

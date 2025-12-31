@@ -1,4 +1,4 @@
-// Frontend/src/context/AuthContext.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
 import { joinApi } from "@/utils/apiBase";
@@ -126,23 +126,42 @@ export function AuthProvider({ children }) {
   }
 
   async function logout() {
-    // Instant UI clear
+    // call backend first so we can honor "no logout until remit"
+    let res;
+    try {
+      res = await fetch(
+        joinApi(
+          "/api/auth/logout?terminal_id=" +
+            encodeURIComponent(localStorage.getItem("terminal_id") || "")
+        ),
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+        }
+      );
+    } catch {
+      const err = new Error("Unable to reach server. Please try again.");
+      err.status = 0;
+      throw err;
+    }
+
+    const data = await safeJson(res);
+
+    if (!res.ok) {
+      const err = new Error(data?.error || res.statusText || "Logout failed");
+      err.status = res.status;      // ✅ will be 409 when shift is open
+      err.data = data || null;
+      throw err;
+    }
+
+    // ✅ only clear session when server allowed logout
     setUser(null);
     setToken(null);
     localStorage.removeItem("qd_token");
     localStorage.removeItem("qd_user");
     sessionStorage.removeItem("qd_token");
     sessionStorage.removeItem("qd_user");
-
-    try {
-      await fetch(joinApi("/api/auth/logout"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch {
-      // ignore – even if server fails, client is already logged out
-    }
   }
 
   const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);

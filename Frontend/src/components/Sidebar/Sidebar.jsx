@@ -1,7 +1,7 @@
 // QUSCINA_BACKOFFICE/Frontend/src/components/Sidebar/Sidebar.jsx
 import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Box,
   Typography,
@@ -228,6 +228,7 @@ NavGroup.propTypes = {
 function SidebarContent({ collapsed }) {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
 
   const path = location.pathname;
 
@@ -239,6 +240,26 @@ function SidebarContent({ collapsed }) {
       path.startsWith("/audit-trail/inventory-reports"),
     [path]
   );
+
+  const handleLogoutClick = async () => {
+    try {
+      await logout();
+    } catch (e) {
+      if (e?.status === 409) {
+        // ✅ go to shift management and show dialog
+        navigate("/pos/shift-management", {
+          replace: true,
+          state: {
+            openShiftLogoutBlocked: true,
+            message: e?.message || "Cannot logout while a shift is still open.",
+          },
+        });
+        return;
+      }
+      // optional: fallback message
+      window.alert(e?.message || "Logout failed.");
+    }
+  };
 
   const isSettingsActive = useMemo(() => path.startsWith("/settings"), [path]);
 
@@ -454,7 +475,7 @@ function SidebarContent({ collapsed }) {
       {user && (
         <Box sx={{ p: 1 }}>
           <ButtonBase
-            onClick={logout ?? (() => {})}
+            onClick={handleLogoutClick}
             sx={(theme) => ({
               width: "100%",
               justifyContent: collapsed ? "center" : "flex-start",

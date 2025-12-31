@@ -1,6 +1,6 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/ShiftManagementPage.jsx
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Box,
   Paper,
@@ -24,6 +24,26 @@ const PHP = (n) => `₱${Number(n || 0).toFixed(2)}`;
 
 export default function ShiftManagementPage() {
   const navigate = useNavigate();
+
+  const location = useLocation();
+
+  const [logoutBlockedOpen, setLogoutBlockedOpen] = useState(false);
+  const [logoutBlockedMsg, setLogoutBlockedMsg] = useState("");
+
+  useEffect(() => {
+    const flag = location.state?.openShiftLogoutBlocked;
+    if (flag) {
+      setLogoutBlockedMsg(
+        location.state?.message ||
+          "Cannot logout while there is a running shift. Please end shift first."
+      );
+      setLogoutBlockedOpen(true);
+
+      // clear state so refresh/back doesn't keep re-opening
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.state, navigate, location.pathname]);
+
   // 🔹 dialogs & form state
   const [endDialogOpen, setEndDialogOpen] = useState(false);
   const [successDialogOpen, setSuccessDialogOpen] = useState(false);
@@ -611,6 +631,33 @@ export default function ShiftManagementPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Cannot log out while still running a shift.*/}
+      <Dialog
+        open={logoutBlockedOpen}
+        onClose={() => setLogoutBlockedOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle
+          sx={{
+            bgcolor: "#8b5a2b",
+            color: "common.white",
+            fontWeight: 700,
+          }}
+        >
+          Cannot Logout
+        </DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: "#fdf1df" }}>
+          <Typography>{logoutBlockedMsg}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: "#fdf1df" }}>
+          <Button variant="contained" onClick={() => setLogoutBlockedOpen(false)}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </>
   );
 }
