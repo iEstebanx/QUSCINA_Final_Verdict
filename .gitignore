@@ -52,4 +52,4 @@ android/
 ios/
 
 # Ignore VS Code local history
-.history/
+.history/.history/
