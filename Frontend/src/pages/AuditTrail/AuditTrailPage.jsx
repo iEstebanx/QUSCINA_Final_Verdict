@@ -496,15 +496,20 @@ export default function AuditTrailPage() {
       >
         {selectedRow && (
           <>
-            <DialogTitle>
-              <Typography variant="h6">{dialogTitle}</Typography>
+            <DialogTitle
+              component="div"
+              sx={{ pb: selectedRow.detail?.statusMessage ? 0.75 : 2 }}
+            >
+              <Typography variant="h6" component="div">
+                {dialogTitle}
+              </Typography>
 
-              {/* ✅ Show statusMessage for ALL modules, including items */}
               {selectedRow.detail?.statusMessage && (
                 <Typography
                   variant="body2"
+                  component="div"
                   color="text.secondary"
-                  sx={{ fontSize: "0.875rem" }}
+                  sx={{ fontSize: "0.875rem", mt: 0.5 }}
                 >
                   {selectedRow.detail.statusMessage}
                 </Typography>

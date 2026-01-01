@@ -1,9 +1,9 @@
-// QUSCINA_BACKOFFICE/Frontend/src/components/Guards/RequireAdmin.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/components/Guards/RequireAuth.jsx
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { CircularProgress, Box } from "@mui/material";
 
-export default function RequireAdmin() {
+export default function RequireAuth() {
   const { user, ready } = useAuth();
   const loc = useLocation();
 
@@ -15,13 +15,7 @@ export default function RequireAdmin() {
     );
   }
 
-  if (!user) {
-    return <Navigate to="/" replace state={{ from: loc }} />;
-  }
+  if (!user) return <Navigate to="/" replace state={{ from: loc }} />;
 
-  if (user.role !== "Admin") {
-    return <Navigate to="/pos/menu" replace />;
-  }
-  
   return <Outlet />;
 }

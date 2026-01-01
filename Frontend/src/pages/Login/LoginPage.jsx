@@ -1,13 +1,31 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/Login/LoginPage.jsx
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Box, Paper, Stack, Typography, TextField, Button, Divider,
-  FormControlLabel, Switch, InputAdornment, IconButton, Dialog,
-  AppBar, Toolbar, Slide, MenuItem, CircularProgress, LinearProgress,
-  Select, FormControl, InputLabel,
+  Box,
+  Paper,
+  Stack,
+  Typography,
+  TextField,
+  Button,
+  Divider,
+  FormControlLabel,
+  Switch,
+  InputAdornment,
+  IconButton,
+  Dialog,
+  AppBar,
+  Toolbar,
+  Slide,
+  MenuItem,
+  CircularProgress,
+  LinearProgress,
+  Select,
+  FormControl,
+  InputLabel,
 } from "@mui/material";
 import { useTheme, alpha } from "@mui/material/styles";
-  import Visibility from "@mui/icons-material/Visibility";
+
+import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import CloseIcon from "@mui/icons-material/Close";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -19,13 +37,36 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useAlert } from "@/context/Snackbar/AlertContext";
 
 const API_BASE = import.meta.env?.VITE_API_BASE ?? "";
-const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
+const join = (p) =>
+  `${API_BASE}`.replace(/\/+$/, "") + `/${String(p || "").replace(/^\/+/, "")}`;
 
 async function safeJson(res) {
   const text = await res.text();
-  try { return text ? JSON.parse(text) : {}; }
-  catch { return { error: text || res.statusText || "Invalid response" }; }
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text || res.statusText || "Invalid response" };
+  }
 }
+
+function resolvePostLoginDest(role, fromPath) {
+  const r = String(role || "");
+  const from = String(fromPath || "");
+
+  const isPos = from.startsWith("/pos");
+  const isRoot = from === "/" || from === "";
+
+  if (r === "Admin") {
+    // Admin should not land in POS routes
+    if (!isRoot && !isPos) return from;
+    return "/dashboard";
+  }
+
+  // Cashier (or anything else) should land in POS routes only
+  if (!isRoot && isPos) return from;
+  return "/pos/menu";
+}
+
 
 const Transition = forwardRef(function Transition(props, ref) {
   return <Slide direction="up" ref={ref} {...props} />;
@@ -41,7 +82,11 @@ function scorePassword(pw) {
   const hasDigit = /\d/.test(pw);
   const hasSpecial = /[^A-Za-z0-9]/.test(pw);
   s += Math.min(50, len * 5);
-  s += (hasLower ? 10 : 0) + (hasUpper ? 10 : 0) + (hasDigit ? 15 : 0) + (hasSpecial ? 15 : 0);
+  s +=
+    (hasLower ? 10 : 0) +
+    (hasUpper ? 10 : 0) +
+    (hasDigit ? 15 : 0) +
+    (hasSpecial ? 15 : 0);
   if (len >= 12 && hasDigit && hasSpecial) s += 10;
   return Math.max(0, Math.min(100, s));
 }
@@ -52,7 +97,8 @@ const ruleChecks = (pw) => ({
   upper: /[A-Z]/.test(pw),
   special: /[^A-Za-z0-9]/.test(pw),
 });
-const PW_REGEX_ENFORCE = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).{8,}$/;
+const PW_REGEX_ENFORCE =
+  /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).{8,}$/;
 
 /* ===== Cooldown (fixed message, no countdown UI) ===== */
 const COOLDOWN_MESSAGE =
@@ -60,113 +106,133 @@ const COOLDOWN_MESSAGE =
 const nowMs = () => Date.now();
 
 export default function LoginPage() {
-  // --------- Login state ---------
+  // --------- Login step + identity ---------
+  const [loginStep, setLoginStep] = useState("id"); // "id" | "secret"
   const [identifier, setIdentifier] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPw, setShowPw] = useState(false);
+  const [loginMode, setLoginMode] = useState("password"); // "password" | "pin"
+  const [roleHint, setRoleHint] = useState(""); // "Admin" | "Cashier" | ""
+  const [employeeIdHint, setEmployeeIdHint] = useState(""); // resolved employeeId from precheck
+
+  // secret input
+  const [secret, setSecret] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [prechecking, setPrechecking] = useState(false);
 
   const [idError, setIdError] = useState("");
-  const [pwError, setPwError] = useState("");
+  const [secretError, setSecretError] = useState("");
 
-  const { login, user, ready } = useAuth();
+  const { login, user, ready, precheckLogin } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const alert = useAlert();
   const theme = useTheme();
 
-  // --------- Forgot Password dialog state ---------
+  // --------- Forgot dialog (role-aware) ---------
   const [forgotOpen, setForgotOpen] = useState(false);
-  // "choose" | "email" | "otp" | "reset" | "sq-identify" | "sq-answers"
-  const [fpStep, setFpStep] = useState("choose");
+  // "identify" | "choose-admin" | "email" | "otp" | "reset" | "sq-identify" | "sq-answers" | "ticket"
+  const [fpStep, setFpStep] = useState("identify");
 
-  // Step: choose
-  const onOpenForgot = () => { setForgotOpen(true); setFpStep("choose"); };
-  const onCloseForgot = () => { setForgotOpen(false); setTimeout(() => setFpStep("choose"), 250); };
+  const [fpIdentifier, setFpIdentifier] = useState(""); // login id entered in forgot flow
+  const [fpRole, setFpRole] = useState(""); // "Admin" | "Cashier" | ""
+  const [fpEmployeeId, setFpEmployeeId] = useState(""); // resolved
+  const [fpLoginMode, setFpLoginMode] = useState("password"); // or pin
+  const [fpIdentifySubmitting, setFpIdentifySubmitting] = useState(false);
+  const [fpIdentifyError, setFpIdentifyError] = useState("");
 
-  // Step: email verification (OTP path)
+  // Ticket flow
+  const [ticketActive, setTicketActive] = useState(false);
+  const [ticketExpiresAt, setTicketExpiresAt] = useState("");
+  const [ticketCreatedAt, setTicketCreatedAt] = useState("");
+  const [ticketRequestId, setTicketRequestId] = useState(null);
+
+  const [ticketCode, setTicketCode] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [ticketSubmitting, setTicketSubmitting] = useState(false);
+
+  // Existing Admin forgot-password flow state (kept as-is)
   const [fpEmail, setFpEmail] = useState("");
   const [fpEmailSubmitting, setFpEmailSubmitting] = useState(false);
   const [fpEmailError, setFpEmailError] = useState("");
 
-  // OTP cooldown state (authoritative comes from server via expiresAt)
   const [otpCooldownUntil, setOtpCooldownUntil] = useState(null); // ISO string
-  const [cooldownLeft, setCooldownLeft] = useState(0); // used only for disabling logic (silent)
-  const [cooldownEmail, setCooldownEmail] = useState(""); // NEW – which email the cooldown belongs to
+  const [cooldownLeft, setCooldownLeft] = useState(0);
+  const [cooldownEmail, setCooldownEmail] = useState("");
 
-  // Step: OTP
   const [otpValues, setOtpValues] = useState(["", "", "", "", "", ""]);
   const [otpSubmitting, setOtpSubmitting] = useState(false);
   const [resetToken, setResetToken] = useState("");
 
-  // Step: Reset
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [resetSubmitting, setResetSubmitting] = useState(false);
 
   const [lockUntilIso, setLockUntilIso] = useState(null);
   const [lockSecondsLeft, setLockSecondsLeft] = useState(0);
+  const [lockPermanent, setLockPermanent] = useState(false);
 
-  // --------- Security Questions (fixed 5) ---------
+  // Security Questions (Admin)
   const SQ_CATALOG = [
-    { id: "pet",           prompt: "What is the name of your first pet?" },
-    { id: "school",        prompt: "What is the name of your elementary school?" },
-    { id: "city",          prompt: "In what city were you born?" },
+    { id: "pet", prompt: "What is the name of your first pet?" },
+    { id: "school", prompt: "What is the name of your elementary school?" },
+    { id: "city", prompt: "In what city were you born?" },
     { id: "mother_maiden", prompt: "What is your mother’s maiden name?" },
-    { id: "nickname",      prompt: "What was your childhood nickname?" },
+    { id: "nickname", prompt: "What was your childhood nickname?" },
   ];
 
-  const [sqIdentifier, setSqIdentifier] = useState(""); // email/username/employeeId
+  const [sqIdentifier, setSqIdentifier] = useState("");
   const [sqLoading, setSqLoading] = useState(false);
   const [sqError, setSqError] = useState("");
   const [sqToken, setSqToken] = useState("");
   const [sqSelectedId, setSqSelectedId] = useState(SQ_CATALOG[0].id);
   const [sqAnswer, setSqAnswer] = useState("");
 
-  // 🔒 Security Question lock state (15-minute lockout)
   const [sqLockSecondsLeft, setSqLockSecondsLeft] = useState(0);
   const [sqLockUntilIso, setSqLockUntilIso] = useState(null);
   const [sqLockedIdKey, setSqLockedIdKey] = useState(null);
 
-  // Refs for OTP inputs
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
-
   const didRedirectRef = useRef(false);
 
   useEffect(() => {
     if (!ready) return;
     if (!user) return;
-
-    // prevent infinite bouncing / double-run
     if (didRedirectRef.current) return;
 
-    const dest =
-      (loc.state?.from?.pathname && loc.state.from.pathname !== "/")
-        ? loc.state.from.pathname
-        : "/dashboard";
+    const role = String(user?.role || "");
+    const from = loc.state?.from?.pathname;
 
-    // if we're already there, don't navigate
+    const dest = resolvePostLoginDest(role, from);
+
     if (loc.pathname === dest) return;
 
     didRedirectRef.current = true;
     nav(dest, { replace: true });
   }, [ready, user, nav, loc.pathname, loc.state]);
 
+
   // Focus first empty OTP box when step opens
   useEffect(() => {
     if (fpStep !== "otp") return;
     const idx = Math.max(0, otpValues.findIndex((d) => !d));
     const el = otpRefs.current[idx === -1 ? 0 : idx];
-    const t = setTimeout(() => { if (el && typeof el.focus === "function") el.focus(); }, 0);
+    const t = setTimeout(() => {
+      if (el && typeof el.focus === "function") el.focus();
+    }, 0);
     return () => clearTimeout(t);
   }, [fpStep, otpValues]);
 
-  // Silent cooldown ticking (for disabling buttons), based on otpCooldownUntil
+  // Silent cooldown ticking (for disabling buttons)
   useEffect(() => {
     if (!otpCooldownUntil) return;
     const tick = () => {
-      const left = Math.max(0, Math.ceil((new Date(otpCooldownUntil).getTime() - nowMs()) / 1000));
+      const left = Math.max(
+        0,
+        Math.ceil((new Date(otpCooldownUntil).getTime() - nowMs()) / 1000)
+      );
       setCooldownLeft(left);
       if (left <= 0) setOtpCooldownUntil(null);
     };
@@ -178,7 +244,10 @@ export default function LoginPage() {
   useEffect(() => {
     if (!lockUntilIso) return;
     const tick = () => {
-      const left = Math.max(0, Math.ceil((new Date(lockUntilIso).getTime() - Date.now()) / 1000));
+      const left = Math.max(
+        0,
+        Math.ceil((new Date(lockUntilIso).getTime() - Date.now()) / 1000)
+      );
       setLockSecondsLeft(left);
       if (left <= 0) setLockUntilIso(null);
     };
@@ -187,7 +256,6 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [lockUntilIso]);
 
-  // 🔒 Security Question lock countdown (15-minute lock)
   useEffect(() => {
     if (!sqLockUntilIso) return;
     const tick = () => {
@@ -203,61 +271,174 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [sqLockUntilIso]);
 
-  // Normalize like the backend: 9 digits = employee_id (keep), else lowercase
+  // Normalize like backend: 9 digits = employee_id, else lowercase
   const idKey = (s) => {
     const t = String(s || "").trim();
     return /^\d{9}$/.test(t) ? t : t.toLowerCase();
   };
-
-  const [lockedIdKey, setLockedIdKey] = useState(null); // which account is locked
+  const [lockedIdKey, setLockedIdKey] = useState(null);
 
   const fmtMMSS = (t) => {
     const m = Math.floor(t / 60).toString().padStart(2, "0");
     const s = (t % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
   };
-  const isLockedForCurrentId = lockSecondsLeft > 0 && lockedIdKey === idKey(identifier);
 
-  // ---------- Login handlers ----------
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const idVal = (identifier || fd.get("identifier") || "").toString().trim();
-    const pwVal = (password || fd.get("password") || "").toString();
-    if (!idVal || !pwVal) return;
+  const formatLocalPH = (iso) =>
+  iso
+    ? new Date(iso).toLocaleString("en-PH", {
+        timeZone: "Asia/Manila",
+        dateStyle: "short",
+        timeStyle: "short",
+      })
+    : "";
+  
+  const isLockedForCurrentId =
+    lockedIdKey === idKey(identifier) && (lockPermanent || lockSecondsLeft > 0);
 
-    setSubmitting(true);
+  const secretLabel = loginMode === "pin" ? "PIN" : "Password";
+  const secretAutoComplete =
+    loginMode === "pin" ? "one-time-code" : "current-password";
+
+  // ---------------------- Login: Next (precheck) ----------------------
+  const onNext = async () => {
+    const idVal = String(identifier || "").trim();
+    setIdError("");
+    setSecretError("");
+
+    if (!idVal) {
+      setIdError("Login ID is required.");
+      return;
+    }
+
+    setPrechecking(true);
     try {
-      await login(idVal, pwVal, { remember });
+      const info = await precheckLogin(idVal); // { role, loginMode, employeeId, ... }
+      const role = String(info?.role || "");
+      const mode = String(info?.loginMode || "password");
+      setRoleHint(role || "");
+      setEmployeeIdHint(String(info?.employeeId || ""));
+      setLoginMode(mode === "pin" ? "pin" : "password");
+      setLoginStep("secret");
+      setSecret("");
+      setShowSecret(false);
 
-      alert.success("Welcome back!");
-      const dest = loc.state?.from?.pathname || "/dashboard";
-      nav(dest, { replace: true });
+      // Some cashier flows may need to show “PIN not set” hint
+      if (info?.loginMode === "pin" && info?.pinNotSet) {
+        alert.info(
+          "PIN is not set yet. Use “Forgot Password / PIN” to set up using a Reset Ticket."
+        );
+      }
     } catch (err) {
-      const status = err?.status ?? err?.response?.status ?? 0;
-      const data   = err?.data   ?? err?.response?.data   ?? {};
-      const code   = data?.code || "";
-      const msg    = err?.message || data?.error || "Sign in failed";
-
-      setIdError("");
-      setPwError("");
+      const status = err?.status ?? 0;
+      const data = err?.data ?? {};
+      const code = data?.code || "";
 
       if (status === 423) {
         const seconds = Number(data?.remaining_seconds || 0);
+
+        setLockedIdKey(idKey(idVal));
+
         if (seconds > 0) {
-          setLockedIdKey(idKey(idVal));
+          setLockPermanent(false);
           setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
           const m = Math.floor(seconds / 60), s = seconds % 60;
           alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
         } else {
+          // permanent lock
+          setLockPermanent(true);
+          setLockUntilIso(null);
+          setLockSecondsLeft(0);
           alert.error("Account locked. Please contact an Admin.");
         }
+        return;
+      }
+
+      if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
+        setIdError("Invalid Login ID");
+        return;
+      }
+      if (status === 403) {
+        alert.error(err?.message || data?.error || "Not authorized.");
+        return;
+      }
+      if (status === 0) {
+        alert.error("Unable to reach server. Check your connection.");
+        return;
+      }
+      alert.error(err?.message || data?.error || "Unable to continue.");
+    } finally {
+      setPrechecking(false);
+    }
+  };
+
+  const onBackToId = () => {
+    setLoginStep("id");
+    setSecret("");
+    setSecretError("");
+    setShowSecret(false);
+    setRoleHint("");
+    setEmployeeIdHint("");
+    setLoginMode("password");
+  };
+
+  // ---------------------- Login: Submit (role-aware) ----------------------
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    const idVal = String(identifier || "").trim();
+    const secVal = String(secret || "");
+
+    if (!idVal) return setIdError("Login ID is required.");
+    if (!secVal) return setSecretError(`${secretLabel} is required.`);
+
+    setSubmitting(true);
+    try {
+      await login(idVal, secVal, { remember, loginMode });
+
+      alert.success("Welcome back!");
+
+      const from = loc.state?.from?.pathname;
+      const role = roleHint || user?.role || "";
+      const dest = resolvePostLoginDest(role, from);
+
+      nav(dest, { replace: true });
+    } catch (err) {
+      const status = err?.status ?? err?.response?.status ?? 0;
+      const data = err?.data ?? err?.response?.data ?? {};
+      const code = data?.code || "";
+      const msg = err?.message || data?.error || "Sign in failed";
+
+      setIdError("");
+      setSecretError("");
+
+      if (status === 423) {
+        const seconds = Number(data?.remaining_seconds || 0);
+
+        setLockedIdKey(idKey(idVal));
+
+        if (seconds > 0) {
+          setLockPermanent(false);
+          setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+          const m = Math.floor(seconds / 60), s = seconds % 60;
+          alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+        } else {
+          setLockPermanent(true);
+          setLockUntilIso(null);
+          setLockSecondsLeft(0);
+          alert.error("Account locked. Please contact an Admin.");
+        }
+        return;
       } else if (status === 403) {
         alert.error(msg);
       } else if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
         setIdError("Invalid Login ID");
-      } else if (status === 401 && (code === "INVALID_PASSWORD" || !code)) {
-        setPwError("Invalid Password");
+        setLoginStep("id");
+      } else if (status === 401) {
+        setSecretError(loginMode === "pin" ? "Invalid PIN" : "Invalid Password");
+      } else if (status === 400 && code === "PIN_NOT_SET") {
+        alert.error(
+          "PIN is not set yet. Use “Forgot Password / PIN” to set up using a Reset Ticket."
+        );
       } else if (status === 0) {
         alert.error("Unable to reach server. Check your connection.");
       } else {
@@ -269,29 +450,189 @@ export default function LoginPage() {
   };
 
   // ---------- Cooldown derived flags (PER EMAIL) ----------
-  const normalizedFpEmail = fpEmail.trim().toLowerCase();                 // NEW
-  const cooldownActive = !!otpCooldownUntil
-    && cooldownLeft > 0
-    && !!normalizedFpEmail
-    && normalizedFpEmail === cooldownEmail;                                // NEW
+  const normalizedFpEmail = fpEmail.trim().toLowerCase();
+  const cooldownActive =
+    !!otpCooldownUntil &&
+    cooldownLeft > 0 &&
+    !!normalizedFpEmail &&
+    normalizedFpEmail === cooldownEmail;
 
-  // ---------- Forgot Password: step navigation ----------
-  const goChoose = () => setFpStep("choose");
+  // ---------- Forgot dialog open/close ----------
+  const resetForgotState = () => {
+    setFpStep("identify");
+    setFpIdentifier("");
+    setFpRole("");
+    setFpEmployeeId("");
+    setFpLoginMode("password");
+    setFpIdentifyError("");
+    setTicketActive(false);
+    setTicketExpiresAt("");
+    setTicketCreatedAt("");
+    setTicketRequestId(null);
+    setTicketCode("");
+    setNewPin("");
+    setConfirmPin("");
+
+    // admin forgot state reset (safe defaults)
+    setFpEmail("");
+    setFpEmailError("");
+    setResetToken("");
+    setNewPw("");
+    setConfirmPw("");
+    setOtpValues(["", "", "", "", "", ""]);
+    setSqIdentifier("");
+    setSqError("");
+    setSqToken("");
+    setSqSelectedId(SQ_CATALOG[0].id);
+    setSqAnswer("");
+  };
+
+  const onOpenForgot = () => {
+    setForgotOpen(true);
+    resetForgotState();
+    // Prefill identifier if user already typed it
+    if (String(identifier || "").trim()) setFpIdentifier(String(identifier || "").trim());
+  };
+
+  const onCloseForgot = () => {
+    setForgotOpen(false);
+    setTimeout(() => resetForgotState(), 250);
+  };
+
+  // ---------- Forgot: identify (role-aware precheck) ----------
+  const onForgotIdentifyNext = async (e) => {
+    e.preventDefault();
+    setFpIdentifyError("");
+    const idVal = String(fpIdentifier || "").trim();
+    if (!idVal) {
+      setFpIdentifyError("Login ID is required.");
+      return;
+    }
+
+    setFpIdentifySubmitting(true);
+    try {
+      const info = await precheckLogin(idVal);
+      const role = String(info?.role || "");
+      const mode = String(info?.loginMode || "password");
+      const empId = String(info?.employeeId || "");
+
+      setFpRole(role);
+      setFpEmployeeId(empId);
+      setFpLoginMode(mode === "pin" ? "pin" : "password");
+
+      if ((mode === "pin" || /cashier/i.test(role)) && empId) {
+        // Cashier → Ticket flow
+        await loadActiveTicket(empId);
+        setFpStep("ticket");
+      } else {
+        // Admin → existing choices
+        setFpStep("choose-admin");
+      }
+    } catch (err) {
+      const status = err?.status ?? 0;
+      const data = err?.data ?? {};
+      const code = data?.code || "";
+
+      if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
+        setFpIdentifyError("Invalid Login ID");
+      } else if (status === 0) {
+        setFpIdentifyError("Unable to reach server. Check your connection.");
+      } else {
+        setFpIdentifyError(err?.message || data?.error || "Unable to continue.");
+      }
+    } finally {
+      setFpIdentifySubmitting(false);
+    }
+  };
+
+  async function loadActiveTicket(employeeId) {
+    try {
+      const resp = await fetch(
+        join(`/api/users/${encodeURIComponent(employeeId)}/pin-reset-ticket/active`),
+        {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "X-App": "backoffice" },
+        }
+      );
+      const j = await safeJson(resp);
+      if (!resp.ok) {
+        setTicketActive(false);
+        setTicketExpiresAt("");
+        setTicketCreatedAt("");
+        setTicketRequestId(null);
+        return;
+      }
+
+      const active = !!j?.active;
+      setTicketActive(active);
+      setTicketExpiresAt(j?.expiresAt || "");
+      setTicketCreatedAt(j?.createdAt || "");
+      setTicketRequestId(j?.requestId ?? null);
+    } catch {
+      setTicketActive(false);
+      setTicketExpiresAt("");
+      setTicketCreatedAt("");
+      setTicketRequestId(null);
+    }
+  }
+
+  const pinOk =
+    /^\d{4,8}$/.test(String(newPin || "")) &&
+    String(newPin) === String(confirmPin);
+
+  const onTicketSubmit = async (e) => {
+    e.preventDefault();
+    const empId = String(fpEmployeeId || "").trim();
+    const code = String(ticketCode || "").trim();
+    if (!empId) return alert.error("Missing employeeId.");
+    if (!/^\d{8}$/.test(code)) return alert.error("Ticket code must be 8 digits.");
+    if (!/^\d{4,8}$/.test(String(newPin || "")))
+      return alert.error("PIN must be 4–8 digits.");
+    if (String(newPin) !== String(confirmPin))
+      return alert.error("PINs do not match.");
+
+    setTicketSubmitting(true);
+    try {
+      const resp = await fetch(join("/api/auth/pin-reset/confirm"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+        credentials: "include",
+        body: JSON.stringify({
+          employeeId: empId,
+          ticket: code,
+          newPin: String(newPin),
+        }),
+      });
+      const j = await safeJson(resp);
+      if (!resp.ok) throw new Error(j?.error || resp.statusText || "Unable to set PIN");
+
+      alert.success("PIN updated. You can now sign in.");
+      onCloseForgot();
+    } catch (err) {
+      alert.error(err?.message || "Unable to set PIN.");
+      // refresh ticket status in case it was used/expired
+      if (fpEmployeeId) loadActiveTicket(fpEmployeeId);
+    } finally {
+      setTicketSubmitting(false);
+    }
+  };
+
+  // ---------- Forgot (Admin): step navigation ----------
+  const goChooseAdmin = () => setFpStep("choose-admin");
   const goEmail = () => {
     setFpStep("email");
-    // Show message only if cooldown applies to the current email
-    if (cooldownActive) {
-      setFpEmailError(COOLDOWN_MESSAGE);
-    } else {
-      setFpEmailError("");
-    }
+    if (cooldownActive) setFpEmailError(COOLDOWN_MESSAGE);
+    else setFpEmailError("");
   };
   const goOtp = () => setFpStep("otp");
   const goReset = () => setFpStep("reset");
   const goSqIdentify = () => setFpStep("sq-identify");
   const goSqAnswers = () => setFpStep("sq-answers");
+  const goIdentify = () => setFpStep("identify");
 
-  // ---------- Forgot Password: choose handlers ----------
+  // ---------- Forgot (Admin): choose handlers ----------
   const onChooseEmailOtp = () => {
     setFpEmail("");
     setFpEmailError("");
@@ -315,21 +656,23 @@ export default function LoginPage() {
     goSqIdentify();
   };
 
-  // ---------- Forgot Password: email verify submit (OTP path) ----------
+  // ---------- Forgot (Admin): email verify submit (OTP path) ----------
   const DUP_RE = /duplicate entry/i;
 
   const onEmailVerifySubmit = async (e) => {
     e.preventDefault();
     setFpEmailError("");
 
-    const email = normalizedFpEmail;                           // NEW – already normalized
-    if (!email) { setFpEmailError("Email is required."); return; }
+    const email = normalizedFpEmail;
+    if (!email) {
+      setFpEmailError("Email is required.");
+      return;
+    }
 
-    // Local guard: block only if cooldown applies to THIS email
     if (
       otpCooldownUntil &&
       new Date(otpCooldownUntil).getTime() > nowMs() &&
-      email === cooldownEmail                                        // NEW
+      email === cooldownEmail
     ) {
       setFpEmailError(COOLDOWN_MESSAGE);
       return;
@@ -339,7 +682,7 @@ export default function LoginPage() {
     try {
       const resp = await fetch(join("/api/auth/forgot/start"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ email }),
       });
@@ -349,7 +692,7 @@ export default function LoginPage() {
       if (resp.status === 429) {
         if (j?.expiresAt) {
           setOtpCooldownUntil(j.expiresAt);
-          setCooldownEmail(email);                               // NEW
+          setCooldownEmail(email);
         }
         throw new Error(j?.error || COOLDOWN_MESSAGE);
       }
@@ -362,8 +705,9 @@ export default function LoginPage() {
 
       if (j?.expiresAt) {
         setOtpCooldownUntil(j.expiresAt);
-        setCooldownEmail(email);                                 // NEW
+        setCooldownEmail(email);
       }
+
       alert.success("We’ve sent a 6-digit code to your email.");
       setOtpValues(["", "", "", "", "", ""]);
       goOtp();
@@ -375,18 +719,18 @@ export default function LoginPage() {
   };
 
   const onResend = async () => {
-    // Local guard – only if cooldown belongs to this email
     if (
       otpCooldownUntil &&
       new Date(otpCooldownUntil).getTime() > nowMs() &&
-      normalizedFpEmail === cooldownEmail                       // NEW
+      normalizedFpEmail === cooldownEmail
     ) {
       return alert.info(COOLDOWN_MESSAGE);
     }
+
     try {
       const resp = await fetch(join("/api/auth/forgot/resend"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ email: normalizedFpEmail }),
       });
@@ -395,7 +739,7 @@ export default function LoginPage() {
       if (resp.status === 429) {
         if (j?.expiresAt) {
           setOtpCooldownUntil(j.expiresAt);
-          setCooldownEmail(normalizedFpEmail);                  // NEW
+          setCooldownEmail(normalizedFpEmail);
         }
         return alert.info(COOLDOWN_MESSAGE);
       }
@@ -408,7 +752,7 @@ export default function LoginPage() {
 
       if (j?.expiresAt) {
         setOtpCooldownUntil(j.expiresAt);
-        setCooldownEmail(normalizedFpEmail);                    // NEW
+        setCooldownEmail(normalizedFpEmail);
       }
       alert.info("A new code has been sent.");
     } catch (err) {
@@ -419,16 +763,28 @@ export default function LoginPage() {
   // ---------- OTP helpers ----------
   const onChangeOtp = (index, value) => {
     const val = value.replace(/\D/g, "").slice(0, 1);
-    setOtpValues((prev) => { const next = [...prev]; next[index] = val; return next; });
-    if (val && index < 5 && otpRefs.current[index + 1]) otpRefs.current[index + 1].focus();
+    setOtpValues((prev) => {
+      const next = [...prev];
+      next[index] = val;
+      return next;
+    });
+    if (val && index < 5 && otpRefs.current[index + 1])
+      otpRefs.current[index + 1].focus();
   };
 
   const onKeyDownOtp = (index, e) => {
     if (e.key === "Backspace" && !otpValues[index] && index > 0) {
-      e.preventDefault(); otpRefs.current[index - 1]?.focus();
+      e.preventDefault();
+      otpRefs.current[index - 1]?.focus();
     }
-    if (e.key === "ArrowLeft" && index > 0) { e.preventDefault(); otpRefs.current[index - 1]?.focus(); }
-    if (e.key === "ArrowRight" && index < 5) { e.preventDefault(); otpRefs.current[index + 1]?.focus(); }
+    if (e.key === "ArrowLeft" && index > 0) {
+      e.preventDefault();
+      otpRefs.current[index - 1]?.focus();
+    }
+    if (e.key === "ArrowRight" && index < 5) {
+      e.preventDefault();
+      otpRefs.current[index + 1]?.focus();
+    }
   };
 
   const otpCode = useMemo(() => otpValues.join(""), [otpValues]);
@@ -440,22 +796,19 @@ export default function LoginPage() {
     try {
       const resp = await fetch(join("/api/auth/forgot/verify"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ email: normalizedFpEmail, code: otpCode }),
       });
       const j = await safeJson(resp);
       if (!resp.ok) {
         const code = j?.code;
-        if (code === "OTP_INVALID") {
+        if (code === "OTP_INVALID")
           throw new Error("Invalid code. Please check and try again.");
-        }
-        if (code === "OTP_EXPIRED") {
+        if (code === "OTP_EXPIRED")
           throw new Error("This code has expired. Please request a new one.");
-        }
-        if (code === "OTP_NOT_FOUND") {
+        if (code === "OTP_NOT_FOUND")
           throw new Error("No active verification code. Please request a new one.");
-        }
         throw new Error(j?.error || "Invalid code. Please try again.");
       }
 
@@ -469,18 +822,21 @@ export default function LoginPage() {
     }
   };
 
-  // ---------- Security Questions: start ----------
+  // ---------- Security Questions (Admin): start ----------
   const onSqStart = async (e) => {
     e.preventDefault();
     setSqError("");
     const id = (sqIdentifier || "").trim();
-    if (!id) { setSqError("Please enter your email / username / employee ID."); return; }
+    if (!id) {
+      setSqError("Please enter your email / username / employee ID.");
+      return;
+    }
 
     setSqLoading(true);
     try {
       const resp = await fetch(join("/api/auth/forgot/sq/start"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ identifier: id }),
       });
@@ -498,7 +854,7 @@ export default function LoginPage() {
     }
   };
 
-  // ---------- Security Questions: verify ----------
+  // ---------- Security Questions (Admin): verify ----------
   const onSqVerify = async (e) => {
     e.preventDefault();
     if (!sqToken) return alert.error("Missing verification token.");
@@ -512,25 +868,22 @@ export default function LoginPage() {
     try {
       const resp = await fetch(join("/api/auth/forgot/sq/verify"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ sqToken, answers: answerPayload }),
       });
       const j = await safeJson(resp);
 
       if (!resp.ok) {
-        // 🔒 SQ lock: show fixed 10-minute message, ignore remaining_seconds
         if (resp.status === 423) {
           const secs = Number(j?.remaining_seconds || 900);
           const idKeyVal = sqIdentifier.trim().toLowerCase();
-
           setSqLockedIdKey(idKeyVal);
           setSqLockUntilIso(new Date(Date.now() + secs * 1000).toISOString());
-
-          throw new Error("Too many incorrect answers. Please wait 15 minutes before trying again.");
+          throw new Error(
+            "Too many incorrect answers. Please wait 15 minutes before trying again."
+          );
         }
-
-        // Other errors: use backend message or fallback
         throw new Error(j?.error || "Verification failed.");
       }
 
@@ -544,17 +897,20 @@ export default function LoginPage() {
     }
   };
 
-  // ---------- Reset password (shared) ----------
+  // ---------- Reset password (Admin) ----------
   const rules = ruleChecks(newPw);
   const pwScore = scorePassword(newPw);
-  const rulesPass = rules.len8 && rules.num && rules.lower && rules.upper && rules.special;
+  const rulesPass =
+    rules.len8 && rules.num && rules.lower && rules.upper && rules.special;
   const confirmPass = newPw && confirmPw && newPw === confirmPw;
 
   const onResetSubmit = async (e) => {
     e.preventDefault();
     if (!resetToken) return alert.error("Missing reset token.");
     if (!PW_REGEX_ENFORCE.test(newPw)) {
-      return alert.error("Password must be 8+ chars with 1 number, 1 lowercase, 1 uppercase, and 1 special character.");
+      return alert.error(
+        "Password must be 8+ chars with 1 number, 1 lowercase, 1 uppercase, and 1 special character."
+      );
     }
     if (newPw !== confirmPw) return alert.error("Passwords do not match.");
 
@@ -562,7 +918,7 @@ export default function LoginPage() {
     try {
       const resp = await fetch(join("/api/auth/forgot/reset"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
         credentials: "include",
         body: JSON.stringify({ resetToken, newPassword: newPw }),
       });
@@ -578,7 +934,7 @@ export default function LoginPage() {
     }
   };
 
-  // Keep the effect that explains the disabled state while on email step
+  // Keep the effect that explains disabled state while on email step
   useEffect(() => {
     if (fpStep !== "email") return;
     if (cooldownActive) {
@@ -604,7 +960,8 @@ export default function LoginPage() {
           sx={{
             px: { xs: 2.5, sm: 3.5, md: 4 },
             py: { xs: 2, sm: 2.5, md: 3 },
-            background: (theme) => `linear-gradient(180deg,
+            background: (theme) =>
+              `linear-gradient(180deg,
               ${alpha(theme.palette.primary.main, 0.18)} 0%,
               ${alpha(theme.palette.primary.main, 0.10)} 60%,
               ${alpha(theme.palette.primary.main, 0.06)} 100%)`,
@@ -613,18 +970,36 @@ export default function LoginPage() {
           <Typography
             variant="h5"
             align="center"
-            sx={{ fontWeight: 800, letterSpacing: 0.2, fontSize: { xs: 20, sm: 22, md: 24 } }}
+            sx={{
+              fontWeight: 800,
+              letterSpacing: 0.2,
+              fontSize: { xs: 20, sm: 22, md: 24 },
+            }}
           >
             Sign in
           </Typography>
+
           <Typography
             variant="body2"
             align="center"
             color="text.secondary"
             sx={{ mt: 0.5, fontSize: { xs: 12.5, sm: 13 } }}
           >
-            Admin Dashboard
+            Backoffice (Admin / Cashier)
           </Typography>
+
+          {loginStep === "secret" && (
+            <Typography
+              variant="caption"
+              align="center"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.75 }}
+            >
+              {roleHint
+                ? `Signing in as: ${roleHint} (${loginMode === "pin" ? "PIN" : "Password"})`
+                : `Signing in (${loginMode === "pin" ? "PIN" : "Password"})`}
+            </Typography>
+          )}
         </Box>
 
         <Divider />
@@ -634,106 +1009,336 @@ export default function LoginPage() {
           <Stack spacing={{ xs: 1.75, sm: 2, md: 2.25 }}>
             <TextField
               name="identifier"
-              label="Employee ID / Username / Email"
+              label="Login ID"
               value={identifier}
-              onChange={(e) => { setIdentifier(e.target.value); setIdError(""); }}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                const prevKey = idKey(identifier);
+                const nextKey = idKey(nextVal);
+
+                setIdentifier(nextVal);
+                setIdError("");
+
+                // If switching to a DIFFERENT id, clear lock UI
+                if (nextKey !== prevKey) {
+                  setLockUntilIso(null);
+                  setLockSecondsLeft(0);
+                  setLockPermanent(false);
+                  setLockedIdKey(null);
+                }
+
+                if (loginStep === "secret") {
+                  setLoginStep("id");
+                  setRoleHint("");
+                  setEmployeeIdHint("");
+                  setLoginMode("password");
+                  setSecret("");
+                }
+              }}
               autoComplete="username"
               required
               fullWidth
-              placeholder="e.g. 202500001 · ced · ced@domain.com"
+              placeholder="Employee ID / Username / Email"
               error={!!idError}
               helperText={idError || " "}
+              disabled={submitting || prechecking}
             />
 
-            <TextField
-              name="password"
-              label="Password"
-              type={showPw ? "text" : "password"}
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); setPwError(""); }}
-              autoComplete="current-password"
-              required
-              fullWidth
-              error={!!pwError}
-              helperText={pwError || " "}
-              slotProps={{
-                input: {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton onClick={() => setShowPw((v) => !v)} edge="end">
-                        {showPw ? <VisibilityOff /> : <Visibility />}
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                },
-              }}
-            />
+            {loginStep === "secret" && (
+              <TextField
+                name="secret"
+                label={secretLabel}
+                type={showSecret ? "text" : "password"}
+                value={secret}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSecret(loginMode === "pin" ? v.replace(/[^\d]/g, "").slice(0, 8) : v);
+                  setSecretError("");
+                }}
+                autoComplete={secretAutoComplete}
+                required
+                fullWidth
+                error={!!secretError}
+                helperText={secretError || " "}
+                slotProps={{
+                  input: {
+                    inputMode: loginMode === "pin" ? "numeric" : "text",
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          onClick={() => setShowSecret((v) => !v)}
+                          edge="end"
+                          disabled={submitting}
+                        >
+                          {showSecret ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
+            )}
 
             <FormControlLabel
               sx={{ ml: 0 }}
-              control={<Switch checked={remember} onChange={(e) => setRemember(e.target.checked)} />}
+              control={
+                <Switch
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  disabled={submitting || prechecking}
+                />
+              }
               label="Remember me"
             />
 
-            <Button
-              type="submit"
-              variant="contained"
-              size="large"
-              fullWidth
-              disabled={submitting || isLockedForCurrentId}
-            >
+            {loginStep === "id" ? (
+              <Button
+                type="button"
+                variant="contained"
+                size="large"
+                fullWidth
+                onClick={onNext}
+                disabled={prechecking || submitting || isLockedForCurrentId}
+              >
               {isLockedForCurrentId
-                ? `Locked: ${fmtMMSS(lockSecondsLeft)}`
-                : (submitting ? "Signing in..." : "Sign In")}
-            </Button>
+                ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
+                : prechecking
+                ? "Checking..."
+                : "Next"}
+              </Button>
+            ) : (
+              <Stack direction="row" spacing={1.5}>
+                <Button
+                  type="button"
+                  variant="outlined"
+                  onClick={onBackToId}
+                  disabled={submitting || prechecking}
+                  sx={{ minWidth: 110 }}
+                >
+                  Back
+                </Button>
+                <Button
+                  type="submit"
+                  variant="contained"
+                  size="large"
+                  fullWidth
+                  disabled={submitting || isLockedForCurrentId}
+                >
+                {isLockedForCurrentId
+                  ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
+                  : submitting
+                  ? "Signing in..."
+                  : "Sign In"}
+                </Button>
+              </Stack>
+            )}
 
             {isLockedForCurrentId && (
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ mt: -0.5 }}
-                aria-live="polite"
-              >
-                This account is locked. Please wait {fmtMMSS(lockSecondsLeft)} or sign in with a different account.
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }} aria-live="polite">
+                {lockPermanent
+                  ? "This account is locked. Please contact an Admin or sign in with a different account."
+                  : `This account is locked. Please wait ${fmtMMSS(lockSecondsLeft)} or sign in with a different account.`}
               </Typography>
             )}
 
             <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 
-            <Button onClick={onOpenForgot} variant="outlined" size="large" fullWidth disabled={submitting}>
-              Forgot Password
+            <Button onClick={onOpenForgot} variant="outlined" size="large" fullWidth disabled={submitting || prechecking}>
+              Forgot Password / PIN
             </Button>
           </Stack>
         </Box>
       </Paper>
 
-      {/* ---------- Forgot Password Dialog ---------- */}
+      {/* ---------- Forgot Password/PIN Dialog ---------- */}
       <Dialog fullScreen open={forgotOpen} onClose={onCloseForgot} TransitionComponent={Transition}>
         <AppBar sx={{ position: "relative" }} elevation={0} color="default">
           <Toolbar>
-            {fpStep !== "choose" ? (
-              <IconButton edge="start" onClick={goChoose} aria-label="back"><ArrowBackIcon /></IconButton>
+            {fpStep !== "identify" ? (
+              <IconButton
+                edge="start"
+                onClick={() => {
+                  // basic back behavior:
+                  if (fpStep === "choose-admin" || fpStep === "ticket") return goIdentify();
+                  if (fpStep === "email" || fpStep === "sq-identify") return goChooseAdmin();
+                  if (fpStep === "otp") return goEmail();
+                  if (fpStep === "sq-answers") return goSqIdentify();
+                  if (fpStep === "reset") return goChooseAdmin();
+                  return goIdentify();
+                }}
+                aria-label="back"
+              >
+                <ArrowBackIcon />
+              </IconButton>
             ) : null}
+
             <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
-              Forgot Password
+              Forgot Password / PIN
             </Typography>
-            <IconButton edge="end" onClick={onCloseForgot} aria-label="close"><CloseIcon /></IconButton>
+            <IconButton edge="end" onClick={onCloseForgot} aria-label="close">
+              <CloseIcon />
+            </IconButton>
           </Toolbar>
         </AppBar>
 
         <Box sx={{ p: { xs: 3, sm: 4 }, maxWidth: 720, mx: "auto", width: "100%" }}>
-          {/* Choose */}
-          {fpStep === "choose" && (
+          {/* Identify */}
+          {fpStep === "identify" && (
+            <Box component="form" onSubmit={onForgotIdentifyNext} noValidate sx={{ mt: 1 }}>
+              <Stack spacing={2.25}>
+                <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                  Find your account
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Enter your <strong>Login ID</strong> so we can show the correct recovery method.
+                </Typography>
+
+                <TextField
+                  label="Login ID"
+                  value={fpIdentifier}
+                  onChange={(e) => {
+                    setFpIdentifier(e.target.value);
+                    setFpIdentifyError("");
+                  }}
+                  fullWidth
+                  required
+                  placeholder="Employee ID / Username / Email"
+                />
+
+                {!!fpIdentifyError && (
+                  <Typography color="error" variant="body2">
+                    {fpIdentifyError}
+                  </Typography>
+                )}
+
+                <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
+                  <Button onClick={onCloseForgot} variant="text" disabled={fpIdentifySubmitting}>
+                    Cancel
+                  </Button>
+                  <Box sx={{ flex: 1 }} />
+                  <Button type="submit" variant="contained" disabled={fpIdentifySubmitting}>
+                    {fpIdentifySubmitting ? <CircularProgress size={22} /> : "Next"}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Box>
+          )}
+
+          {/* Admin choose */}
+          {fpStep === "choose-admin" && (
             <Stack spacing={3}>
-              <Typography variant="h5" sx={{ fontWeight: 700 }}>Choose a recovery method</Typography>
-              <Typography variant="body2" color="text.secondary">Select how you want to recover your account.</Typography>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                Choose a recovery method
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Account detected as <strong>{fpRole || "Admin"}</strong>.
+              </Typography>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                <Button variant="contained" size="large" onClick={onChooseEmailOtp} sx={{ flex: 1 }}>Email OTP</Button>
+                <Button variant="contained" size="large" onClick={onChooseEmailOtp} sx={{ flex: 1 }}>
+                  Email OTP
+                </Button>
                 <Button variant="outlined" size="large" onClick={onChooseSecurityQuestions} sx={{ flex: 1 }}>
                   Security Questions
                 </Button>
               </Stack>
             </Stack>
+          )}
+
+          {/* Cashier ticket */}
+          {fpStep === "ticket" && (
+            <Box component="form" onSubmit={onTicketSubmit} noValidate sx={{ mt: 1 }}>
+              <Stack spacing={2.25}>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  Reset PIN using a Ticket
+                </Typography>
+
+                <Typography variant="body2" color="text.secondary">
+                  Account detected as <strong>{fpRole || "Cashier"}</strong>. PIN reset uses a one-time Reset Ticket issued by Admin.
+                </Typography>
+
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 2,
+                    borderRadius: 2,
+                    background: (t) => alpha(t.palette.info.main, 0.05),
+                    borderColor: (t) => alpha(t.palette.info.main, 0.25),
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    Ticket status
+                  </Typography>
+
+                  {ticketActive ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                      ✅ Active ticket found.
+                      {ticketExpiresAt ? ` Expires at: ${formatLocalPH(ticketExpiresAt)}` : ""}
+                    </Typography>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                      ❌ No active ticket found (or it expired). Please ask an Admin to issue a new Reset Ticket.
+                    </Typography>
+                  )}
+                </Paper>
+
+                <TextField
+                  label="Reset Ticket Code (8 digits)"
+                  value={ticketCode}
+                  onChange={(e) => setTicketCode(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
+                  fullWidth
+                  required
+                  placeholder="12345678"
+                  slotProps={{
+                    input: { inputMode: "numeric" },
+                  }}
+                />
+
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <TextField
+                    label="New PIN (4–8 digits)"
+                    value={newPin}
+                    onChange={(e) => setNewPin(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
+                    fullWidth
+                    required
+                    type="password"
+                    slotProps={{ input: { inputMode: "numeric" } }}
+                  />
+                  <TextField
+                    label="Confirm PIN"
+                    value={confirmPin}
+                    onChange={(e) => setConfirmPin(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
+                    fullWidth
+                    required
+                    type="password"
+                    error={!!confirmPin && String(confirmPin) !== String(newPin)}
+                    helperText={
+                      !!confirmPin && String(confirmPin) !== String(newPin) ? "PINs do not match." : " "
+                    }
+                    slotProps={{ input: { inputMode: "numeric" } }}
+                  />
+                </Stack>
+
+                <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
+                  <Button onClick={goIdentify} variant="text" disabled={ticketSubmitting}>
+                    Back
+                  </Button>
+                  <Box sx={{ flex: 1 }} />
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    disabled={ticketSubmitting || !ticketActive || !pinOk}
+                  >
+                    {ticketSubmitting ? <CircularProgress size={22} /> : "Set PIN"}
+                  </Button>
+                </Stack>
+
+                {!ticketActive && (
+                  <Typography variant="caption" color="text.secondary">
+                    Tip: Admin can issue a Reset Ticket from Backoffice User Management (Cashier account).
+                  </Typography>
+                )}
+              </Stack>
+            </Box>
           )}
 
           {/* Email verify (OTP path) */}
@@ -753,12 +1358,9 @@ export default function LoginPage() {
                   value={fpEmail}
                   onChange={(e) => {
                     setFpEmail(e.target.value);
-                    // Clear non-cooldown errors while typing
-                    if (fpEmailError && fpEmailError !== COOLDOWN_MESSAGE) {
-                      setFpEmailError("");
-                    }
+                    if (fpEmailError && fpEmailError !== COOLDOWN_MESSAGE) setFpEmailError("");
                   }}
-                  placeholder="e.g. admin@quscina.com"
+                  placeholder="e.g. admin@domain.com"
                   fullWidth
                   required
                 />
@@ -770,15 +1372,11 @@ export default function LoginPage() {
                 )}
 
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={goChoose} variant="text" disabled={fpEmailSubmitting}>
+                  <Button onClick={goChooseAdmin} variant="text" disabled={fpEmailSubmitting}>
                     Back
                   </Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    disabled={fpEmailSubmitting || cooldownActive}
-                  >
+                  <Button type="submit" variant="contained" disabled={fpEmailSubmitting || cooldownActive}>
                     {fpEmailSubmitting ? "Checking..." : "Submit"}
                   </Button>
                 </Stack>
@@ -825,18 +1423,16 @@ export default function LoginPage() {
                 </Stack>
 
                 <Stack direction="row" spacing={2} sx={{ width: "100%", pt: 1 }}>
-                  <Button onClick={goEmail} variant="text" disabled={otpSubmitting}>Back</Button>
+                  <Button onClick={goEmail} variant="text" disabled={otpSubmitting}>
+                    Back
+                  </Button>
                   <Box sx={{ flex: 1 }} />
                   <Button type="submit" variant="contained" disabled={otpSubmitting}>
                     {otpSubmitting ? "Verifying..." : "Verify Code"}
                   </Button>
                 </Stack>
 
-                <Button
-                  variant="text"
-                  disabled={otpSubmitting || cooldownActive}
-                  onClick={onResend}
-                >
+                <Button variant="text" disabled={otpSubmitting || cooldownActive} onClick={onResend}>
                   {cooldownActive ? "Resend code (after cooldown)" : "Resend code"}
                 </Button>
               </Stack>
@@ -847,7 +1443,9 @@ export default function LoginPage() {
           {fpStep === "sq-identify" && (
             <Box component="form" onSubmit={onSqStart} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>Verify using security questions</Typography>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  Verify using security questions
+                </Typography>
                 <Typography variant="body2" color="text.secondary">
                   Enter your <strong>email</strong>, <strong>username</strong>, or <strong>employee ID</strong> to continue.
                 </Typography>
@@ -863,16 +1461,16 @@ export default function LoginPage() {
                 {!!sqError && <Typography color="error" variant="body2">{sqError}</Typography>}
 
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={goChoose} variant="text" disabled={sqLoading}>Back</Button>
+                  <Button onClick={goChooseAdmin} variant="text" disabled={sqLoading}>
+                    Back
+                  </Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    disabled={sqLoading || sqLockSecondsLeft > 0}
-                  >
+                  <Button type="submit" variant="contained" disabled={sqLoading || sqLockSecondsLeft > 0}>
                     {sqLockSecondsLeft > 0
                       ? `Locked: ${fmtMMSS(sqLockSecondsLeft)}`
-                      : (sqLoading ? <CircularProgress size={22} /> : "Verify Answer")}
+                      : sqLoading
+                      ? <CircularProgress size={22} />
+                      : "Verify Answer"}
                   </Button>
                 </Stack>
               </Stack>
@@ -925,11 +1523,13 @@ export default function LoginPage() {
             </Box>
           )}
 
-          {/* Reset Password (shared for OTP/SQ) */}
+          {/* Reset Password (Admin) */}
           {fpStep === "reset" && (
             <Box component="form" onSubmit={onResetSubmit} noValidate sx={{ mt: 1 }}>
               <Stack spacing={2.25}>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>Set a new password</Typography>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                  Set a new password
+                </Typography>
 
                 <TextField
                   label="New password"
@@ -998,15 +1598,11 @@ export default function LoginPage() {
                 />
 
                 <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={() => setFpStep("choose")} variant="text" disabled={resetSubmitting}>
+                  <Button onClick={() => setFpStep("choose-admin")} variant="text" disabled={resetSubmitting}>
                     Back
                   </Button>
                   <Box sx={{ flex: 1 }} />
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    disabled={resetSubmitting || !rulesPass || !confirmPass}
-                  >
+                  <Button type="submit" variant="contained" disabled={resetSubmitting || !rulesPass || !confirmPass}>
                     {resetSubmitting ? "Saving..." : "Update Password"}
                   </Button>
                 </Stack>

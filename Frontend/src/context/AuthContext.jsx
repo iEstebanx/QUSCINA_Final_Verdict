@@ -16,11 +16,10 @@ async function safeJson(res) {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);   // { employeeId, role, ... }
-  const [token, setToken] = useState(null); // optional JWT
+  const [user, setUser] = useState(null); // { employeeId, role, ... }
+  const [token, setToken] = useState(null);
   const [ready, setReady] = useState(false);
 
-  // Bootstrap from storage (session first, then local). If empty, ask backend.
   useEffect(() => {
     let cancelled = false;
 
@@ -55,10 +54,10 @@ export function AuthProvider({ children }) {
 
       // 3) Fallback: cookie session (soft)
       try {
-        console.log("[AuthContext] calling me:", joinApi("/api/auth/me?soft=1"));
         const res = await fetch(joinApi("/api/auth/me?soft=1"), {
           credentials: "include",
           cache: "no-store",
+          headers: { "X-App": "backoffice" },
         });
         const data = await safeJson(res);
         if (res.ok && !cancelled) {
@@ -72,25 +71,89 @@ export function AuthProvider({ children }) {
     }
 
     bootstrap();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // in AuthContext (same file where setUser/setToken live)
-  async function login(identifier, password, { remember } = {}) {
-    // if this file doesn't have safeJson/join, either import them or inline:
-    // const join = (p) => `${API_BASE}`.replace(/\/+$/,"") + `/${String(p||"").replace(/^\/+/, "")}`;
-    // async function safeJson(res) { const t = await res.text(); try { return t ? JSON.parse(t) : {}; } catch { return { error: t || res.statusText || "Invalid response" }; } }
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
+    if (!window.__qd_originalFetch) {
+      window.__qd_originalFetch = window.fetch.bind(window);
+    }
+
+    const originalFetch = window.__qd_originalFetch;
+
+    window.fetch = async (input, init = {}) => {
+      try {
+        const url =
+          typeof input === "string"
+            ? input
+            : input?.url || "";
+
+        const isApiCall =
+          typeof url === "string" &&
+          (url.includes("/api/") || url.startsWith("/api/") || url.startsWith("api/"));
+
+
+        if (!isApiCall) return originalFetch(input, init);
+
+        // start with headers from Request (if input is Request)
+        const baseHeaders =
+          typeof input !== "string" && input?.headers
+            ? new Headers(input.headers)
+            : new Headers();
+
+        // apply init.headers on top (so caller can override)
+        const initHeaders = new Headers(init.headers || {});
+        initHeaders.forEach((v, k) => baseHeaders.set(k, v));
+
+        if (!baseHeaders.has("X-App")) baseHeaders.set("X-App", "backoffice");
+
+        const stored =
+          token ||
+          sessionStorage.getItem("qd_token") ||
+          localStorage.getItem("qd_token") ||
+          "";
+
+        if (stored && !baseHeaders.has("Authorization")) {
+          baseHeaders.set("Authorization", `Bearer ${stored}`);
+        }
+
+        return originalFetch(input, {
+          ...init,
+          headers: baseHeaders,
+          credentials: init.credentials ?? "include",
+          cache: init.cache ?? "no-store",
+        });
+      } catch {
+        return originalFetch(input, init);
+      }
+    };
+
+    return () => {
+      if (window.__qd_originalFetch) {
+        window.fetch = window.__qd_originalFetch;
+      }
+    };
+  }, [token]);
+
+
+  /**
+   * Role-aware login precheck.
+   * Backend should return { ok, role, employeeId, loginMode: "password"|"pin", pinNotSet?, ticketExpired?, ticketExpiresAt? }
+   */
+  async function precheckLogin(identifier) {
     let res;
     try {
-      res = await fetch(joinApi("/api/auth/login"), {
+      res = await fetch(joinApi("/api/auth/login/precheck"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", "X-App": "backoffice" },
-        body: JSON.stringify({ identifier, password, remember, app: "backoffice" }),
+        body: JSON.stringify({ identifier, app: "backoffice" }),
       });
-    } catch (networkErr) {
-      // Network/timeout/etc → throw with status 0 so UI can show a nice message
+    } catch {
       const err = new Error("Unable to reach server. Check your connection.");
       err.status = 0;
       err.data = null;
@@ -98,35 +161,72 @@ export function AuthProvider({ children }) {
     }
 
     const data = await safeJson(res);
-
     if (!res.ok) {
-      // ✨ Enrich the error so caller can branch on status (423 temp/permanent lock)
-      const err = new Error(data?.error || res.statusText || "Login failed");
-      err.status = res.status;   // e.g., 401, 403, 423
-      err.data = data || null;   // may contain { remaining_seconds }
+      const err = new Error(data?.error || res.statusText || "Precheck failed");
+      err.status = res.status;
+      err.data = data || null;
+      throw err;
+    }
+    return data;
+  }
+
+  /**
+   * loginMode:
+   * - "password": sends { password }
+   * - "pin": sends { pin }
+   */
+  async function login(identifier, secret, { remember, loginMode } = {}) {
+    const mode = loginMode === "pin" ? "pin" : "password";
+
+    let res;
+    try {
+      res = await fetch(joinApi("/api/auth/login"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+        body: JSON.stringify({
+          identifier,
+          remember,
+          app: "backoffice",
+          ...(mode === "pin" ? { pin: secret } : { password: secret }),
+        }),
+      });
+    } catch {
+      const err = new Error("Unable to reach server. Check your connection.");
+      err.status = 0;
+      err.data = null;
       throw err;
     }
 
-    // ✅ success → keep your existing behavior
+    const data = await safeJson(res);
+    if (!res.ok) {
+      const err = new Error(data?.error || res.statusText || "Login failed");
+      err.status = res.status;
+      err.data = data || null;
+      throw err;
+    }
+
     const u = data.user || null;
     setUser(u);
     setToken(data.token || null);
 
-    // Save to chosen storage
     const store = remember ? localStorage : sessionStorage;
-    store.setItem("qd_token", data.token || "");
     store.setItem("qd_user", JSON.stringify(u));
 
-    // Clear the other store to avoid stale values
+    if (data.token) {
+      store.setItem("qd_token", data.token);
+    } else {
+      store.removeItem("qd_token");
+    }
+
     const other = remember ? sessionStorage : localStorage;
     other.removeItem("qd_token");
     other.removeItem("qd_user");
 
-    return u; // (unchanged) callers expecting a user keep working
+    return u;
   }
 
   async function logout() {
-    // call backend first so we can honor "no logout until remit"
     let res;
     try {
       res = await fetch(
@@ -143,19 +243,21 @@ export function AuthProvider({ children }) {
     } catch {
       const err = new Error("Unable to reach server. Please try again.");
       err.status = 0;
+      err.data = null;
       throw err;
     }
 
     const data = await safeJson(res);
 
+    // ✅ IMPORTANT: do NOT clear local/session if logout was blocked (409) or failed
     if (!res.ok) {
       const err = new Error(data?.error || res.statusText || "Logout failed");
-      err.status = res.status;      // ✅ will be 409 when shift is open
+      err.status = res.status;
       err.data = data || null;
       throw err;
     }
 
-    // ✅ only clear session when server allowed logout
+    // ✅ logout ok => clear client state
     setUser(null);
     setToken(null);
     localStorage.removeItem("qd_token");
@@ -164,7 +266,11 @@ export function AuthProvider({ children }) {
     sessionStorage.removeItem("qd_user");
   }
 
-  const value = useMemo(() => ({ user, token, ready, login, logout }), [user, token, ready]);
+  const value = useMemo(
+    () => ({ user, token, ready, precheckLogin, login, logout }),
+    [user, token, ready]
+  );
+
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 

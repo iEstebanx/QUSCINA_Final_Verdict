@@ -4,6 +4,7 @@ import MainLayout from "../layouts/MainLayout";
 import EmptyLayout from "../layouts/EmptyLayout";
 import POSLayout from "../layouts/POSLayout";
 
+import RequireAuth from "../components/Guards/RequireAuth";
 import RequireAdmin from "../components/Guards/RequireAdmin";
 
 import LoginPage from "../pages/Login/LoginPage";
@@ -50,76 +51,38 @@ export default function AppRoutes() {
         <Route path="/" element={<LoginPage />} />
       </Route>
 
-      {/* Protected */}
-      <Route element={<RequireAdmin />}>
-        {/* Backoffice main layout (with sidebar + AppHeader + breadcrumbs) */}
-        <Route element={<MainLayout />}>
-          {/* Core */}
-          <Route path="/dashboard" element={<DashboardPage />} />
+      {/* ✅ Protected: any logged-in user */}
+      <Route element={<RequireAuth />}>
+        {/* ✅ Admin-only pages */}
+        <Route element={<RequireAdmin />}>
+          <Route element={<MainLayout />}>
+            <Route path="/dashboard" element={<DashboardPage />} />
 
-          {/* Reports */}
-          <Route path="/reports" element={<ReportsPage />} />
-          <Route
-            path="/reports/inventory-reports"
-            element={<InventoryHistoryPage />}
-          />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/reports/inventory-reports" element={<InventoryHistoryPage />} />
+            <Route path="/items" element={<ItemlistPage />} />
+            <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/audit-trail" element={<AuditTrailPage />} />
 
-          {/* Items */}
-          <Route path="/items" element={<ItemlistPage />} />
+            {/* redirects + settings */}
+            <Route path="/audit-trail/inventory-reports" element={<Navigate to="/reports/inventory-reports" replace />} />
+            <Route path="/inventory/history" element={<Navigate to="/reports/inventory-reports" replace />} />
+            <Route path="/Inventory/inventoryhistorypage" element={<Navigate to="/reports/inventory-reports" replace />} />
+            <Route path="/users" element={<Navigate to="/settings/users" replace />} />
 
-          {/* Inventory */}
-          <Route path="/inventory" element={<InventoryPage />} />
-
-          {/* Audit Trail */}
-          <Route path="/audit-trail" element={<AuditTrailPage />} />
-
-          {/* Redirects & settings (unchanged) */}
-          <Route
-            path="/audit-trail/inventory-reports"
-            element={<Navigate to="/reports/inventory-reports" replace />}
-          />
-          <Route
-            path="/inventory/history"
-            element={<Navigate to="/reports/inventory-reports" replace />}
-          />
-          <Route
-            path="/Inventory/inventoryhistorypage"
-            element={<Navigate to="/reports/inventory-reports" replace />}
-          />
-          <Route
-            path="/users"
-            element={<Navigate to="/settings/users" replace />}
-          />
-          <Route path="/settings/users" element={<UserManagementPage />} />
-          <Route path="/settings/store" element={<StoreSettingsPage />} />
-          <Route
-            path="/settings/payment-types"
-            element={<PaymentTypePage />}
-          />
-          <Route
-            path="/settings/authorization-pins"
-            element={<AuthorizationPinsPage />}
-          />
-          <Route path="/settings/categories" element={<Categories />} />
-          <Route
-            path="/settings/inventory-categories"
-            element={<Navigate to="/settings/categories" replace />}
-          />
-          <Route
-            path="/settings/backup-restore"
-            element={<BackupAndRestorePage />}
-          />
-          <Route
-            path="/settings/quscinas-memo"
-            element={<QuscinasMemoPage />}
-          />
-          <Route
-            path="/settings/discounts"
-            element={<DiscountPage />}
-          />
+            <Route path="/settings/users" element={<UserManagementPage />} />
+            <Route path="/settings/store" element={<StoreSettingsPage />} />
+            <Route path="/settings/payment-types" element={<PaymentTypePage />} />
+            <Route path="/settings/authorization-pins" element={<AuthorizationPinsPage />} />
+            <Route path="/settings/categories" element={<Categories />} />
+            <Route path="/settings/inventory-categories" element={<Navigate to="/settings/categories" replace />} />
+            <Route path="/settings/backup-restore" element={<BackupAndRestorePage />} />
+            <Route path="/settings/quscinas-memo" element={<QuscinasMemoPage />} />
+            <Route path="/settings/discounts" element={<DiscountPage />} />
+          </Route>
         </Route>
 
-        {/* POS layout (NO sidebar, NO AppHeader/breadcrumbs) */}
+        {/* ✅ POS: Cashier OR Admin */}
         <Route element={<POSLayout />}>
           <Route path="/pos" element={<Navigate to="/pos/menu" replace />} />
           <Route path="/pos/menu" element={<POSMenuPage />} />

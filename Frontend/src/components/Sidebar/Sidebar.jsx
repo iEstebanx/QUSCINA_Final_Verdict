@@ -42,7 +42,7 @@ import logo from "@/assets/LOGO.png";
 import { alpha } from "@mui/material/styles";
 
 /* --------------------- Small leaf button --------------------- */
-function NavLeaf({ to, label, icon: Icon, collapsed, end = false, onClick }) {
+function NavLeaf({ to, label, icon: Icon, collapsed, end = false, onClick, activeOverride }) {
   const base = {
     display: "flex",
     alignItems: "center",
@@ -56,33 +56,38 @@ function NavLeaf({ to, label, icon: Icon, collapsed, end = false, onClick }) {
 
   return (
     <NavLink to={to} end={end} style={{ textDecoration: "none" }} onClick={onClick}>
-      {({ isActive }) => (
-        <ButtonBase
-          sx={(theme) => {
-            const isDark = theme.palette.mode === "dark";
-            const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.1);
-            const hovBg = alpha(theme.palette.text.primary, isDark ? 0.1 : 0.06);
-            const selHov = alpha(theme.palette.text.primary, isDark ? 0.16 : 0.08);
-            return {
-              ...base,
-              justifyContent: collapsed ? "center" : "flex-start",
-              color: theme.palette.text.primary,
-              bgcolor: isActive ? selBg : "transparent",
-              fontWeight: isActive ? 600 : 500,
-              "&:hover": { bgcolor: isActive ? selHov : hovBg },
-              "&:focus-visible": {
-                outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
-                outlineOffset: 2,
-              },
-            };
-          }}
-        >
-          <Icon sx={{ fontSize: 20 }} />
-          {!collapsed && <span>{label}</span>}
-        </ButtonBase>
-      )}
+      {({ isActive }) => {
+        const active = typeof activeOverride === "boolean" ? activeOverride : isActive;
+
+        return (
+          <ButtonBase
+            sx={(theme) => {
+              const isDark = theme.palette.mode === "dark";
+              const selBg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.1);
+              const hovBg = alpha(theme.palette.text.primary, isDark ? 0.1 : 0.06);
+              const selHov = alpha(theme.palette.text.primary, isDark ? 0.16 : 0.08);
+              return {
+                ...base,
+                justifyContent: collapsed ? "center" : "flex-start",
+                color: theme.palette.text.primary,
+                bgcolor: active ? selBg : "transparent",
+                fontWeight: active ? 600 : 500,
+                "&:hover": { bgcolor: active ? selHov : hovBg },
+                "&:focus-visible": {
+                  outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
+                  outlineOffset: 2,
+                },
+              };
+            }}
+          >
+            <Icon sx={{ fontSize: 20 }} />
+            {!collapsed && <span>{label}</span>}
+          </ButtonBase>
+        );
+      }}
     </NavLink>
   );
+
 }
 
 NavLeaf.propTypes = {
@@ -92,6 +97,7 @@ NavLeaf.propTypes = {
   collapsed: PropTypes.bool.isRequired,
   end: PropTypes.bool,
   onClick: PropTypes.func,
+  activeOverride: PropTypes.bool,
 };
 
 /* --------------------- Group with popover when collapsed --------------------- */
@@ -230,6 +236,10 @@ function SidebarContent({ collapsed }) {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const role = user?.role;
+  const isCashier = role === "Cashier";
+  const isAdmin = role === "Admin";
+
   const path = location.pathname;
 
   const isPosActive = useMemo(() => path.startsWith("/pos"), [path]);
@@ -246,17 +256,18 @@ function SidebarContent({ collapsed }) {
       await logout();
     } catch (e) {
       if (e?.status === 409) {
-        // ✅ go to shift management and show dialog
         navigate("/pos/shift-management", {
           replace: true,
           state: {
             openShiftLogoutBlocked: true,
-            message: e?.message || "Cannot logout while a shift is still open.",
+            message: e?.data?.error || e?.message || "Cannot logout while a shift is still open.",
+            shift: e?.data?.shift || null, // optional: show shift info in dialog
+            code: e?.data?.code || null,   // optional
           },
         });
         return;
       }
-      // optional: fallback message
+
       window.alert(e?.message || "Logout failed.");
     }
   };
@@ -287,7 +298,7 @@ function SidebarContent({ collapsed }) {
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Brand */}
       <NavLink
-        to="/dashboard"
+        to={isCashier ? "/pos/menu" : "/dashboard"}
         style={{ textDecoration: "none", color: "inherit" }}
       >
         <ButtonBase
@@ -319,155 +330,101 @@ function SidebarContent({ collapsed }) {
 
       {/* Nav */}
       <Box sx={{ px: 1, display: "grid", gap: 0.5 }}>
-        <NavLeaf
-          to="/dashboard"
-          label="Dashboard"
-          icon={DashboardIcon}
-          collapsed={collapsed}
-        />
+        {/* ✅ Cashier sees ONLY POS */}
+        {isCashier ? (
+          <>
+            {/* POS header - NOT a clickable link, just a label */}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1.25,
+                px: 1.5,
+                py: 1.1,
+                borderRadius: 1.5,
+                justifyContent: collapsed ? "center" : "flex-start",
+                color: "text.secondary",
+              }}
+            >
+              <PointOfSaleIcon sx={{ fontSize: 20 }} />
+              {!collapsed && <Typography variant="body2" fontWeight={500}>POS</Typography>}
+            </Box>
 
-        {/* 🔹 POS group: Menu + Orders */}
-        <NavGroup
-          label="POS"
-          icon={PointOfSaleIcon}
-          collapsed={collapsed}
-          open={openPos}
-          onToggle={() => setOpenPos((v) => !v)}
-          active={isPosActive}
-        >
-          <NavLeaf
-            to="/pos/menu"
-            label="Menu"
-            icon={RestaurantMenuIcon}
-            collapsed={collapsed}
-          />
-          <NavLeaf
-            to="/pos/orders"
-            label="Orders"
-            icon={ReceiptLongIcon}
-            collapsed={collapsed}
-          />
-          <NavLeaf
-            to="/pos/shift-management"
-            label="Shift/Cash Management"
-            icon={HistoryIcon}
-            collapsed={collapsed}
-          />
-        </NavGroup>
+            {/* POS pages */}
+            <Box sx={{ display: "grid", gap: 0.35, pl: collapsed ? 0 : 2 }}>
+              <NavLeaf 
+                to="/pos/menu" 
+                label="Menu" 
+                icon={RestaurantMenuIcon} 
+                collapsed={collapsed} 
+              />
+              <NavLeaf 
+                to="/pos/orders" 
+                label="Orders" 
+                icon={ReceiptLongIcon} 
+                collapsed={collapsed} 
+              />
+              <NavLeaf 
+                to="/pos/shift-management" 
+                label="Shift/Cash Management" 
+                icon={HistoryIcon} 
+                collapsed={collapsed} 
+              />
+            </Box>
+          </>
+        ) : (
+          <>
+            {/* ✅ Admin sees everything (your current sidebar) */}
+            <NavLeaf to="/dashboard" label="Dashboard" icon={DashboardIcon} collapsed={collapsed} />
 
-        {/* Inventory */}
-        <NavLeaf
-          to="/inventory"
-          label="Inventory"
-          icon={Inventory2Icon}
-          collapsed={collapsed}
-        />
+            <NavGroup
+              label="POS"
+              icon={PointOfSaleIcon}
+              collapsed={collapsed}
+              open={openPos}
+              onToggle={() => setOpenPos((v) => !v)}
+              active={isPosActive}
+            >
+              <NavLeaf to="/pos/menu" label="Menu" icon={RestaurantMenuIcon} collapsed={collapsed} />
+              <NavLeaf to="/pos/orders" label="Orders" icon={ReceiptLongIcon} collapsed={collapsed} />
+              <NavLeaf to="/pos/shift-management" label="Shift/Cash Management" icon={HistoryIcon} collapsed={collapsed} />
+            </NavGroup>
 
-        {/* Items (new dish icon) */}
-        <NavLeaf
-          to="/items"
-          label="Items"
-          icon={LunchDiningIcon}
-          collapsed={collapsed}
-        />
+            <NavLeaf to="/inventory" label="Inventory" icon={Inventory2Icon} collapsed={collapsed} />
+            <NavLeaf to="/items" label="Items" icon={LunchDiningIcon} collapsed={collapsed} />
 
-        {/* Reports group: Reports + Inventory Reports */}
-        <NavGroup
-          label="Reports"
-          icon={BarChartIcon}
-          collapsed={collapsed}
-          open={openReports}
-          onToggle={() => setOpenReports((v) => !v)}
-          active={isReportsActive}
-        >
-          <NavLeaf
-            to="/reports"
-            label="Reports"
-            icon={BarChartIcon}
-            collapsed={collapsed}
-            end
-          />
-          <NavLeaf
-            to="/reports/inventory-reports"
-            label="Inventory Reports"
-            icon={HistoryIcon}
-            collapsed={collapsed}
-          />
-        </NavGroup>
+            <NavGroup
+              label="Reports"
+              icon={BarChartIcon}
+              collapsed={collapsed}
+              open={openReports}
+              onToggle={() => setOpenReports((v) => !v)}
+              active={isReportsActive}
+            >
+              <NavLeaf to="/reports" label="Reports" icon={BarChartIcon} collapsed={collapsed} end />
+              <NavLeaf to="/reports/inventory-reports" label="Inventory Reports" icon={HistoryIcon} collapsed={collapsed} />
+            </NavGroup>
 
-        {/* Settings group */}
-        <NavGroup
-          label="Settings"
-          icon={SettingsIcon}
-          collapsed={collapsed}
-          open={openSettings}
-          onToggle={() => setOpenSettings((v) => !v)}
-          active={isSettingsActive}
-        >
-          {/* 1. User Management */}
-          <NavLeaf
-            to="/settings/users"
-            label="User Management"
-            icon={PeopleIcon}
-            collapsed={collapsed}
-          />
+            <NavGroup
+              label="Settings"
+              icon={SettingsIcon}
+              collapsed={collapsed}
+              open={openSettings}
+              onToggle={() => setOpenSettings((v) => !v)}
+              active={isSettingsActive}
+            >
+              <NavLeaf to="/settings/users" label="User Management" icon={PeopleIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/discounts" label="Discounts" icon={LocalOfferIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/payment-types" label="Payment Types" icon={PaymentIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/authorization-pins" label="Authorization Pins" icon={VpnKeyIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/categories" label="Categories" icon={CategoryIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/backup-restore" label="Backup & Restore" icon={BackupIcon} collapsed={collapsed} />
+              <NavLeaf to="/settings/quscinas-memo" label="Quscina's Memo" icon={ArticleIcon} collapsed={collapsed} />
+            </NavGroup>
 
-          {/* 4. Discounts */}
-          <NavLeaf
-            to="/settings/discounts"
-            label="Discounts"
-            icon={LocalOfferIcon}
-            collapsed={collapsed}
-          />
-
-          {/* 5. Payment Types */}
-          <NavLeaf
-            to="/settings/payment-types"
-            label="Payment Types"
-            icon={PaymentIcon}
-            collapsed={collapsed}
-          />
-
-          {/* 6. Authorization Pins */}
-          <NavLeaf
-            to="/settings/authorization-pins"
-            label="Authorization Pins"
-            icon={VpnKeyIcon}
-            collapsed={collapsed}
-          />
-
-          {/* 7. Categories (Menu + Inventory) */}
-          <NavLeaf
-            to="/settings/categories"
-            label="Categories"
-            icon={CategoryIcon}
-            collapsed={collapsed}
-          />
-
-          {/* 8. Backup & Restore */}
-          <NavLeaf
-            to="/settings/backup-restore"
-            label="Backup & Restore"
-            icon={BackupIcon}
-            collapsed={collapsed}
-          />
-
-          {/* 9. Quscina's Memo */}
-          <NavLeaf
-            to="/settings/quscinas-memo"
-            label="Quscina's Memo"
-            icon={ArticleIcon}
-            collapsed={collapsed}
-          />
-        </NavGroup>
-
-        {/* 🔹 Audit Trail as a simple link */}
-        <NavLeaf
-          to="/audit-trail"
-          label="Audit Trail"
-          icon={TimelineIcon}
-          collapsed={collapsed}
-        />
+            <NavLeaf to="/audit-trail" label="Audit Trail" icon={TimelineIcon} collapsed={collapsed} />
+          </>
+        )}
       </Box>
 
       <Box sx={{ flexGrow: 1 }} />

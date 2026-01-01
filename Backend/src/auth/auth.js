@@ -73,6 +73,65 @@ module.exports = function authRouterFactory({ db } = {}) {
     return { locked: msLeft > 0, msLeft, permanent: !!row.permanent_lock };
   }
 
+  async function bumpLockForApp({ employeeId, app }) {
+    const row = await readLockRow(db, employeeId, app);
+    const newFails = Number(row.failed_login_count || 0) + 1;
+
+    // compute lock outcome
+    const next = computeNextLock(newFails); // uses LOCK_POLICY
+    const lockUntilSql =
+      next.perm ? null :
+      next.minutes && next.minutes > 0
+        ? `DATE_ADD(UTC_TIMESTAMP(), INTERVAL ${Number(next.minutes)} MINUTE)`
+        : null;
+
+    // upsert
+    await db.query(
+      `
+      INSERT INTO employee_lock_state (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+      VALUES (?, ?, 1, ${lockUntilSql ? lockUntilSql : "NULL"}, ?, UTC_TIMESTAMP())
+      ON DUPLICATE KEY UPDATE
+        failed_login_count = failed_login_count + 1,
+        lock_until = ${lockUntilSql ? lockUntilSql : "lock_until"},
+        permanent_lock = CASE
+          WHEN failed_login_count + 1 >= ? THEN 1
+          ELSE permanent_lock
+        END,
+        last_failed_login = UTC_TIMESTAMP()
+      `,
+      [
+        employeeId,
+        app,
+        next.perm ? 1 : 0,
+        LOCK_POLICY.permanent_on,
+      ]
+    );
+
+    const fresh = await readLockRow(db, employeeId, app);
+    const info = lockInfoFromRow(fresh);
+
+    return {
+      locked: info.locked,
+      permanent: info.permanent,
+      remaining_seconds: info.locked ? Math.ceil(info.msLeft / 1000) : 0,
+      failed_login_count: Number(fresh.failed_login_count || 0),
+    };
+  }
+
+  async function clearLockForApp({ employeeId, app }) {
+    await db.query(
+      `
+      UPDATE employee_lock_state
+        SET failed_login_count = 0,
+            lock_until = NULL,
+            permanent_lock = 0,
+            last_failed_login = NULL
+      WHERE employee_id = ? AND app = ?
+      `,
+      [employeeId, app]
+    );
+  }
+
   const LOCK_POLICY = {
     step4_minutes: 0,       // no lock on 4th attempt anymore
     step5_minutes: 15,      // 15-minute lock on 5th attempt
@@ -237,6 +296,17 @@ module.exports = function authRouterFactory({ db } = {}) {
     });
   }
 
+  function setAuthCookie(res, token, { remember } = {}) {
+    const maxAgeMs = remember ? 7 * 24 * 60 * 60 * 1000 : 12 * 60 * 60 * 1000; // 7d or 12h
+    res.cookie("qd_token", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false, // dev (http)
+      path: "/",     // IMPORTANT: allow all /api/* not just /api/auth
+      maxAge: maxAgeMs,
+    });
+  }
+
   function loginMethodAllowed(userRow, loginType) {
     // employees table uses login_employee_id / login_username / login_email (tinyint)
     if (loginType === "employee_id") return !!userRow.login_employee_id;
@@ -260,492 +330,321 @@ module.exports = function authRouterFactory({ db } = {}) {
 
   // ---- Routes ----
 
-  // POST /api/auth/login
-  router.post("/login", async (req, res, next) => {
-    try {
-      const app = getAppRealm(req); // "backoffice" (default) or "pos" if you ever pass it
-      const { identifier, password, remember } = req.body || {};
-      if (!identifier || !password) {
-        return res
-          .status(400)
-          .json({ error: "identifier and password are required" });
-      }
+  
+// 1) ADD: POST /api/auth/login/precheck
+router.post("/login/precheck", async (req, res, next) => {
+  try {
+    const app = getAppRealm(req); // "backoffice" default
+    const { identifier } = req.body || {};
+    if (!identifier) return res.status(400).json({ error: "identifier is required" });
 
-      const ip =
-        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-        req.ip ||
-        "";
-      const ua = String(req.headers["user-agent"] || "").slice(0, 255);
-      const identLower = String(identifier).trim().toLowerCase();
+    const { user, type } = await findByAlias(identifier);
 
-      const { user, type } = await findByAlias(identifier);
-
-      // No account found → generic error + audit (avoid username enumeration)
-      if (!user) {
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (NULL, ?, ?, 0, 'no_account', ?, ?)`,
-          [app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: "Unknown",
-          role: "—",
-          action: "Auth - Login Attempt (Unknown ID)",
-          detail: {
-            statusMessage: "Invalid Login ID.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type, // employee_id / username / email
-              identifier: identLower,
-              result: "unknown_identifier",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_UNKNOWN_IDENTIFIER,
-              items: [],
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res
-          .status(404)
-          .json({ error: "Invalid Login ID", code: "UNKNOWN_IDENTIFIER" });
-      }
-
-      // HR status
-      if (String(user.status || "").toLowerCase() !== "active") {
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, 'not_active', ?, ?)`,
-          [user.employee_id, app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Blocked (Not Active)",
-          detail: {
-            statusMessage: "Account is not active.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: "not_active",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_ACCOUNT_NOT_ACTIVE,
-              items: [],
-              hrStatus: user.status || "unknown",
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res
-          .status(403)
-          .json({ error: "Account is not active" });
-      }
-
-      // 🔒 Per-app lock check (employee_lock_state)
-      const lockRow = await readLockRow(db, user.employee_id, app);
-      const { locked, msLeft, permanent } = lockInfoFromRow(lockRow);
-
-      if (permanent) {
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, 'perm_locked', ?, ?)`,
-          [user.employee_id, app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Blocked (Permanent Lock)",
-          detail: {
-            statusMessage: "Account is permanently locked.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: "perm_locked",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_LOCK_PERMA,
-              items: [],
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res
-          .status(423)
-          .json({
-            error:
-              "Account locked. Please contact an Admin.",
-          });
-      }
-
-      if (locked) {
-        const sec = Math.ceil(msLeft / 1000);
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, 'locked', ?, ?)`,
-          [user.employee_id, app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Blocked (Temporary Lock)",
-          detail: {
-            statusMessage:
-              "Account temporarily locked due to repeated failed attempts.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: "locked",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_LOCK_TEMP,
-              lockSeconds: sec,
-              items: [],
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res.status(423).json({
-          error:
-            "Account temporarily locked. Please wait before trying again.",
-          remaining_seconds: sec,
-        });
-      }
-
-      // Method allowed?
-      if (!loginMethodAllowed(user, type)) {
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, 'method_disabled', ?, ?)`,
-          [user.employee_id, app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Blocked (Method Disabled)",
-          detail: {
-            statusMessage:
-              "Login method is disabled for this account.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: "method_disabled",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_METHOD_DISABLED,
-              items: [],
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res
-          .status(400)
-          .json({
-            error: "This login method is disabled for the account",
-          });
-      }
-
-      if (!user.password_hash) {
-        const roleLower = String(user.role || "").toLowerCase();
-
-        // If this is a non-admin role, just say they're not allowed here
-        if (!["admin"].includes(roleLower)) {
-          return res
-            .status(403)
-            .json({ error: "Not authorized for Admin Dashboard" });
-        }
-
-        // For Admin with no password, keep the old message
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, 'bad_password', ?, ?)`,
-          [user.employee_id, app, identLower, ip, ua]
-        );
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Failed (No Password Set)",
-          detail: {
-            statusMessage: "Account has no password set.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: "no_password_hash",
-            },
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_BAD_PASSWORD,
-              items: [],
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        return res.status(400).json({
-          error: "This account has no password set. Please ask an Admin to set one.",
-          code: "NO_PASSWORD_SET",
-        });
-      }
-      // ------------------------------------------------------------
-
-      // Password check
-      const ok = await bcrypt.compare(
-        String(password),
-        user.password_hash
-      );
-
-      if (!ok) {
-        // ❌ Wrong password → bump per-app counters and set locks in employee_lock_state
-        await db.query(
-          `INSERT INTO employee_lock_state
-            (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
-          VALUES (?, ?, 1, NULL, 0, UTC_TIMESTAMP())
-          ON DUPLICATE KEY UPDATE
-            failed_login_count = failed_login_count + 1,
-            last_failed_login  = UTC_TIMESTAMP(),
-            lock_until = CASE
-              WHEN failed_login_count + 1 = 4 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
-              WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
-              ELSE lock_until
-            END,
-            permanent_lock = CASE
-              WHEN failed_login_count + 1 >= ? THEN 1
-              ELSE permanent_lock
-            END`,
-          [
-            user.employee_id,
-            app,
-            LOCK_POLICY.step4_minutes,
-            LOCK_POLICY.step5_minutes,
-            LOCK_POLICY.permanent_on,
-          ]
-        );
-
-        // Read back to know exact state for response + audit
-        const fresh = await readLockRow(db, user.employee_id, app);
-        const {
-          locked: nowLocked,
-          msLeft: nowLeft,
-          permanent: nowPerm,
-        } = lockInfoFromRow(fresh);
-
-        const reason = nowPerm
-          ? "perm_locked"
-          : nowLocked
-          ? "locked"
-          : "bad_password";
-
-        await db.query(
-          `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-          VALUES (?, ?, ?, 0, ?, ?, ?)`,
-          [user.employee_id, app, identLower, reason, ip, ua]
-        );
-
-        const baseAffected = {
-          items: [],
-        };
-
-        let statusChange = AUTH_STATUS.LOGIN_BAD_PASSWORD;
-        let lockSeconds = null;
-
-        if (nowPerm) {
-          statusChange = AUTH_STATUS.LOGIN_LOCK_PERMA;
-        } else if (nowLocked) {
-          statusChange = AUTH_STATUS.LOGIN_LOCK_TEMP;
-          lockSeconds = Math.ceil(nowLeft / 1000);
-        }
-
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Failed",
-          detail: {
-            statusMessage: nowPerm
-              ? "Account locked permanently after repeated invalid passwords."
-              : nowLocked
-              ? "Account temporarily locked after repeated invalid passwords."
-              : "Invalid password.",
-            actionDetails: {
-              actionType: "login",
-              app,
-              loginType: type,
-              identifier: identLower,
-              result: reason,
-            },
-            affectedData: {
-              ...baseAffected,
-              statusChange,
-              ...(lockSeconds != null ? { lockSeconds } : {}),
-            },
-            meta: { ip, userAgent: ua },
-          },
-        });
-
-        if (nowPerm) {
-          return res
-            .status(423)
-            .json({
-              error:
-                "Account locked. Please contact an Admin.",
-            });
-        }
-        if (nowLocked) {
-          return res.status(423).json({
-            error:
-              "Account temporarily locked. Please wait before trying again.",
-            remaining_seconds: Math.ceil(nowLeft / 1000),
-          });
-        }
-        // Option B: known ID, bad password
-        return res
-          .status(401)
-          .json({ error: "Invalid Password", code: "INVALID_PASSWORD" });
-      }
-
-      // ✅ Success → reset only this app’s lock row; keep last_login_* in employees
-      await db.query(
-        `INSERT INTO employee_lock_state
-          (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
-        VALUES (?, ?, 0, NULL, 0, NULL)
-        ON DUPLICATE KEY UPDATE
-          failed_login_count = 0,
-          lock_until = NULL,
-          permanent_lock = 0,
-          last_failed_login = NULL`,
-        [user.employee_id, app]
-      );
-
-      await db.query(
-        `UPDATE employees
-            SET last_login_at = ${nowUtcSql()},
-                last_login_ip = ?
-          WHERE employee_id = ?`,
-        [ip, user.employee_id]
-      );
-
-      await db.query(
-        `INSERT INTO login_attempts (employee_id, app, identifier, success, reason, ip, user_agent)
-        VALUES (?, ?, ?, 1, 'ok', ?, ?)`,
-        [user.employee_id, app, identLower, ip, ua]
-      );
-
-      const baseAuditDetail = {
-        actionType: "login",
-        app,
-        loginType: type,
-        identifier: identLower,
-        result: "ok",
-      };
-
-      // Role gate (Backoffice)
-      if (!["admin"].includes(String(user.role || "").toLowerCase()))
-        {
-        await logAuditLogin({
-          employeeName: prettyEmployeeName(user),
-          role: user.role,
-          action: "Auth - Login Success (Backoffice Not Allowed)",
-          detail: {
-            statusMessage:
-              "Login successful but role is not allowed to access Admin Dashboard.",
-            actionDetails: baseAuditDetail,
-            affectedData: {
-              statusChange: AUTH_STATUS.LOGIN_OK_BACKOFFICE_DENIED,
-              items: [],
-            },
-            meta: { ip, userAgent: ua, app },
-          },
-        });
-        return res
-          .status(403)
-          .json({ error: "Not authorized for Admin Dashboard" });
-      }
-
-      await logAuditLogin({
-        employeeName: prettyEmployeeName(user),
-        role: user.role,
-        action: "Auth - Login Success",
-        detail: {
-          statusMessage: "User signed in successfully.",
-          actionDetails: {
-            ...baseAuditDetail,
-            remember: !!remember,
-          },
-          affectedData: {
-            statusChange: AUTH_STATUS.LOGIN_OK,
-            items: [],
-          },
-          meta: {
-            ip,
-            userAgent: ua,
-            app,
-            remember: !!remember,
-          },
-        },
-      });
-
-      // 🔐 issue JWT
-      const token = issueAuthToken(user);
-
-      const isProd =
-        process.env.RAILWAY_ENVIRONMENT ||
-        process.env.NODE_ENV === "production";
-
-      res.cookie("qd_token", token, {
-        httpOnly: true,
-        path: "/api",
-        ...(isProd
-          ? {
-              sameSite: "none",
-              secure: true,
-            }
-          : {
-              sameSite: "lax",
-              secure: false,
-            }),
-        ...(remember
-          ? { maxAge: 7 * 24 * 60 * 60 * 1000 }
-          : {}),
-      });
-
-      return res.json({
-        ok: true,
-        token,
-        user: {
-          employeeId: String(user.employee_id),
-          role: user.role,
-          status: user.status,
-          username: user.username || "",
-          email: user.email || "",
-          firstName: user.first_name || "",
-          lastName: user.last_name || "",
-          photoUrl: user.photo_url || "",
-        },
-      });
-    } catch (e) {
-      next(e);
+    if (!user) {
+      return res.status(404).json({ error: "Invalid Login ID", code: "UNKNOWN_IDENTIFIER" });
     }
-  });
+
+    // HR status gate (reuse your existing “not active” logic)
+    if (String(user.status || "").toLowerCase() !== "active") {
+      return res.status(403).json({ error: "Account is not active" });
+    }
+
+    // Method allowed? (reuse your existing loginMethodAllowed(user,type))
+    if (!loginMethodAllowed(user, type)) {
+      return res.status(400).json({ error: "This login method is disabled for the account" });
+    }
+
+    const roleLower = String(user.role || "").toLowerCase();
+    const loginMode = roleLower === "cashier" ? "pin" : "password";
+
+    // For Cashier, tell UI if PIN not set + ticket status flags if you already have them
+    // (If you already implemented POS precheck flags, reuse same logic here.)
+    const pinNotSet = loginMode === "pin" && !user.pin_hash;
+
+    const lockRow = await readLockRow(db, String(user.employee_id), app);
+    const li = lockInfoFromRow(lockRow);
+
+    if (li.permanent) {
+      return res.status(423).json({
+        error: "Account locked. Please contact an Admin.",
+        code: "ACCOUNT_LOCKED_PERMANENT",
+      });
+    }
+
+    if (li.locked) {
+      return res.status(423).json({
+        error: "Account temporarily locked",
+        code: "ACCOUNT_LOCKED",
+        remaining_seconds: Math.ceil(li.msLeft / 1000),
+        locked_until: lockRow.lock_until,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      role: user.role,
+      employeeId: String(user.employee_id),
+      loginMode,              // "password" | "pin"
+      pinNotSet: !!pinNotSet, // so UI can guide to ticket
+      // OPTIONAL if you already have ticket info:
+      // ticketExpired, ticketExpiresAt
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+  // POST /api/auth/login
+router.post("/login", async (req, res, next) => {
+  try {
+    const app = getAppRealm(req); // "backoffice" | "pos" (default in your helper)
+    const { identifier, password, pin, remember } = req.body || {};
+
+    const id = String(identifier || "").trim();
+    const pw = password != null ? String(password) : "";
+    const p = pin != null ? String(pin) : "";
+
+    if (!id || (!pw && !p)) {
+      return res.status(400).json({
+        error: "identifier and secret are required",
+        code: "MISSING_FIELDS",
+      });
+    }
+
+    const { user, type: aliasType } = await findByAlias(id);
+
+    if (!user) {
+      // Optional: audit invalid ID attempt
+      try {
+        await logAuthAudit({
+          app,
+          action: "AUTH_LOGIN_FAILED",
+          employeeId: null,
+          meta: { reason: "UNKNOWN_IDENTIFIER", identifier: id },
+          req,
+        });
+      } catch {}
+      return res.status(404).json({
+        error: "Invalid Login ID",
+        code: "UNKNOWN_IDENTIFIER",
+      });
+    }
+
+    // status gate
+    if (String(user.status || "").toLowerCase() !== "active") {
+      try {
+        await logAuthAudit({
+          app,
+          action: "AUTH_LOGIN_FAILED",
+          employeeId: String(user.employee_id),
+          meta: { reason: "INACTIVE_ACCOUNT" },
+          req,
+        });
+      } catch {}
+      return res.status(403).json({
+        error: "Account is not active",
+        code: "ACCOUNT_INACTIVE",
+      });
+    }
+
+    // login method allowed gate (aliases / loginVia rules)
+    if (typeof loginMethodAllowed === "function") {
+      const okMethod = await loginMethodAllowed(user, aliasType);
+      if (!okMethod) {
+        try {
+          await logAuthAudit({
+            app,
+            action: "AUTH_LOGIN_FAILED",
+            employeeId: String(user.employee_id),
+            meta: { reason: "LOGIN_METHOD_DISABLED", aliasType },
+            req,
+          });
+        } catch {}
+        return res.status(400).json({
+          error: "This login method is disabled for the account",
+          code: "LOGIN_METHOD_DISABLED",
+        });
+      }
+    }
+
+    // lock gate (per-app lock state if you have it)
+    const lockRow = await readLockRow(db, String(user.employee_id), app);
+    const li = lockInfoFromRow(lockRow);
+
+    if (li.permanent) {
+      return res.status(423).json({
+        error: "Account locked. Please contact an Admin.",
+        code: "ACCOUNT_LOCKED_PERMANENT",
+      });
+    }
+    if (li.locked) {
+      return res.status(423).json({
+        error: "Account temporarily locked",
+        code: "ACCOUNT_LOCKED",
+        remaining_seconds: Math.ceil(li.msLeft / 1000),
+        locked_until: lockRow.lock_until,
+      });
+    }
+
+    const roleLower = String(user.role || "").toLowerCase();
+    const isCashier = roleLower === "cashier";
+    const isAdmin = roleLower === "admin";
+
+    // choose which secret to verify
+    const secret = isCashier ? p : pw;
+
+    if (!secret) {
+      return res.status(400).json({
+        error: isCashier ? "pin is required" : "password is required",
+        code: isCashier ? "MISSING_PIN" : "MISSING_PASSWORD",
+      });
+    }
+
+    // block cashier when PIN not set (forces ticket flow)
+    if (isCashier && !user.pin_hash) {
+      return res.status(400).json({
+        error: "PIN is not set. Use Reset Ticket to set a PIN.",
+        code: "PIN_NOT_SET",
+      });
+    }
+
+    // block admin with missing password (optional — depends on your system rules)
+    if (isAdmin && !user.password_hash) {
+      return res.status(400).json({
+        error: "This account has no password set. Please ask an Admin to set one.",
+        code: "NO_PASSWORD_SET",
+      });
+    }
+
+    // verify secret
+    const hashToCompare = isCashier ? user.pin_hash : user.password_hash;
+    let ok = false;
+    try {
+      ok = await bcrypt.compare(secret, hashToCompare);
+    } catch {
+      ok = false;
+    }
+
+    if (!ok) {
+      // bump lock / failed attempts (use your existing logic if available)
+      let lockPayload = null;
+      if (typeof bumpLockForApp === "function") {
+        try {
+          lockPayload = await bumpLockForApp({
+            employeeId: String(user.employee_id),
+            app,
+            ip: req.ip,
+            ua: req.get("user-agent") || "",
+          });
+        } catch {
+          lockPayload = null;
+        }
+      }
+
+      if (lockPayload?.permanent) {
+        return res.status(423).json({
+          error: "Account locked. Please contact an Admin.",
+          code: "ACCOUNT_LOCKED_PERMANENT",
+        });
+      }
+
+      // audit failed login
+      try {
+        await logAuthAudit({
+          app,
+          action: "AUTH_LOGIN_FAILED",
+          employeeId: String(user.employee_id),
+          meta: {
+            reason: isCashier ? "INVALID_PIN" : "INVALID_PASSWORD",
+            aliasType,
+            locked: !!lockPayload?.locked,
+            remaining_seconds: lockPayload?.remaining_seconds,
+          },
+          req,
+        });
+      } catch {}
+
+      if (lockPayload?.locked && Number(lockPayload?.remaining_seconds) > 0) {
+        return res.status(423).json({
+          error: "Account temporarily locked",
+          code: "ACCOUNT_LOCKED",
+          remaining_seconds: Number(lockPayload.remaining_seconds),
+        });
+      }
+
+      return res.status(401).json({
+        error: isCashier ? "Invalid PIN" : "Invalid Password",
+        code: isCashier ? "INVALID_PIN" : "INVALID_PASSWORD",
+      });
+    }
+
+    // ✅ success path
+    if (typeof clearLockForApp === "function") {
+      try {
+        await clearLockForApp({ employeeId: String(user.employee_id), app });
+      } catch {}
+    }
+
+    // audit success
+    try {
+      await logAuthAudit({
+        app,
+        action: "AUTH_LOGIN_SUCCESS",
+        employeeId: String(user.employee_id),
+        meta: { aliasType },
+        req,
+      });
+    } catch {}
+
+    // token + cookie
+    const token = issueAuthToken(user);
+    setAuthCookie(res, token, { remember: !!remember });
+
+    // response payload
+    const clientUser =
+      typeof mapUserForClient === "function"
+        ? mapUserForClient(user)
+        : {
+            employeeId: String(user.employee_id),
+            role: user.role,
+            name: user.name || user.full_name || user.username || "",
+            username: user.username || "",
+            email: user.email || "",
+            status: user.status || "",
+          };
+
+    return res.json({
+      ok: true,
+      token, // optional if you rely purely on cookie; keep it if your frontend stores it
+      user: clientUser,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 3) ADD: POST /api/auth/pin-reset/confirm  (used by Backoffice Forgot PIN Ticket screen)
+// NOTE: This is the minimal endpoint signature the new LoginPage expects.
+router.post("/pin-reset/confirm", async (req, res, next) => {
+  try {
+    const { employeeId, ticket, newPin } = req.body || {};
+    if (!employeeId || !ticket || !newPin) {
+      return res.status(400).json({ error: "employeeId, ticket, and newPin are required" });
+    }
+
+    // TODO implement:
+    // - validate employee exists + role=cashier + active
+    // - fetch latest pending ticket from employee_pin_reset_requests
+    // - verify not expired + bcrypt.compare(ticket, token_hash)
+    // - set employees.pin_hash = bcrypt(newPin)
+    // - mark ticket used/revoked
+    // - audit trail
+
+    return res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
 
   // GET /api/auth/me?soft=1
   router.get("/me", (req, res) => {
@@ -862,8 +761,7 @@ module.exports = function authRouterFactory({ db } = {}) {
           return res.status(409).json({
             ok: false,
             code: "NO_LOGOUT_UNTIL_REMIT",
-            error:
-              "Cannot logout while there is a running shift. Please end shift first.",
+            error: "Cannot logout while there is a running shift. Please end shift first.",
             shift: {
               shift_id: sh.shift_id,
               terminal_id: sh.terminal_id,
@@ -913,7 +811,7 @@ module.exports = function authRouterFactory({ db } = {}) {
     }
 
     // Clear cookie and return ok
-    res.clearCookie("qd_token", { path: "/api" });
+    res.clearCookie("qd_token", { path: "/" });
     return res.json({ ok: true });
   });
 

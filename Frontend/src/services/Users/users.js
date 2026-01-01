@@ -1,4 +1,4 @@
-// Frontend/src/services/Users/users.jsx
+// QUSCINA_BACKOFFICE/Frontend/src/services/Users/users.js
 import { joinApi } from "@/utils/apiBase";
 
 async function safeJson(res) {
@@ -22,6 +22,24 @@ const usersUrl = (suffix = "") =>
     }`
   );
 
+
+function getStoredToken() {
+  return (
+    sessionStorage.getItem("qd_token") ||
+    localStorage.getItem("qd_token") ||
+    ""
+  );
+}
+
+function authedHeaders(extra = {}) {
+  const token = getStoredToken();
+  return {
+    "X-App": "backoffice",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
 /**
  * Subscribe to the users list by polling the backend.
  * Backend route: GET /api/users
@@ -32,7 +50,11 @@ export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
 
   async function tick() {
     try {
-      const res = await fetch(usersUrl(), { credentials: "include" });
+      const res = await fetch(usersUrl(), {
+        credentials: "include",
+        headers: authedHeaders(),
+        cache: "no-store",
+      });
       const data = await safeJson(res);
       if (res.ok && active && Array.isArray(data)) {
         cb({ rows: data });
@@ -61,7 +83,11 @@ export function subscribeUsers(cb, { intervalMs = 5000, onError } = {}) {
  * Backend: GET /api/users
  */
 export async function fetchUsersOnce() {
-  const res = await fetch(usersUrl(), { credentials: "include" });
+  const res = await fetch(usersUrl(), {
+    credentials: "include",
+    headers: authedHeaders(),
+    cache: "no-store",
+  });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "List users failed");
   return data; // array
@@ -77,8 +103,9 @@ export async function createUser(payload, opts = {}) {
   const res = await fetch(usersUrl(), {
     method: "POST",
     credentials: "include",
-    // ✅ IMPORTANT: do NOT set Content-Type when using FormData
-    headers: multipart ? undefined : { "Content-Type": "application/json" },
+    headers: multipart
+      ? authedHeaders()
+      : authedHeaders({ "Content-Type": "application/json" }),
     body: multipart ? payload : JSON.stringify(payload),
   });
 
@@ -97,8 +124,9 @@ export async function updateUser(employeeId, patch, opts = {}) {
   const res = await fetch(usersUrl(encodeURIComponent(employeeId)), {
     method: "PATCH",
     credentials: "include",
-    // ✅ IMPORTANT: do NOT set Content-Type when using FormData
-    headers: multipart ? undefined : { "Content-Type": "application/json" },
+    headers: multipart
+      ? authedHeaders()
+      : authedHeaders({ "Content-Type": "application/json" }),
     body: multipart ? patch : JSON.stringify(patch),
   });
 
@@ -113,15 +141,12 @@ export async function updateUser(employeeId, patch, opts = {}) {
  */
 export async function deleteUser(employeeId, { signal } = {}) {
   if (!employeeId) throw new Error("employeeId is required");
-  const res = await fetch(
-    usersUrl(encodeURIComponent(employeeId)),
-    {
-      method: "DELETE",
-      credentials: "include",
-      headers: { Accept: "application/json" },
-      signal,
-    }
-  );
+  const res = await fetch(usersUrl(encodeURIComponent(employeeId)), {
+    method: "DELETE",
+    credentials: "include",
+    headers: authedHeaders({ Accept: "application/json" }),
+    signal,
+  });
   if (res.ok || res.status === 404) return { ok: true };
   const data = await safeJson(res);
   throw new Error(data.error || "Delete user failed");
@@ -133,15 +158,12 @@ export async function deleteUser(employeeId, { signal } = {}) {
  */
 export async function unlockUser(employeeId, { app, scope } = {}) {
   if (!employeeId) throw new Error("employeeId is required");
-  const res = await fetch(
-    usersUrl(`${encodeURIComponent(employeeId)}/unlock`),
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app, scope }), // app: 'backoffice' | 'pos' | ... ; scope: 'all'
-    }
-  );
+  const res = await fetch(usersUrl(`${encodeURIComponent(employeeId)}/unlock`), {
+    method: "POST",
+    credentials: "include",
+    headers: authedHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ app, scope }),
+  });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Unlock user failed");
   return data; // { ok: true }
@@ -155,15 +177,12 @@ export async function unlockUser(employeeId, { app, scope } = {}) {
 export async function createPinResetTicket(employeeId) {
   if (!employeeId) throw new Error("employeeId is required");
 
-  const res = await fetch(
-    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket`),
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}), // keep open for options later
-    }
-  );
+  const res = await fetch(usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket`), {
+    method: "POST",
+    credentials: "include",
+    headers: authedHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({}),
+  });
 
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Create reset ticket failed");
@@ -177,15 +196,12 @@ export async function createPinResetTicket(employeeId) {
 export async function revokePinResetTicket(employeeId, requestId) {
   if (!employeeId) throw new Error("employeeId is required");
 
-  const res = await fetch(
-    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/revoke`),
-    {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId }),
-    }
-  );
+  const res = await fetch(usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/revoke`), {
+    method: "POST",
+    credentials: "include",
+    headers: authedHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ requestId }),
+  });
 
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Revoke reset ticket failed");
@@ -195,11 +211,13 @@ export async function revokePinResetTicket(employeeId, requestId) {
 export async function getActivePinResetTicket(employeeId) {
   if (!employeeId) throw new Error("employeeId is required");
 
-  const res = await fetch(
-    usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/active`),
-    { method: "GET", credentials: "include" }
-  );
-
+  const res = await fetch(usersUrl(`${encodeURIComponent(employeeId)}/pin-reset-ticket/active`), {
+    method: "GET",
+    credentials: "include",
+    headers: authedHeaders(),
+    cache: "no-store",
+  });
+  
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.error || "Check active ticket failed");
   return data; // { ok, active, requestId, expiresAt, createdAt }

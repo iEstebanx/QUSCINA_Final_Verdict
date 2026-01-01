@@ -144,10 +144,9 @@ function isLockedForDisplay(row) {
 
   // Cashier = Cashier-POS lock
   if (role === "Cashier") {
-    if (states.pos) {
-      return isLockedState(states.pos);
+    if (states.backoffice) {
+      return isLockedState(states.backoffice);
     }
-    // fallback to legacy if no per-app record
     return legacyLocked;
   }
 
@@ -1536,8 +1535,8 @@ export default function UserManagementPage() {
                         const userRole = form.role;
 
                         const shouldShowApp = (appKey) => {
-                          if (userRole === "Cashier") return appKey !== "backoffice";
-                          if (userRole === "Admin") return appKey !== "pos";
+                          if (userRole === "Cashier") return appKey !== "pos";       // hide POS for Cashier
+                          if (userRole === "Admin") return appKey !== "pos";         // (optional) Admin also doesn't need POS
                           return true;
                         };
 
@@ -1562,7 +1561,7 @@ export default function UserManagementPage() {
                             const ok = await confirm({
                               title: "Unlock system?",
                               content: `This clears ${
-                                target === "pos" ? "Cashier-POS" : target === "backoffice" ? "Backoffice" : target
+                                target === "backoffice" ? "Backoffice" : target
                               } lock and failed attempts.`,
                               confirmLabel: "Unlock",
                             });
@@ -1660,7 +1659,7 @@ export default function UserManagementPage() {
                         }
 
                         const labelFor = (key) => {
-                          if (key === "pos") return "Cashier-POS";
+                          if (key === "pos") return "POS";            // optional: keep generic or hide it anyway
                           if (key === "backoffice") return "Backoffice";
                           return key.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
                         };

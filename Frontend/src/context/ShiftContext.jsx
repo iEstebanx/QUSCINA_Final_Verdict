@@ -74,6 +74,8 @@ async function fetchJSON(url, options = {}) {
   return data;
 }
 
+const fetchJSONAuthed = fetchJSON;
+
 /** Persist latest shift metadata (header fallbacks) */
 function persistShiftMeta(shift) {
   if (shift?.shift_id) localStorage.setItem("last_shift_id", String(shift.shift_id));
@@ -109,12 +111,9 @@ export function ShiftProvider({ children }) {
     setShiftState((s) => ({ ...s, loading: true, error: null }));
 
     try {
-      const data = await fetchJSON(
+      const data = await fetchJSONAuthed(
         shiftApi(`/me/open?terminal_id=${encodeURIComponent(terminalId)}`),
-        {
-          method: "GET",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        }
+        { method: "GET" }
       );
 
       const shift = data?.shift || null;
@@ -169,7 +168,7 @@ export function ShiftProvider({ children }) {
     );
     if (!id) throw new Error("No shift to summarize.");
 
-    const data = await fetchJSON(shiftApi(`/${id}/summary`), { method: "GET" });
+    const data = await fetchJSONAuthed(shiftApi(`/${id}/summary`), { method: "GET" });
     return data;
   }, [shiftState?.data?.shift_id]);
 
@@ -217,7 +216,7 @@ export function ShiftProvider({ children }) {
     setShiftState((s) => ({ ...s, loading: true, error: null }));
 
     try {
-      const data = await fetchJSON(shiftApi("/open"), {
+      const data = await fetchJSONAuthed(shiftApi("/open"), {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -259,7 +258,7 @@ export function ShiftProvider({ children }) {
     }
 
     try {
-      return await fetchJSON(shiftApi("/cash-move"), {
+      return await fetchJSONAuthed(shiftApi("/cash-move"), {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -281,7 +280,7 @@ export function ShiftProvider({ children }) {
       closing_note: closing_note || undefined,
     };
 
-    const data = await fetchJSON(shiftApi(`/${id}/remit`), {
+    const data = await fetchJSONAuthed(shiftApi(`/${id}/remit`), {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -307,7 +306,7 @@ export function ShiftProvider({ children }) {
     );
     if (!id) throw new Error("No shift to list moves for.");
 
-    return await fetchJSON(shiftApi(`/${id}/cash-moves`), { method: "GET" });
+    return await fetchJSONAuthed(shiftApi(`/${id}/cash-moves`), { method: "GET" });
   }, [shiftState?.data?.shift_id]);
 
   /** Local-only clear (compat) */
