@@ -607,7 +607,14 @@ router.post("/login", async (req, res, next) => {
         : {
             employeeId: String(user.employee_id),
             role: user.role,
-            name: user.name || user.full_name || user.username || "",
+
+            // ✅ Use your existing helper that already builds "First Last"
+            name: prettyEmployeeName(user),
+
+            // ✅ Also include first/last separately (useful for reports/export/UI)
+            first_name: user.first_name || "",
+            last_name: user.last_name || "",
+
             username: user.username || "",
             email: user.email || "",
             status: user.status || "",

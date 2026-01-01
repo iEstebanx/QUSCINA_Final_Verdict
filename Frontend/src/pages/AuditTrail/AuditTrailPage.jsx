@@ -157,31 +157,16 @@ export default function AuditTrailPage() {
   const [rows, setRows] = useState([]);
   const [employeeFilter, setEmployeeFilter] = useState("All Employees");
   const [dateFilter, setDateFilter] = useState("Select Date");
-  const [sourceFilter, setSourceFilter] = useState("All Sources");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
   const { page, rowsPerPage } = pageState;
   const [selectedRow, setSelectedRow] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // 🔹 Apply Source filter (POS / Backoffice / All)
+  // 🔹 Current filter hook (no Source filter now)
   const filteredRows = useMemo(() => {
-    return rows.filter((r) => {
-      if (sourceFilter === "All Sources") return true;
-
-      const raw =
-        r.detail?.actionDetails?.app ||
-        r.detail?.meta?.app ||
-        "";
-
-      const v = String(raw).toLowerCase();
-
-      if (sourceFilter === "Backoffice") return v === "backoffice";
-      if (sourceFilter === "POS") return v === "pos";
-
-      return true;
-    });
-  }, [rows, sourceFilter]);
-
+    return rows; // keep your other filters if you add them later
+  }, [rows]);
+  
   // ✅ single, reusable loader
   const loadLogs = useCallback(async () => {
     try {
@@ -218,9 +203,6 @@ export default function AuditTrailPage() {
   const moduleKind = getModuleKind(selectedRow);
   const isAuth = moduleKind === "auth";
   const isSystem = moduleKind === "system";
-
-  // 🔹 extra helpers for the dialog (you mentioned these)
-  const moduleName = selectedRow?.detail?.actionDetails?.module || "";
 
   const dialogTitle =
     selectedRow?.action === "POS - Void"
@@ -295,22 +277,6 @@ export default function AuditTrailPage() {
                 <MenuItem value="This Week">This Week</MenuItem>
                 <MenuItem value="This Month">This Month</MenuItem>
               </Select>
-
-              {/* 🔹 NEW: Source Filter (POS / Backoffice / All) */}
-              <Select
-                value={sourceFilter}
-                onChange={(e) => {
-                  setSourceFilter(e.target.value);
-                  setPageState((s) => ({ ...s, page: 0 })); // reset page whenever filter changes
-                }}
-                size="small"
-                displayEmpty
-                sx={{ minWidth: 180 }}
-              >
-                <MenuItem value="All Sources">All Sources</MenuItem>
-                <MenuItem value="Backoffice">Backoffice</MenuItem>
-                <MenuItem value="POS">POS</MenuItem>
-              </Select>
             </Stack>
 
             {/* Right side: Refresh button */}
@@ -345,9 +311,8 @@ export default function AuditTrailPage() {
               {/* NEW colgroup INCLUDING "Source" */}
               <colgroup>
                 <col style={{ width: "18%" }} />
-                <col style={{ width: "42%" }} />
-                <col style={{ width: "20%" }} />
-                <col style={{ width: "20%" }} />
+                <col style={{ width: "52%" }} />
+                <col style={{ width: "30%" }} />
               </colgroup>
 
               <TableHead>
@@ -370,14 +335,6 @@ export default function AuditTrailPage() {
                     </Typography>
                   </TableCell>
 
-                  <TableCell align="center">
-                    <Typography
-                      fontWeight={600}
-                      sx={{ textAlign: "center" }}
-                    >
-                      Source
-                    </Typography>
-                  </TableCell>
                 </TableRow>
               </TableHead>
 
@@ -385,7 +342,7 @@ export default function AuditTrailPage() {
                 {/* 🔄 Loading State */}
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={4}>
+                    <TableCell colSpan={3}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           Loading audit logs…
@@ -396,7 +353,7 @@ export default function AuditTrailPage() {
                 ) : paged.length === 0 ? (
                   /* ❗Empty State */
                   <TableRow>
-                    <TableCell colSpan={4}>
+                    <TableCell colSpan={3}>
                       <Box py={6} textAlign="center">
                         <Typography variant="body2" color="text.secondary">
                           No audit trail records.
@@ -407,16 +364,6 @@ export default function AuditTrailPage() {
                 ) : (
                   /* ✅ Normal Rows */
                   paged.map((r) => {
-                    const rawSource =
-                      r.detail?.actionDetails?.app ||
-                      r.detail?.meta?.app ||
-                      "—";
-
-                    const sourceLabel =
-                      typeof rawSource === "string" && rawSource !== "—"
-                        ? rawSource.charAt(0).toUpperCase() +
-                          rawSource.slice(1)
-                        : "—";
 
                     return (
                       <TableRow
@@ -442,13 +389,6 @@ export default function AuditTrailPage() {
                             sx={{ whiteSpace: "nowrap" }}
                           >
                             {r.timestamp}
-                          </Typography>
-                        </TableCell>
-
-                        {/* SOURCE */}
-                        <TableCell align="center">
-                          <Typography variant="body2">
-                            {sourceLabel}
                           </Typography>
                         </TableCell>
                       </TableRow>
@@ -550,23 +490,6 @@ export default function AuditTrailPage() {
                           label="Timestamp"
                           value={selectedRow.timestamp}
                         />
-
-                        {/* SOURCE */}
-                        {(() => {
-                          const raw =
-                            selectedRow.detail?.actionDetails?.app ||
-                            selectedRow.detail?.meta?.app ||
-                            "—";
-                          const label =
-                            typeof raw === "string" && raw !== "—"
-                              ? raw.charAt(0).toUpperCase() +
-                                raw.slice(1)
-                              : "—";
-
-                          return (
-                            <CompactDetailRow label="Source" value={label} />
-                          );
-                        })()}
                       </Stack>
 
                       {isAuth &&
@@ -713,7 +636,6 @@ function CompactDetailRow({ label, value }) {
 function AuthActionDetails({ detail }) {
   const meta = detail?.meta || {};
   const a = detail?.actionDetails || {};
-  const app = String(a.app || meta.app || "").toLowerCase();
   const statusKey = detail?.affectedData?.statusChange;
   const legend = statusKey && AUTH_STATUS_LEGEND[statusKey];
 
@@ -737,9 +659,6 @@ function AuthActionDetails({ detail }) {
   return (
     <Stack spacing={1.5} mt={1.5}>
       <CompactDetailRow label="Action Type" value={a.actionType || "login"} />
-      {(a.app || meta.app) && (
-        <CompactDetailRow label="App" value={a.app || meta.app} />
-      )}
       <CompactDetailRow label="Remember Me" value={rememberLabel} />
       {a.loginType && (
         <CompactDetailRow label="Login Method" value={loginMethodLabel} />

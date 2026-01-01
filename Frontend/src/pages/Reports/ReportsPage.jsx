@@ -36,8 +36,11 @@ import {
 import { useTheme } from "@mui/material/styles";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import SearchIcon from "@mui/icons-material/Search";
-import GridOnIcon from "@mui/icons-material/GridOn"; // Excel icon
+import GridOnIcon from "@mui/icons-material/GridOn";
 import { useAuth } from "@/context/AuthContext";
+
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
 
 import dayjs from "dayjs";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
@@ -49,6 +52,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import DialogContent from "@mui/material/DialogContent";
 import DialogActions from "@mui/material/DialogActions";
 import CircularProgress from "@mui/material/CircularProgress";
+import RefreshIcon from "@mui/icons-material/Refresh";
 
 import FormGroup from "@mui/material/FormGroup";
 import FormControlLabel from "@mui/material/FormControlLabel";
@@ -123,8 +127,28 @@ export default function ReportsPage() {
   const [exportPick, setExportPick] = useState(DEFAULT_EXPORT);
   const [exportAll, setExportAll] = useState(true);
 
+  const [reloadTick, setReloadTick] = useState(0);
+
+  const refreshReports = () => {
+    // For custom, require both dates
+    if (range === "custom" && (!customFrom || !customTo)) {
+      alert("Please select both From and To dates first.");
+      return;
+    }
+
+    setPage1(0);
+    setPage2(0);
+    setReloadTick((x) => x + 1); // forces reload even if filters didn't change
+  };
+
   const runExport = async () => {
     if (!ensureCustomRangeComplete()) return;
+
+    // ✅ BLOCK EXPORT if no transactions for the selected range
+    if (!hasTransactions) {
+      alert("No transactions found for this date range. Export is disabled.");
+      return;
+    }
 
     const pick = exportAll ? DEFAULT_EXPORT : exportPick;
 
@@ -140,7 +164,7 @@ export default function ReportsPage() {
     }
 
     if (exportKind === "excel") {
-      const csv = buildSalesExcelCsv({
+      await buildSalesExcelXlsx({
         rangeText: currentRangeLabel,
         categoryTop5Data: pick.top5Items ? categoryTop5 : [],
         categorySeriesData: pick.dailySales ? categorySeries : [],
@@ -150,7 +174,6 @@ export default function ReportsPage() {
         staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
         preparedBy,
       });
-      triggerExcelDownload(csv, currentRangeLabel);
     }
 
     if (exportKind === "pdf") {
@@ -238,24 +261,27 @@ export default function ReportsPage() {
     };
   }, []);
 
-  const preparedBy = useMemo(() => {
-    if (!user) return "Prepared by: N/A";
+const preparedBy = useMemo(() => {
+  if (!user) return "Prepared by: N/A";
 
-    const loginId =
-      user.employeeId || user.username || user.email || user.id || "";
+  const first =
+    user.firstName || user.first_name || user.firstname || "";
+  const last =
+    user.lastName || user.last_name || user.lastname || "";
 
-    const fullName = [user.firstName, user.lastName]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
+  const fullName = `${first} ${last}`.trim() || String(user.name || "").trim();
 
-    if (loginId && fullName) {
-      return `Prepared by: ${loginId} - ${fullName}`;
-    }
-    if (loginId) return `Prepared by: ${loginId}`;
-    if (fullName) return `Prepared by: ${fullName}`;
-    return "Prepared by: N/A";
-  }, [user]);
+  const loginIdUsed =
+    sessionStorage.getItem("qd_login_identifier") ||
+    localStorage.getItem("qd_login_identifier") ||
+    "";
+
+  if (fullName && loginIdUsed) return `Prepared by: ${fullName} (${loginIdUsed})`;
+  if (fullName) return `Prepared by: ${fullName}`;
+  if (loginIdUsed) return `Prepared by: ${loginIdUsed}`;
+
+  return `Prepared by: ${user.employeeId || user.username || user.email || "N/A"}`;
+}, [user]);
 
   // 🔹 Range preset (Day/Week/Monthly/etc. + Custom)
   const [range, setRange] = useState("days");
@@ -292,7 +318,7 @@ export default function ReportsPage() {
     return range === "custom" && customFrom && customTo
       ? `range=custom&from=${customFrom}&to=${customTo}`
       : `range=${range}`;
-  }, [range, customFrom, customTo]);
+  }, [range, customFrom, customTo, reloadTick]);
 
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
@@ -395,6 +421,15 @@ export default function ReportsPage() {
   function onRowClick(order) {
     setSelectedOrder(order);
   }
+
+  const txCount = useMemo(() => {
+    return (payments || []).reduce(
+      (sum, p) => sum + Number(p.tx || 0) + Number(p.refundTx || 0),
+      0
+    );
+  }, [payments]);
+
+  const hasTransactions = txCount > 0;
 
   /* ---------------------- Shared Excel / CSV builder ---------------------- */
   const buildSalesExcelCsv = ({
@@ -544,6 +579,287 @@ export default function ReportsPage() {
       return false;
     }
     return true;
+  };
+
+  const buildSalesExcelXlsx = async ({
+    rangeText,
+    categoryTop5Data,
+    categorySeriesData,
+    paymentsData,
+    bestSellerData,
+    bestSellerDetails,
+    staffPerformanceData,
+    preparedBy,
+  }) => {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "Quscina POS";
+    wb.created = new Date();
+
+    // =========================
+    // Sheet 1: REPORT (pretty)
+    // =========================
+    const ws = wb.addWorksheet("Sales Report", {
+      views: [{ state: "frozen", ySplit: 6 }], // freeze header area
+      pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    });
+
+    // Column widths (feel free to tweak)
+    ws.columns = [
+      { key: "c1", width: 6 },
+      { key: "c2", width: 28 },
+      { key: "c3", width: 16 },
+      { key: "c4", width: 16 },
+      { key: "c5", width: 16 },
+      { key: "c6", width: 18 },
+    ];
+
+    const moneyFmt = '"₱"#,##0.00';
+    const dateFmt = "mmm dd, yyyy";
+
+    const borderAll = {
+      top: { style: "thin", color: { argb: "FFD0D0D0" } },
+      left: { style: "thin", color: { argb: "FFD0D0D0" } },
+      bottom: { style: "thin", color: { argb: "FFD0D0D0" } },
+      right: { style: "thin", color: { argb: "FFD0D0D0" } },
+    };
+
+    const fillHeader = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFEFEF" } };
+    const fillSection = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" } }; // dark
+    const fontSection = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
+
+    const setRow = (r, opts = {}) => {
+      r.height = opts.height ?? r.height;
+      r.eachCell({ includeEmpty: true }, (cell) => {
+        if (opts.font) cell.font = opts.font;
+        if (opts.fill) cell.fill = opts.fill;
+        if (opts.alignment) cell.alignment = opts.alignment;
+        if (opts.border) cell.border = opts.border;
+      });
+    };
+
+    const mergeTitle = (rowNo, text) => {
+      ws.mergeCells(`A${rowNo}:F${rowNo}`);
+      const cell = ws.getCell(`A${rowNo}`);
+      cell.value = text;
+      cell.font = { bold: true, size: 18 };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+    };
+
+    const sectionTitle = (rowNo, text) => {
+      ws.mergeCells(`A${rowNo}:F${rowNo}`);
+      const cell = ws.getCell(`A${rowNo}`);
+      cell.value = text;
+      cell.fill = fillSection;
+      cell.font = fontSection;
+      cell.alignment = { vertical: "middle", horizontal: "left" };
+      ws.getRow(rowNo).height = 20;
+    };
+
+    const keyValue = (rowNo, k, v) => {
+      ws.getCell(`A${rowNo}`).value = k;
+      ws.getCell(`A${rowNo}`).font = { bold: true };
+      ws.getCell(`B${rowNo}`).value = v;
+      ws.mergeCells(`B${rowNo}:F${rowNo}`);
+    };
+
+    const tableHeader = (rowNo, headers) => {
+      const row = ws.getRow(rowNo);
+      headers.forEach((h, idx) => {
+        const cell = row.getCell(idx + 1);
+        cell.value = h;
+        cell.font = { bold: true };
+        cell.fill = fillHeader;
+        cell.border = borderAll;
+        cell.alignment = { vertical: "middle", horizontal: "left" };
+      });
+      row.height = 18;
+    };
+
+    const tableRow = (rowNo, values, { moneyCols = [], rightCols = [] } = {}) => {
+      const row = ws.getRow(rowNo);
+      values.forEach((val, idx) => {
+        const col = idx + 1;
+        const cell = row.getCell(col);
+        cell.value = val ?? "";
+        cell.border = borderAll;
+
+        if (moneyCols.includes(col)) {
+          cell.numFmt = moneyFmt;
+          cell.alignment = { vertical: "middle", horizontal: "right" };
+        } else if (rightCols.includes(col)) {
+          cell.alignment = { vertical: "middle", horizontal: "right" };
+        } else {
+          cell.alignment = { vertical: "middle", horizontal: "left" };
+        }
+      });
+      row.height = 16;
+    };
+
+    let r = 1;
+
+    // Title + meta
+    mergeTitle(r++, "QUSCINA • SALES REPORT");
+    ws.getRow(r).height = 6; r++; // spacer
+
+    keyValue(r++, "Date Range", rangeText || "N/A");
+    keyValue(r++, "Generated At", new Date().toLocaleString("en-PH"));
+    keyValue(r++, "Branch", "Kawit, Cavite"); // change if dynamic
+    ws.getRow(r).height = 6; r++; // spacer
+
+    // --------------------------
+    // TOP 5 ITEMS
+    // --------------------------
+    sectionTitle(r++, "TOP 5 ITEMS");
+    tableHeader(r++, ["Rank", "Item", "Net Sales"]);
+    if ((categoryTop5Data || []).length) {
+      categoryTop5Data.forEach((it, idx) => {
+        tableRow(r++, [idx + 1, it.name, Number(it.net || 0)], { moneyCols: [3], rightCols: [1] });
+      });
+    } else {
+      tableRow(r++, ["", "No data for this range", ""], {});
+    }
+    ws.getRow(r).height = 6; r++;
+
+    // --------------------------
+    // SALES BY PAYMENT TYPE
+    // --------------------------
+    sectionTitle(r++, "SALES BY PAYMENT TYPE");
+    tableHeader(r++, ["Payment Type", "Payment Tx", "Refund Tx", "Net Amount"]);
+    if ((paymentsData || []).length) {
+      paymentsData.forEach((p) => {
+        tableRow(
+          r++,
+          [p.type, Number(p.tx || 0), Number(p.refundTx || 0), Number(p.net || 0)],
+          { moneyCols: [4], rightCols: [2, 3] }
+        );
+      });
+    } else {
+      tableRow(r++, ["No data", "", "", ""], {});
+    }
+    ws.getRow(r).height = 6; r++;
+
+    // --------------------------
+    // BEST SELLER CATEGORIES
+    // --------------------------
+    sectionTitle(r++, "BEST SELLER CATEGORIES (TOP 5)");
+    tableHeader(r++, ["Rank", "Category", "Total Orders", "Total Sales"]);
+    if ((bestSellerData || []).length) {
+      (bestSellerData || []).slice(0, 5).forEach((c) => {
+        tableRow(
+          r++,
+          [Number(c.rank || 0), c.name, Number(c.orders || 0), Number(c.sales || 0)],
+          { moneyCols: [4], rightCols: [1, 3] }
+        );
+      });
+    } else {
+      tableRow(r++, ["", "No data for this range", "", ""], {});
+    }
+    ws.getRow(r).height = 6; r++;
+
+    // --------------------------
+    // BEST SELLER ITEMS PER CATEGORY
+    // --------------------------
+    sectionTitle(r++, "BEST SELLER ITEMS PER CATEGORY (TOP 5 EACH)");
+    if ((bestSellerDetails || []).length) {
+      (bestSellerDetails || []).slice(0, 5).forEach((cat) => {
+        // mini header row for each category (merged)
+        ws.mergeCells(`A${r}:F${r}`);
+        const cell = ws.getCell(`A${r}`);
+        cell.value = `${cat.rank}. ${cat.name}  •  Orders: ${cat.orders}  •  Sales: ₱${Number(cat.sales || 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`;
+        cell.font = { bold: true };
+        cell.alignment = { vertical: "middle", horizontal: "left" };
+        r++;
+
+        tableHeader(r++, ["#", "Item", "Orders", "Qty", "Sales"]);
+        const items = cat.topItems || [];
+        if (items.length) {
+          items.forEach((it) => {
+            tableRow(
+              r++,
+              [Number(it.rank || 0), it.name, Number(it.orders || 0), Number(it.qty || 0), Number(it.sales || 0)],
+              { moneyCols: [5], rightCols: [1, 3, 4] }
+            );
+          });
+        } else {
+          tableRow(r++, ["", "No data", "", "", ""], {});
+        }
+        ws.getRow(r).height = 6; r++;
+      });
+    } else {
+      ws.mergeCells(`A${r}:F${r}`);
+      ws.getCell(`A${r}`).value = "No data for this range";
+      r += 2;
+    }
+
+    // --------------------------
+    // SHIFT HISTORY
+    // --------------------------
+    sectionTitle(r++, "SHIFT HISTORY");
+    tableHeader(r++, ["Shift No.", "Staff Name", "Date", "Starting Cash", "Count Cash", "Actual Cash", "Remarks"]);
+    // widen for this section using extra columns: we’ll use A..G by reusing A..F plus one more column
+    // quick hack: write into A..G by direct getCell; ExcelJS allows it even if we set 6 cols
+    const writeShiftRow = (rowNo, vals) => {
+      const row = ws.getRow(rowNo);
+      vals.forEach((val, idx) => {
+        const cell = row.getCell(idx + 1);
+        cell.value = val ?? "";
+        cell.border = borderAll;
+        cell.alignment = { vertical: "middle", horizontal: idx >= 3 && idx <= 5 ? "right" : "left" };
+        if (idx >= 3 && idx <= 5) cell.numFmt = moneyFmt;
+      });
+      row.height = 16;
+    };
+
+    if ((staffPerformanceData || []).length) {
+      (staffPerformanceData || []).forEach((s) => {
+        const dt = s.date ? new Date(s.date) : null;
+        writeShiftRow(r++, [
+          s.shiftNo,
+          s.staffName,
+          dt ? dt : s.date,
+          Number(s.startingCash || 0),
+          Number(s.countCash || 0),
+          Number(s.actualCash || 0),
+          s.remarks || "",
+        ]);
+        // format date cell
+        const dateCell = ws.getCell(`C${r - 1}`);
+        if (dt) dateCell.numFmt = dateFmt;
+      });
+    } else {
+      writeShiftRow(r++, ["", "No data for this range", "", "", "", "", ""]);
+    }
+
+    ws.getRow(r).height = 8; r++;
+
+    // Footer
+    ws.mergeCells(`A${r}:F${r}`);
+    ws.getCell(`A${r}`).value = preparedBy || "Prepared by: N/A";
+    ws.getCell(`A${r}`).font = { italic: true };
+    ws.getCell(`A${r}`).alignment = { horizontal: "left" };
+
+    // =========================
+    // Sheet 2: Chart Data
+    // =========================
+    const ws2 = wb.addWorksheet("Chart Data", {
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+    ws2.columns = [
+      { header: "Date/Label", key: "x", width: 18 },
+      { header: "Amount", key: "y", width: 16 },
+    ];
+    ws2.getRow(1).font = { bold: true };
+    ws2.getRow(1).fill = fillHeader;
+
+    (categorySeriesData || []).forEach((d) => {
+      ws2.addRow({ x: d.x, y: Number(d.y || 0) });
+    });
+    ws2.getColumn(2).numFmt = moneyFmt;
+
+    // Download
+    const buffer = await wb.xlsx.writeBuffer();
+    const filename = `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}-${Date.now()}.xlsx`;
+    saveAs(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
   };
 
   /* ------------------ Shared PDF builder (uses passed data) ------------------ */
@@ -1015,13 +1331,22 @@ export default function ReportsPage() {
                 }}
               />
 
-              <Box sx={{ flexGrow: 1 }} />
+              <Button
+                variant="outlined"
+                startIcon={<RefreshIcon />}
+                onClick={refreshReports}
+                disabled={range === "custom" && (!customFrom || !customTo)}
+                sx={{ whiteSpace: "nowrap" }}
+              >
+                Refresh
+              </Button>
 
               {/* Export Buttons */}
               <Button
                 variant="contained"
                 color="success"
                 startIcon={<GridOnIcon />}
+                disabled={!hasTransactions}
                 onClick={() => openExportDialog("excel")}
               >
                 Excel
@@ -1031,6 +1356,7 @@ export default function ReportsPage() {
                 variant="contained"
                 color="error"
                 startIcon={<PictureAsPdfIcon />}
+                disabled={!hasTransactions}
                 onClick={() => openExportDialog("pdf")}
               >
                 PDF
@@ -1601,7 +1927,7 @@ export default function ReportsPage() {
               <Button
                 variant="contained"
                 onClick={runExport}
-                disabled={!exportKind}
+                disabled={!exportKind || !hasTransactions}
               >
                 Export
               </Button>

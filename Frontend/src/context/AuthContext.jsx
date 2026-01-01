@@ -219,9 +219,15 @@ export function AuthProvider({ children }) {
       store.removeItem("qd_token");
     }
 
+    // store the exact identifier the user typed to login
+    store.setItem("qd_login_identifier", String(identifier || "").trim());
+
     const other = remember ? sessionStorage : localStorage;
     other.removeItem("qd_token");
     other.removeItem("qd_user");
+
+    // clear it from the other storage too
+    other.removeItem("qd_login_identifier");
 
     return u;
   }
@@ -262,8 +268,10 @@ export function AuthProvider({ children }) {
     setToken(null);
     localStorage.removeItem("qd_token");
     localStorage.removeItem("qd_user");
+    localStorage.removeItem("qd_login_identifier");
     sessionStorage.removeItem("qd_token");
     sessionStorage.removeItem("qd_user");
+    sessionStorage.removeItem("qd_login_identifier");
   }
 
   const value = useMemo(

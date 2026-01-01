@@ -1395,80 +1395,85 @@ export default function UserManagementPage() {
                         Credentials
                       </Typography>
 
-                      <Grid container spacing={2} alignItems="center">
-                        {/* Password row (Admins only) */}
-                        {needsPassword && (
-                          <Grid size={{ xs: 12 }}>
-                            <Paper
-                              variant="outlined"
-                              onClick={openPasswordDialog}
-                              sx={{
-                                p: 1,
-                                cursor: "pointer",
-                                "&:hover": { bgcolor: "action.hover" },
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                minHeight: 46,
-                              }}
-                            >
-                              <Stack direction="row" spacing={1.25} alignItems="center">
-                                <LockOutlinedIcon fontSize="small" />
-                                <Box>
-                                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                                    {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ mt: 0.25 }}>
-                                    Password{form.password ? " (staged)" : ""}
-                                  </Typography>
-                                </Box>
-                              </Stack>
-                              <ChevronRightOutlinedIcon fontSize="small" />
-                            </Paper>
+                      <Grid container spacing={2} alignItems="stretch">
+                        {/* Row 1: Password + Security Questions (side-by-side) */}
+                        {(needsPassword || form.role !== "Cashier") && (
+                          <>
+                            {needsPassword && (
+                              <Grid item xs={12} md={6}>
+                                <Paper
+                                  variant="outlined"
+                                  onClick={openPasswordDialog}
+                                  sx={{
+                                    p: 1,
+                                    cursor: "pointer",
+                                    "&:hover": { bgcolor: "action.hover" },
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    minHeight: 62,          // a bit taller so both tiles feel balanced
+                                    height: "100%",
+                                  }}
+                                >
+                                  <Stack direction="row" spacing={1.25} alignItems="center">
+                                    <LockOutlinedIcon fontSize="small" />
+                                    <Box>
+                                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                                        {`Last added/changed: ${formatLastChanged(form.passwordLastChanged)}`}
+                                      </Typography>
+                                      <Typography variant="body2" sx={{ mt: 0.25 }}>
+                                        Password{form.password ? " (staged)" : ""}
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+                                  <ChevronRightOutlinedIcon fontSize="small" />
+                                </Paper>
 
-                            {errors.password && (
-                              <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
-                                {errors.password}
-                              </Typography>
+                                {errors.password && (
+                                  <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                                    {errors.password}
+                                  </Typography>
+                                )}
+                              </Grid>
                             )}
-                          </Grid>
+
+                            {form.role !== "Cashier" && (
+                              <Grid item xs={12} md={6}>
+                                <Paper
+                                  variant="outlined"
+                                  onClick={openSqDialog}
+                                  sx={{
+                                    p: 1,
+                                    cursor: "pointer",
+                                    "&:hover": { bgcolor: "action.hover" },
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    minHeight: 62,
+                                    height: "100%",
+                                  }}
+                                >
+                                  <Stack direction="row" spacing={1.25} alignItems="center">
+                                    <HelpOutlineOutlinedIcon fontSize="small" />
+                                    <Box>
+                                      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                                        {hasExistingSq ? "Question and Answer configured" : "None configured"}
+                                      </Typography>
+                                      <Typography variant="body2" sx={{ mt: 0.25 }}>
+                                        Security Questions
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+                                  <ChevronRightOutlinedIcon fontSize="small" />
+                                </Paper>
+                              </Grid>
+                            )}
+                          </>
                         )}
 
-                        {/* Security Questions row (non-cashier only) */}
-                        {form.role !== "Cashier" && (
-                          <Grid size={{ xs: 12 }}>
-                            <Paper
-                              variant="outlined"
-                              onClick={openSqDialog}
-                              sx={{
-                                p: 1,
-                                cursor: "pointer",
-                                "&:hover": { bgcolor: "action.hover" },
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                minHeight: 46,
-                              }}
-                            >
-                              <Stack direction="row" spacing={1.25} alignItems="center">
-                                <HelpOutlineOutlinedIcon fontSize="small" />
-                                <Box>
-                                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-                                    {hasExistingSq ? "Question and Answer configured" : "None configured"}
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ mt: 0.25 }}>
-                                    Security Questions
-                                  </Typography>
-                                </Box>
-                              </Stack>
-                              <ChevronRightOutlinedIcon fontSize="small" />
-                            </Paper>
-                          </Grid>
-                        )}
-
-                        {/* Reset Ticket (Cashier only, existing user only) */}
+                        {/* Row 2: Reset Ticket (full-width, stays on its own row) */}
                         {needsPin && isEditingExisting && (
-                          <Grid size={{ xs: 12 }}>
+                          <Grid item xs={12}>
                             <Paper
                               variant="outlined"
                               onClick={openResetTicketDialog}
@@ -1498,6 +1503,7 @@ export default function UserManagementPage() {
                           </Grid>
                         )}
                       </Grid>
+
                     </Grid>
                   )}
 
@@ -1561,7 +1567,7 @@ export default function UserManagementPage() {
                             const ok = await confirm({
                               title: "Unlock system?",
                               content: `This clears ${
-                                target === "backoffice" ? "Backoffice" : target
+                                target === "backoffice" ? "QUSCINA POS" : target
                               } lock and failed attempts.`,
                               confirmLabel: "Unlock",
                             });
@@ -1660,7 +1666,7 @@ export default function UserManagementPage() {
 
                         const labelFor = (key) => {
                           if (key === "pos") return "POS";            // optional: keep generic or hide it anyway
-                          if (key === "backoffice") return "Backoffice";
+                          if (key === "backoffice") return "QUSCINA POS";
                           return key.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
                         };
 
