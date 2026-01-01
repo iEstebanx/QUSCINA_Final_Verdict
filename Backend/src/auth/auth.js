@@ -28,6 +28,29 @@ module.exports = function authRouterFactory({ db } = {}) {
 
   const router = express.Router();
 
+  async function withTransaction(db, fn) {
+    const getConn =
+      (db && typeof db.getConnection === "function" && (() => db.getConnection())) ||
+      (db && db.pool && typeof db.pool.getConnection === "function" && (() => db.pool.getConnection()));
+
+    if (getConn) {
+      const conn = await getConn();
+      try {
+        await conn.beginTransaction();
+        const result = await fn(conn, { inTx: true });
+        await conn.commit();
+        return result;
+      } catch (err) {
+        try { await conn.rollback(); } catch {}
+        throw err;
+      } finally {
+        try { conn.release(); } catch {}
+      }
+    }
+
+    return fn(db, { inTx: false });
+  }
+
   // ---- Config ----
   const DEBUG = process.env.DEBUG_AUTH === "1";
   const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
@@ -397,24 +420,23 @@ router.post("/login/precheck", async (req, res, next) => {
   // POST /api/auth/login
 router.post("/login", async (req, res, next) => {
   try {
-    const app = getAppRealm(req); // "backoffice" | "pos" (default in your helper)
+    const app = getAppRealm(req); // "backoffice" | "pos"
     const { identifier, password, pin, remember } = req.body || {};
 
     const id = String(identifier || "").trim();
     const pw = password != null ? String(password) : "";
     const p = pin != null ? String(pin) : "";
 
-    if (!id || (!pw && !p)) {
+    if (!id) {
       return res.status(400).json({
-        error: "identifier and secret are required",
-        code: "MISSING_FIELDS",
+        error: "identifier is required",
+        code: "MISSING_IDENTIFIER",
       });
     }
 
     const { user, type: aliasType } = await findByAlias(id);
 
     if (!user) {
-      // Optional: audit invalid ID attempt
       try {
         await logAuthAudit({
           app,
@@ -424,10 +446,7 @@ router.post("/login", async (req, res, next) => {
           req,
         });
       } catch {}
-      return res.status(404).json({
-        error: "Invalid Login ID",
-        code: "UNKNOWN_IDENTIFIER",
-      });
+      return res.status(404).json({ error: "Invalid Login ID", code: "UNKNOWN_IDENTIFIER" });
     }
 
     // status gate
@@ -441,15 +460,40 @@ router.post("/login", async (req, res, next) => {
           req,
         });
       } catch {}
-      return res.status(403).json({
-        error: "Account is not active",
-        code: "ACCOUNT_INACTIVE",
+      return res.status(403).json({ error: "Account is not active", code: "ACCOUNT_INACTIVE" });
+    }
+
+    const roleLower = String(user.role || "").toLowerCase();
+    const isCashier = roleLower === "cashier";
+    const isAdmin = roleLower === "admin";
+
+    // ✅ Decide auth secret FIRST (PIN for cashier, password for others)
+    const secret = isCashier ? p : pw;
+
+    if (!secret) {
+      return res.status(400).json({
+        error: isCashier ? "pin is required" : "password is required",
+        code: isCashier ? "MISSING_PIN" : "MISSING_PASSWORD",
       });
     }
 
-    // login method allowed gate (aliases / loginVia rules)
+    // ✅ Enforce required hashes
+    if (isCashier && !user.pin_hash) {
+      return res.status(400).json({
+        error: "PIN is not set. Use Reset Ticket to set a PIN.",
+        code: "PIN_NOT_SET",
+      });
+    }
+    if (!isCashier && !user.password_hash) {
+      return res.status(400).json({
+        error: "This account has no password set. Please ask an Admin to set one.",
+        code: "NO_PASSWORD_SET",
+      });
+    }
+
+    // ✅ Alias login permission (employee_id/username/email) is separate from PIN/PASSWORD
     if (typeof loginMethodAllowed === "function") {
-      const okMethod = await loginMethodAllowed(user, aliasType);
+      const okMethod = loginMethodAllowed(user, aliasType);
       if (!okMethod) {
         try {
           await logAuthAudit({
@@ -467,7 +511,7 @@ router.post("/login", async (req, res, next) => {
       }
     }
 
-    // lock gate (per-app lock state if you have it)
+    // lock gate (per-app lock state)
     const lockRow = await readLockRow(db, String(user.employee_id), app);
     const li = lockInfoFromRow(lockRow);
 
@@ -486,36 +530,6 @@ router.post("/login", async (req, res, next) => {
       });
     }
 
-    const roleLower = String(user.role || "").toLowerCase();
-    const isCashier = roleLower === "cashier";
-    const isAdmin = roleLower === "admin";
-
-    // choose which secret to verify
-    const secret = isCashier ? p : pw;
-
-    if (!secret) {
-      return res.status(400).json({
-        error: isCashier ? "pin is required" : "password is required",
-        code: isCashier ? "MISSING_PIN" : "MISSING_PASSWORD",
-      });
-    }
-
-    // block cashier when PIN not set (forces ticket flow)
-    if (isCashier && !user.pin_hash) {
-      return res.status(400).json({
-        error: "PIN is not set. Use Reset Ticket to set a PIN.",
-        code: "PIN_NOT_SET",
-      });
-    }
-
-    // block admin with missing password (optional — depends on your system rules)
-    if (isAdmin && !user.password_hash) {
-      return res.status(400).json({
-        error: "This account has no password set. Please ask an Admin to set one.",
-        code: "NO_PASSWORD_SET",
-      });
-    }
-
     // verify secret
     const hashToCompare = isCashier ? user.pin_hash : user.password_hash;
     let ok = false;
@@ -526,7 +540,7 @@ router.post("/login", async (req, res, next) => {
     }
 
     if (!ok) {
-      // bump lock / failed attempts (use your existing logic if available)
+      // bump lock / failed attempts
       let lockPayload = null;
       if (typeof bumpLockForApp === "function") {
         try {
@@ -548,7 +562,6 @@ router.post("/login", async (req, res, next) => {
         });
       }
 
-      // audit failed login
       try {
         await logAuthAudit({
           app,
@@ -585,7 +598,6 @@ router.post("/login", async (req, res, next) => {
       } catch {}
     }
 
-    // audit success
     try {
       await logAuthAudit({
         app,
@@ -596,59 +608,279 @@ router.post("/login", async (req, res, next) => {
       });
     } catch {}
 
-    // token + cookie
     const token = issueAuthToken(user);
     setAuthCookie(res, token, { remember: !!remember });
 
-    // response payload
     const clientUser =
       typeof mapUserForClient === "function"
         ? mapUserForClient(user)
         : {
             employeeId: String(user.employee_id),
             role: user.role,
-
-            // ✅ Use your existing helper that already builds "First Last"
             name: prettyEmployeeName(user),
-
-            // ✅ Also include first/last separately (useful for reports/export/UI)
             first_name: user.first_name || "",
             last_name: user.last_name || "",
-
             username: user.username || "",
             email: user.email || "",
             status: user.status || "",
           };
 
+    return res.json({ ok: true, token, user: clientUser });
+  } catch (e) {
+    next(e);
+  }
+});
+
+
+// 2.5) ADD: POST /api/auth/pin-reset/verify-ticket
+router.post("/pin-reset/verify-ticket", async (req, res, next) => {
+  try {
+    const { employeeId, ticket } = req.body || {};
+    const empId = String(employeeId || "").trim();
+    const code = String(ticket || "").trim();
+
+    if (!empId || !code) {
+      return res.status(400).json({ error: "employeeId and ticket are required" });
+    }
+    if (!/^\d{9}$/.test(empId)) {
+      return res.status(400).json({ error: "Invalid employeeId" });
+    }
+    if (!/^\d{8}$/.test(code)) {
+      return res.status(400).json({ error: "Ticket code must be 8 digits." });
+    }
+
+    // employee must exist + cashier + active
+    const empRows = await db.query(
+      `SELECT employee_id, role, status
+         FROM employees
+        WHERE employee_id = ?
+        LIMIT 1`,
+      [empId]
+    );
+    const emp = empRows[0];
+    if (!emp) return res.status(404).json({ error: "Employee not found" });
+    if (String(emp.status || "").toLowerCase() !== "active") {
+      return res.status(403).json({ error: "Account is not active" });
+    }
+    if (String(emp.role || "").toLowerCase() !== "cashier") {
+      return res.status(403).json({ error: "Only Cashier accounts can use Reset Ticket" });
+    }
+
+    // ✅ ONLY pick a usable ticket (pending + not used + not expired)
+    const tRows = await db.query(
+      `SELECT id, token_hash, expires_at
+         FROM employee_pin_reset_requests
+        WHERE employee_id = ?
+          AND status = 'pending'
+          AND used_at IS NULL
+          AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [empId]
+    );
+
+    // ✅ If none found, it's either used OR expired OR no ticket exists
+    if (!tRows.length) {
+      return res.status(400).json({
+        error: "Ticket expired or already used. Please ask Admin to issue a new one.",
+        code: "TICKET_INVALID",
+      });
+    }
+
+    const rec = tRows[0];
+
+    // ✅ Verify ticket code matches this usable row
+    const ok = await bcrypt.compare(code, rec.token_hash);
+    if (!ok) {
+      return res.status(400).json({
+        error: "Invalid ticket code.",
+        code: "TICKET_INVALID",
+      });
+    }
+
     return res.json({
       ok: true,
-      token, // optional if you rely purely on cookie; keep it if your frontend stores it
-      user: clientUser,
+      requestId: rec.id,
+      expiresAt: rec.expires_at || null,
     });
   } catch (e) {
     next(e);
   }
 });
 
+
 // 3) ADD: POST /api/auth/pin-reset/confirm  (used by Backoffice Forgot PIN Ticket screen)
 // NOTE: This is the minimal endpoint signature the new LoginPage expects.
+// Replace the problematic /pin-reset/confirm endpoint with this:
 router.post("/pin-reset/confirm", async (req, res, next) => {
+  let conn = null;
   try {
-    const { employeeId, ticket, newPin } = req.body || {};
-    if (!employeeId || !ticket || !newPin) {
+    const { employeeId, ticket, newPin, requestId } = req.body || {};
+    const empId = String(employeeId || "").trim();
+    const code = String(ticket || "").trim();
+    const pin = String(newPin || "").trim();
+
+    if (!empId || !code || !pin) {
       return res.status(400).json({ error: "employeeId, ticket, and newPin are required" });
     }
+    if (!/^\d{9}$/.test(empId)) return res.status(400).json({ error: "Invalid employeeId" });
+    if (!/^\d{8}$/.test(code)) return res.status(400).json({ error: "Ticket code must be 8 digits." });
+    if (!/^\d{6}$/.test(pin)) return res.status(400).json({ error: "PIN must be 6 digits." });
 
-    // TODO implement:
-    // - validate employee exists + role=cashier + active
-    // - fetch latest pending ticket from employee_pin_reset_requests
-    // - verify not expired + bcrypt.compare(ticket, token_hash)
-    // - set employees.pin_hash = bcrypt(newPin)
-    // - mark ticket used/revoked
-    // - audit trail
+    const reqId = String(requestId || "").trim();
+    if (!reqId) {
+      return res.status(400).json({ error: "requestId is required" });
+    }
 
-    return res.json({ ok: true });
+    // Check if db.pool exists (from your mysql.js structure)
+    if (!db.pool || typeof db.pool.getConnection !== "function") {
+      console.error("[pin-reset/confirm] db.pool.getConnection not available");
+      return res.status(500).json({ error: "Database connection not available" });
+    }
+
+    // Start transaction using db.pool
+    conn = await db.pool.getConnection();
+    await conn.beginTransaction();
+
+    // 1. Check employee
+    const [empRows] = await conn.query(
+      `SELECT employee_id, role, status FROM employees WHERE employee_id = ? LIMIT 1 FOR UPDATE`,
+      [empId]
+    );
+    const emp = empRows[0];
+    if (!emp) {
+      await conn.rollback();
+      conn.release();
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    if (String(emp.status || "").toLowerCase() !== "active") {
+      await conn.rollback();
+      conn.release();
+      return res.status(403).json({ error: "Account is not active" });
+    }
+    if (String(emp.role || "").toLowerCase() !== "cashier") {
+      await conn.rollback();
+      conn.release();
+      return res.status(403).json({ error: "Only Cashier accounts can reset PIN" });
+    }
+
+    // 2. Check ticket WITH FOR UPDATE to lock the row
+    const [tRows] = await conn.query(
+      `SELECT id, token_hash, expires_at
+        FROM employee_pin_reset_requests
+        WHERE id = ?
+          AND employee_id = ?
+          AND status = 'pending'
+          AND used_at IS NULL
+        LIMIT 1 FOR UPDATE`,
+      [reqId, empId]
+    );
+
+    if (!tRows.length) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ 
+        error: "Ticket expired or already used. Please ask Admin to issue a new one.",
+        code: "TICKET_INVALID"
+      });
+    }
+
+    const rec = tRows[0];
+
+    // 3. Check expiry
+    if (rec.expires_at && new Date(rec.expires_at) < new Date()) {
+      // Mark as expired
+      await conn.query(
+        `UPDATE employee_pin_reset_requests SET status='expired' WHERE id=?`,
+        [rec.id]
+      );
+      await conn.commit();
+      conn.release();
+      return res.status(400).json({ 
+        error: "Ticket expired or already used. Please ask Admin to issue a new one.",
+        code: "TICKET_EXPIRED"
+      });
+    }
+
+    // 4. Verify ticket code
+    const okTicket = await bcrypt.compare(code, rec.token_hash);
+    if (!okTicket) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ 
+        error: "Invalid ticket code.",
+        code: "TICKET_INVALID"
+      });
+    }
+
+    // 5. Hash new PIN
+    const newHash = await bcrypt.hash(pin, 12);
+
+    // 6. Update employee PIN
+    await conn.query(
+      `UPDATE employees SET pin_hash=? WHERE employee_id=?`,
+      [newHash, empId]
+    );
+
+    // 7. Mark ticket as used
+    await conn.query(
+      `UPDATE employee_pin_reset_requests
+       SET status='used', used_at=UTC_TIMESTAMP()
+       WHERE id=?`,
+      [rec.id]
+    );
+
+    // 8. Commit transaction
+    await conn.commit();
+    conn.release();
+
+    // Audit log
+    try {
+      await logAuditLogin({
+        employeeName: `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || empId,
+        role: emp.role || 'Cashier',
+        action: "Auth - PIN Reset via Ticket",
+        detail: {
+          statusMessage: "PIN reset successfully via ticket",
+          actionDetails: {
+            actionType: "pin_reset",
+            step: "confirm",
+            result: "success",
+          },
+          affectedData: {
+            statusChange: "PIN_RESET_SUCCESS",
+            items: [],
+          },
+          meta: { 
+            app: "backoffice",
+            employeeId: empId,
+            requestId: reqId 
+          },
+        },
+      });
+    } catch (auditErr) {
+      console.error("[audit] PIN reset audit failed:", auditErr?.message);
+    }
+
+    return res.json({ 
+      ok: true,
+      message: "PIN reset successfully"
+    });
+
   } catch (e) {
+    // Clean up connection if it exists
+    if (conn) {
+      try { await conn.rollback(); } catch {}
+      try { conn.release(); } catch {}
+    }
+    
+    const status = e?.status || 500;
+    if (status !== 500) {
+      return res.status(status).json({ 
+        error: e.message || "PIN reset failed",
+        code: e.code || "RESET_FAILED"
+      });
+    }
     next(e);
   }
 });

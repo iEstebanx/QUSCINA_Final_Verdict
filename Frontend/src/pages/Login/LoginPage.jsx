@@ -117,6 +117,24 @@ export default function LoginPage() {
   const [secret, setSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
 
+  // ----- PIN keypad behavior (Backoffice) -----
+  const PIN_LEN = 6; // set to 6 to match Cashier POS; if you want 4–8, see note below
+  const [pinValue, setPinValue] = useState("");
+
+  // dots slots
+  const pinSlots = useMemo(
+    () => Array.from({ length: PIN_LEN }, (_, i) => `pin-slot-${i}`),
+    []
+  );
+
+  const activeSecretValue = loginMode === "pin" ? pinValue : secret;
+
+  // keep secret state in sync for submit()
+  useEffect(() => {
+    if (loginMode !== "pin") return;
+    setSecret(pinValue); // so onSubmit continues to work without rewriting logic
+  }, [loginMode, pinValue, setSecret]);
+
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [prechecking, setPrechecking] = useState(false);
@@ -132,7 +150,7 @@ export default function LoginPage() {
 
   // --------- Forgot dialog (role-aware) ---------
   const [forgotOpen, setForgotOpen] = useState(false);
-  // "identify" | "choose-admin" | "email" | "otp" | "reset" | "sq-identify" | "sq-answers" | "ticket"
+  // "identify" | "choose-admin" | "email" | "otp" | "reset" | "sq-identify" | "sq-answers"
   const [fpStep, setFpStep] = useState("identify");
 
   const [fpIdentifier, setFpIdentifier] = useState(""); // login id entered in forgot flow
@@ -152,6 +170,19 @@ export default function LoginPage() {
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [ticketSubmitting, setTicketSubmitting] = useState(false);
+
+  // ----- Cashier Reset Ticket -> PIN reset inside Enter PIN keypad -----
+  const [cashierTicketOpen, setCashierTicketOpen] = useState(false);
+  const [cashierTicketCode, setCashierTicketCode] = useState("");
+  const [cashierTicketSubmitting, setCashierTicketSubmitting] = useState(false);
+
+  const [cashierResetRequestId, setCashierResetRequestId] = useState(null);
+
+  const [pinResetMode, setPinResetMode] = useState(false); // true = keypad is for setting new pin
+  const [pinResetStage, setPinResetStage] = useState("new"); // "new" | "confirm"
+  const [pinResetFirst, setPinResetFirst] = useState(""); // stores first entry
+  const [pinResetError, setPinResetError] = useState("");
+  const [pinResetTicket, setPinResetTicket] = useState(""); // stored verified ticket
 
   // Existing Admin forgot-password flow state (kept as-is)
   const [fpEmail, setFpEmail] = useState("");
@@ -196,6 +227,7 @@ export default function LoginPage() {
 
   const otpRefs = useRef(Array.from({ length: 6 }, () => null));
   const didRedirectRef = useRef(false);
+  const pinConfirmInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!ready) return;
@@ -321,13 +353,12 @@ export default function LoginPage() {
       setLoginMode(mode === "pin" ? "pin" : "password");
       setLoginStep("secret");
       setSecret("");
+      setPinValue("");
       setShowSecret(false);
 
       // Some cashier flows may need to show “PIN not set” hint
       if (info?.loginMode === "pin" && info?.pinNotSet) {
-        alert.info(
-          "PIN is not set yet. Use “Forgot Password / PIN” to set up using a Reset Ticket."
-        );
+        alert.info("PIN is not set yet. Please use the Cashier Setup / Ticket flow to set your PIN.");
       }
     } catch (err) {
       const status = err?.status ?? 0;
@@ -375,6 +406,7 @@ export default function LoginPage() {
   const onBackToId = () => {
     setLoginStep("id");
     setSecret("");
+    setPinValue("");
     setSecretError("");
     setShowSecret(false);
     setRoleHint("");
@@ -382,11 +414,238 @@ export default function LoginPage() {
     setLoginMode("password");
   };
 
+// ----- PIN keypad handlers (Backoffice) -----
+const handlePinDigit = (digit) => {
+  if (submitting || prechecking || ticketSubmitting || isLockedForCurrentId) return;
+
+  setPinValue((prev) => {
+    if (prev.length >= PIN_LEN) return prev;
+    const next = prev + String(digit);
+
+    if (next.length === PIN_LEN) {
+      setTimeout(() => {
+        // If resetting PIN, do NOT submit login — drive reset stages
+        if (pinResetMode) {
+          if (pinResetStage === "new") {
+            setPinResetFirst(next);
+            setPinResetStage("confirm");
+            setPinResetError("");
+            setPinValue("");
+            return;
+          }
+
+          // confirm
+          if (next !== pinResetFirst) {
+            setPinResetError("PINs do not match. Try again.");
+            setPinResetStage("new");
+            setPinResetFirst("");
+            setPinValue("");
+            return;
+          }
+
+          setPinValue("");
+          submitNewPinConfirm(next);
+          return;
+        }
+
+        // ✅ normal login (submit exact pin)
+        setPinValue("");
+        setSecret("");
+        submitPinLogin(next);
+      }, 120);
+    }
+
+    return next;
+  });
+};
+
+
+const handlePinDelete = () => {
+  if (submitting || prechecking || ticketSubmitting || isLockedForCurrentId) return;
+  setPinValue((prev) => prev.slice(0, -1));
+};
+
+const handlePinBack = () => {
+  if (submitting || prechecking || ticketSubmitting) return;
+
+  if (pinResetMode) {
+    // back inside reset flow
+    if (pinResetStage === "confirm") {
+      setPinResetStage("new");
+      setPinResetFirst("");
+      setPinResetError("");
+      setPinValue("");
+      return;
+    }
+    // stage "new" -> cancel reset mode
+    cancelPinResetMode();
+    return;
+  }
+
+  setPinValue("");
+  setSecret("");
+  onBackToId();
+};
+
+const openCashierTicket = () => {
+  // Must already be in PIN login for cashier
+  if (loginStep !== "secret" || loginMode !== "pin") return;
+
+  if (!/cashier/i.test(String(roleHint || ""))) {
+    alert.info("Reset Ticket is for Cashier PIN only.");
+    return;
+  }
+
+  if (!String(employeeIdHint || "").trim()) {
+    alert.error("Missing employee ID. Please re-enter your Login ID.");
+    setLoginStep("id");
+    return;
+  }
+
+  setCashierTicketCode("");
+  setCashierTicketOpen(true);
+};
+
+const closeCashierTicket = () => {
+  setCashierTicketOpen(false);
+  setCashierTicketSubmitting(false);
+};
+
+const verifyCashierTicket = async (e) => {
+  e.preventDefault();
+
+  const empId = String(employeeIdHint || "").trim();
+  const code = String(cashierTicketCode || "").trim();
+
+  if (!/^\d{8}$/.test(code)) return alert.error("Ticket code must be 8 digits.");
+
+  setCashierTicketSubmitting(true);
+  try {
+    // verify only (recommended). If you don't have this endpoint, you can skip verify and go straight to confirm later.
+    const resp = await fetch(join("/api/auth/pin-reset/verify-ticket"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+      credentials: "include",
+      body: JSON.stringify({ employeeId: empId, ticket: code }),
+    });
+    const j = await safeJson(resp);
+    if (!resp.ok) throw new Error(j?.error || "Invalid / expired ticket.");
+
+    setCashierResetRequestId(j?.requestId ?? null);
+    if (!j?.requestId) throw new Error("Missing requestId from server.");
+
+    // ticket ok -> enter reset mode on the keypad
+    setPinResetTicket(code);
+    setPinResetMode(true);
+    setPinResetStage("new");
+    setPinResetFirst("");
+    setPinResetError("");
+    setPinValue(""); // clear dots
+    closeCashierTicket();
+
+    alert.success("Ticket verified. Enter your new PIN.");
+  } catch (err) {
+    alert.error(err?.message || "Unable to verify ticket.");
+  } finally {
+    setCashierTicketSubmitting(false);
+  }
+};
+
+const cancelPinResetMode = () => {
+  setPinResetMode(false);
+  setPinResetStage("new");
+  setPinResetFirst("");
+  setPinResetError("");
+  setPinResetTicket("");
+  setCashierResetRequestId(null);
+  setPinValue("");
+  setSecret("");
+  setCashierTicketOpen(false);
+};
+
+const submitNewPinConfirm = async (finalPin) => {
+  if (ticketSubmitting) return;
+  if (pinConfirmInFlightRef.current) return; // ✅ prevent double fire
+  pinConfirmInFlightRef.current = true;
+
+  const empId = String(employeeIdHint || "").trim();
+  const ticket = String(pinResetTicket || "").trim();
+  const reqId = String(cashierResetRequestId || "").trim();
+
+  if (!empId) { pinConfirmInFlightRef.current = false; return alert.error("Missing employee ID."); }
+  if (!/^\d{8}$/.test(ticket)) { pinConfirmInFlightRef.current = false; return alert.error("Missing / invalid ticket."); }
+  if (!reqId) { pinConfirmInFlightRef.current = false; return alert.error("Missing reset requestId. Please verify ticket again."); }
+
+  setTicketSubmitting(true);
+  try {
+    const resp = await fetch(join("/api/auth/pin-reset/confirm"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+      credentials: "include",
+      body: JSON.stringify({ employeeId: empId, ticket, requestId: reqId, newPin: String(finalPin) }),
+    });
+
+    const j = await safeJson(resp);
+    if (!resp.ok) {
+      if (j.code === "TICKET_EXPIRED" || j.code === "TICKET_INVALID") {
+        throw new Error(j.error || "Ticket expired or already used. Please ask Admin to issue a new one.");
+      }
+      throw new Error(j.error || "Unable to set PIN");
+    }
+
+    alert.success("PIN updated successfully! Enter your new PIN to sign in.");
+
+    // ✅ do NOT let any old “full pin” still sit in state
+    setPinValue("");
+    setSecret("");
+    setSecretError("");
+
+    // ✅ exit reset mode cleanly (but don’t re-open ticket)
+    setPinResetMode(false);
+    setPinResetStage("new");
+    setPinResetFirst("");
+    setPinResetError("");
+    setPinResetTicket("");
+    setCashierResetRequestId(null);
+    setCashierTicketOpen(false);
+
+    setLoginStep("secret");
+    setLoginMode("pin");
+  } catch (err) {
+    console.error("PIN reset error:", err);
+    alert.error(err.message || "Unable to set PIN. Please try again.");
+
+    // If ticket truly invalid, send them back to ticket dialog
+    if (String(err.message || "").toLowerCase().includes("expired") || String(err.message || "").toLowerCase().includes("used")) {
+      setPinResetMode(false);
+      setPinResetStage("new");
+      setPinResetFirst("");
+      setPinResetError("Ticket expired/used. Please enter a new ticket.");
+      setPinResetTicket("");
+      setCashierTicketOpen(true);
+    } else {
+      // generic
+      setPinResetMode(false);
+      setPinResetStage("new");
+      setPinResetFirst("");
+      setPinResetError("");
+      setPinResetTicket("");
+      setCashierResetRequestId(null);
+      setCashierTicketOpen(false);
+      setPinValue("");
+      setSecret("");
+    }
+  } finally {
+    setTicketSubmitting(false);
+    pinConfirmInFlightRef.current = false; // ✅ release guard
+  }
+};
+
   // ---------------------- Login: Submit (role-aware) ----------------------
   const onSubmit = async (e) => {
     e.preventDefault();
     const idVal = String(identifier || "").trim();
-    const secVal = String(secret || "");
+    const secVal = String(loginMode === "pin" ? pinValue : (secret || ""));
 
     if (!idVal) return setIdError("Login ID is required.");
     if (!secVal) return setSecretError(`${secretLabel} is required.`);
@@ -449,6 +708,67 @@ export default function LoginPage() {
     }
   };
 
+const submitPinLogin = async (finalPin) => {
+  const idVal = String(identifier || "").trim();
+  const secVal = String(finalPin || "").trim();
+
+  if (!idVal) return setIdError("Login ID is required.");
+  if (!secVal) return setSecretError("PIN is required.");
+
+  // prevent double submits
+  if (submitting) return;
+
+  setSubmitting(true);
+  try {
+    await login(idVal, secVal, { remember, loginMode: "pin" });
+    alert.success("Welcome back!");
+
+    const from = loc.state?.from?.pathname;
+    const role = roleHint || user?.role || "";
+    const dest = resolvePostLoginDest(role, from);
+    nav(dest, { replace: true });
+  } catch (err) {
+    const status = err?.status ?? err?.response?.status ?? 0;
+    const data = err?.data ?? err?.response?.data ?? {};
+    const code = data?.code || "";
+    const msg = err?.message || data?.error || "Sign in failed";
+
+    setIdError("");
+    setSecretError("");
+
+    if (status === 423) {
+      const seconds = Number(data?.remaining_seconds || 0);
+      setLockedIdKey(idKey(idVal));
+      if (seconds > 0) {
+        setLockPermanent(false);
+        setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
+        const m = Math.floor(seconds / 60), s = seconds % 60;
+        alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+      } else {
+        setLockPermanent(true);
+        setLockUntilIso(null);
+        setLockSecondsLeft(0);
+        alert.error("Account locked. Please contact an Admin.");
+      }
+      return;
+    }
+
+    if (status === 401) {
+      setSecretError("Invalid PIN");
+      return;
+    }
+    if (status === 404 || code === "UNKNOWN_IDENTIFIER") {
+      setIdError("Invalid Login ID");
+      setLoginStep("id");
+      return;
+    }
+
+    alert.error(msg);
+  } finally {
+    setSubmitting(false);
+  }
+};
+
   // ---------- Cooldown derived flags (PER EMAIL) ----------
   const normalizedFpEmail = fpEmail.trim().toLowerCase();
   const cooldownActive =
@@ -488,8 +808,15 @@ export default function LoginPage() {
   };
 
   const onOpenForgot = () => {
+    // Safety: Forgot Password is Admin-only
+    if (String(roleHint || "").toLowerCase() === "cashier") {
+      alert.info("Cashier accounts don’t use Forgot Password. Please use Cashier Setup / PIN flow.");
+      return;
+    }
+
     setForgotOpen(true);
     resetForgotState();
+
     // Prefill identifier if user already typed it
     if (String(identifier || "").trim()) setFpIdentifier(String(identifier || "").trim());
   };
@@ -520,14 +847,12 @@ export default function LoginPage() {
       setFpEmployeeId(empId);
       setFpLoginMode(mode === "pin" ? "pin" : "password");
 
-      if ((mode === "pin" || /cashier/i.test(role)) && empId) {
-        // Cashier → Ticket flow
-        await loadActiveTicket(empId);
-        setFpStep("ticket");
-      } else {
-        // Admin → existing choices
-        setFpStep("choose-admin");
+      if (/cashier/i.test(role) || mode === "pin") {
+        setFpIdentifyError("Cashier accounts don’t use Forgot Password. Please use Cashier Setup / PIN flow.");
+        return;
       }
+
+      setFpStep("choose-admin");
     } catch (err) {
       const status = err?.status ?? 0;
       const data = err?.data ?? {};
@@ -1033,6 +1358,7 @@ export default function LoginPage() {
                   setEmployeeIdHint("");
                   setLoginMode("password");
                   setSecret("");
+                  setPinValue("");
                 }
               }}
               autoComplete="username"
@@ -1044,15 +1370,14 @@ export default function LoginPage() {
               disabled={submitting || prechecking}
             />
 
-            {loginStep === "secret" && (
+            {loginStep === "secret" && loginMode === "password" && (
               <TextField
                 name="secret"
                 label={secretLabel}
                 type={showSecret ? "text" : "password"}
                 value={secret}
                 onChange={(e) => {
-                  const v = e.target.value;
-                  setSecret(loginMode === "pin" ? v.replace(/[^\d]/g, "").slice(0, 8) : v);
+                  setSecret(e.target.value);
                   setSecretError("");
                 }}
                 autoComplete={secretAutoComplete}
@@ -1062,7 +1387,6 @@ export default function LoginPage() {
                 helperText={secretError || " "}
                 slotProps={{
                   input: {
-                    inputMode: loginMode === "pin" ? "numeric" : "text",
                     endAdornment: (
                       <InputAdornment position="end">
                         <IconButton
@@ -1077,6 +1401,93 @@ export default function LoginPage() {
                   },
                 }}
               />
+            )}
+
+            {loginStep === "secret" && loginMode === "pin" && (
+              <Box>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                    {pinResetMode
+                      ? pinResetStage === "new"
+                        ? "Set New PIN"
+                        : "Confirm New PIN"
+                      : "Enter PIN"}
+                  </Typography>
+                </Stack>
+
+                {!!pinResetError && (
+                  <Typography color="error" variant="body2" sx={{ textAlign: "center", mb: 1 }}>
+                    {pinResetError}
+                  </Typography>
+                )}
+
+                {/* Dots */}
+                <Box sx={{ display: "flex", justifyContent: "center", gap: 1.25, mb: 2 }}>
+                  {pinSlots.map((k, i) => (
+                    <Box
+                      key={k}
+                      sx={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: "50%",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 18,
+                        lineHeight: 1,
+                        color: "text.primary",
+                      }}
+                    >
+                      {i < pinValue.length ? "•" : "○"}
+                    </Box>
+                  ))}
+                </Box>
+
+                {!!secretError && (
+                  <Typography color="error" variant="body2" sx={{ textAlign: "center", mb: 1 }}>
+                    {secretError}
+                  </Typography>
+                )}
+
+                {/* Keypad */}
+                <Box sx={{ maxWidth: 320, mx: "auto" }}>
+                  {[
+                    [1, 2, 3],
+                    [4, 5, 6],
+                    [7, 8, 9],
+                    ["Back", 0, "<"],
+                  ].map((row, ri) => (
+                    <Box key={`row-${ri}`} sx={{ display: "flex", gap: 1, mb: 1 }}>
+                      {row.map((key) => (
+                        <Button
+                          key={`k-${key}`}
+                          variant="contained"
+                          fullWidth
+                          disabled={
+                            ticketSubmitting ||
+                            (key !== "Back" && isLockedForCurrentId) ||
+                            submitting ||
+                            prechecking
+                          }
+                          onClick={() => {
+                            if (key === "Back") handlePinBack();
+                            else if (key === "<") handlePinDelete();
+                            else handlePinDigit(key);
+                          }}
+                          sx={{
+                            py: 1.4,
+                            fontSize: 16,
+                            textTransform: "none",
+                            borderRadius: 2,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {key}
+                        </Button>
+                      ))}
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
             )}
 
             <FormControlLabel
@@ -1107,30 +1518,60 @@ export default function LoginPage() {
                 : "Next"}
               </Button>
             ) : (
-              <Stack direction="row" spacing={1.5}>
-                <Button
-                  type="button"
-                  variant="outlined"
-                  onClick={onBackToId}
-                  disabled={submitting || prechecking}
-                  sx={{ minWidth: 110 }}
-                >
-                  Back
-                </Button>
-                <Button
-                  type="submit"
-                  variant="contained"
-                  size="large"
-                  fullWidth
-                  disabled={submitting || isLockedForCurrentId}
-                >
-                {isLockedForCurrentId
-                  ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
-                  : submitting
-                  ? "Signing in..."
-                  : "Sign In"}
-                </Button>
-              </Stack>
+              (() => {
+                const isCashier = /cashier/i.test(String(roleHint || ""));
+                const hideBackBesideSignIn = isCashier && loginMode === "pin"; // cashier pin keypad already has "Back"
+
+                if (hideBackBesideSignIn) {
+                  return (
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="large"
+                      fullWidth
+                      disabled={submitting || isLockedForCurrentId}
+                    >
+                      {isLockedForCurrentId
+                        ? lockPermanent
+                          ? "Locked"
+                          : `Locked: ${fmtMMSS(lockSecondsLeft)}`
+                        : submitting
+                        ? "Signing in..."
+                        : "Sign In"}
+                    </Button>
+                  );
+                }
+
+                return (
+                  <Stack direction="row" spacing={1.5}>
+                    <Button
+                      type="button"
+                      variant="outlined"
+                      onClick={onBackToId}
+                      disabled={submitting || prechecking}
+                      sx={{ minWidth: 110 }}
+                    >
+                      Back
+                    </Button>
+
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="large"
+                      fullWidth
+                      disabled={submitting || isLockedForCurrentId}
+                    >
+                      {isLockedForCurrentId
+                        ? lockPermanent
+                          ? "Locked"
+                          : `Locked: ${fmtMMSS(lockSecondsLeft)}`
+                        : submitting
+                        ? "Signing in..."
+                        : "Sign In"}
+                    </Button>
+                  </Stack>
+                );
+              })()
             )}
 
             {isLockedForCurrentId && (
@@ -1141,14 +1582,80 @@ export default function LoginPage() {
               </Typography>
             )}
 
-            <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
+            {/* Show Forgot Password ONLY after Next (secret step) AND ONLY for Admin */}
+            {loginStep === "secret" && String(roleHint || "") === "Admin" && loginMode === "password" && (
+              <>
+                <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 
-            <Button onClick={onOpenForgot} variant="outlined" size="large" fullWidth disabled={submitting || prechecking}>
-              Forgot Password / PIN
-            </Button>
+                <Button
+                  onClick={onOpenForgot}
+                  variant="outlined"
+                  size="large"
+                  fullWidth
+                  disabled={submitting || prechecking}
+                >
+                  Forgot Password
+                </Button>
+              </>
+            )}
+
+            {/* Show Reset Ticket ONLY after Next (secret step) AND ONLY for Cashier PIN */}
+            {loginStep === "secret" &&
+              /cashier/i.test(String(roleHint || "")) &&
+              loginMode === "pin" &&
+              !pinResetMode && ( // don’t show while already resetting
+                <>
+                  <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
+
+                  <Button
+                    onClick={openCashierTicket}
+                    variant="outlined"
+                    size="large"
+                    fullWidth
+                    disabled={submitting || prechecking || ticketSubmitting || isLockedForCurrentId}
+                  >
+                    Use Reset Ticket
+                  </Button>
+                </>
+              )}
           </Stack>
         </Box>
       </Paper>
+      
+      {/* ---- Cashier Reset Ticket Dialog (PIN reset entry) ---- */}
+      <Dialog open={cashierTicketOpen} onClose={closeCashierTicket} maxWidth="xs" fullWidth>
+        <Box component="form" onSubmit={verifyCashierTicket} noValidate>
+          <Box sx={{ p: 2.25 }}>
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              Enter Reset Ticket
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              Enter the 8-digit ticket issued by Admin to reset your PIN.
+            </Typography>
+
+            <TextField
+              sx={{ mt: 2 }}
+              label="Reset Ticket Code (8 digits)"
+              value={cashierTicketCode}
+              onChange={(e) => setCashierTicketCode(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
+              fullWidth
+              required
+              placeholder="12345678"
+              slotProps={{ input: { inputMode: "numeric" } }}
+            />
+
+            <Stack direction="row" spacing={1.5} sx={{ mt: 2 }}>
+              <Button onClick={closeCashierTicket} variant="text" disabled={cashierTicketSubmitting}>
+                Cancel
+              </Button>
+              <Box sx={{ flex: 1 }} />
+              <Button type="submit" variant="contained" disabled={cashierTicketSubmitting}>
+                {cashierTicketSubmitting ? <CircularProgress size={22} /> : "Verify"}
+              </Button>
+            </Stack>
+          </Box>
+        </Box>
+      </Dialog>
 
       {/* ---------- Forgot Password/PIN Dialog ---------- */}
       <Dialog fullScreen open={forgotOpen} onClose={onCloseForgot} TransitionComponent={Transition}>
@@ -1159,7 +1666,7 @@ export default function LoginPage() {
                 edge="start"
                 onClick={() => {
                   // basic back behavior:
-                  if (fpStep === "choose-admin" || fpStep === "ticket") return goIdentify();
+                  if (fpStep === "choose-admin") return goIdentify();
                   if (fpStep === "email" || fpStep === "sq-identify") return goChooseAdmin();
                   if (fpStep === "otp") return goEmail();
                   if (fpStep === "sq-answers") return goSqIdentify();
@@ -1173,7 +1680,7 @@ export default function LoginPage() {
             ) : null}
 
             <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
-              Forgot Password / PIN
+              Forgot Password
             </Typography>
             <IconButton edge="end" onClick={onCloseForgot} aria-label="close">
               <CloseIcon />
@@ -1242,103 +1749,6 @@ export default function LoginPage() {
                 </Button>
               </Stack>
             </Stack>
-          )}
-
-          {/* Cashier ticket */}
-          {fpStep === "ticket" && (
-            <Box component="form" onSubmit={onTicketSubmit} noValidate sx={{ mt: 1 }}>
-              <Stack spacing={2.25}>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  Reset PIN using a Ticket
-                </Typography>
-
-                <Typography variant="body2" color="text.secondary">
-                  Account detected as <strong>{fpRole || "Cashier"}</strong>. PIN reset uses a one-time Reset Ticket issued by Admin.
-                </Typography>
-
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    p: 2,
-                    borderRadius: 2,
-                    background: (t) => alpha(t.palette.info.main, 0.05),
-                    borderColor: (t) => alpha(t.palette.info.main, 0.25),
-                  }}
-                >
-                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                    Ticket status
-                  </Typography>
-
-                  {ticketActive ? (
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      ✅ Active ticket found.
-                      {ticketExpiresAt ? ` Expires at: ${formatLocalPH(ticketExpiresAt)}` : ""}
-                    </Typography>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      ❌ No active ticket found (or it expired). Please ask an Admin to issue a new Reset Ticket.
-                    </Typography>
-                  )}
-                </Paper>
-
-                <TextField
-                  label="Reset Ticket Code (8 digits)"
-                  value={ticketCode}
-                  onChange={(e) => setTicketCode(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
-                  fullWidth
-                  required
-                  placeholder="12345678"
-                  slotProps={{
-                    input: { inputMode: "numeric" },
-                  }}
-                />
-
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  <TextField
-                    label="New PIN (4–8 digits)"
-                    value={newPin}
-                    onChange={(e) => setNewPin(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
-                    fullWidth
-                    required
-                    type="password"
-                    slotProps={{ input: { inputMode: "numeric" } }}
-                  />
-                  <TextField
-                    label="Confirm PIN"
-                    value={confirmPin}
-                    onChange={(e) => setConfirmPin(e.target.value.replace(/[^\d]/g, "").slice(0, 8))}
-                    fullWidth
-                    required
-                    type="password"
-                    error={!!confirmPin && String(confirmPin) !== String(newPin)}
-                    helperText={
-                      !!confirmPin && String(confirmPin) !== String(newPin) ? "PINs do not match." : " "
-                    }
-                    slotProps={{ input: { inputMode: "numeric" } }}
-                  />
-                </Stack>
-
-                <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-                  <Button onClick={goIdentify} variant="text" disabled={ticketSubmitting}>
-                    Back
-                  </Button>
-                  <Box sx={{ flex: 1 }} />
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    disabled={ticketSubmitting || !ticketActive || !pinOk}
-                  >
-                    {ticketSubmitting ? <CircularProgress size={22} /> : "Set PIN"}
-                  </Button>
-                </Stack>
-
-                {!ticketActive && (
-                  <Typography variant="caption" color="text.secondary">
-                    Tip: Admin can issue a Reset Ticket from Backoffice User Management (Cashier account).
-                  </Typography>
-                )}
-              </Stack>
-            </Box>
           )}
 
           {/* Email verify (OTP path) */}
