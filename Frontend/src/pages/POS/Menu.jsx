@@ -1,5 +1,5 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/POS/Menu.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Box,
   Typography,
@@ -27,6 +27,10 @@ import { alpha } from "@mui/material/styles";
 import { useCart } from "@/context/CartContext";
 import { API_BASE } from "@/utils/apiBase";
 import styles from "./CSS/Menu.module.css";
+
+import { useShift } from "@/context/ShiftContext";
+import FloatingShiftModal from "@/components/POS/FloatingShiftModal";
+import { openSafely } from "@/components/POS/FloatingShiftModal";
 
 // 🔹 Helper for Backoffice POS menu API
 const posMenuApi = (subPath = "") => {
@@ -60,6 +64,7 @@ const cssVars = (t) => ({
   "--on-primary": t.palette.getContrastText(t.palette.primary.main),
   "--divider": t.palette.divider,
   "--surface": alpha(t.palette.primary.main, 0.08),
+  "--surface-alt": alpha(t.palette.primary.main, 0.12),
   "--overlay": alpha(t.palette.text.primary, 0.55),
 });
 
@@ -75,6 +80,17 @@ export default function Menu() {
   const viewMode = cart.viewMode || "text";
   const setViewMode = cart.setViewMode || (() => {});
   const addItem = cart.addItem || (() => {});
+
+  const { shiftId, refreshLatestShift, openShift } = useShift();
+  const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
+  const nextActionRef = useRef(null);
+  const terminalId = "TERMINAL-1"; // keep consistent with Cart.jsx
+
+  const ensureShiftThen = (fn) => {
+    if (shiftId) return fn();
+    nextActionRef.current = fn;
+    openSafely(() => setShiftDialogOpen(true));
+  };
 
   const [availabilityFilter, setAvailabilityFilter] = useState("available");
 
@@ -225,16 +241,20 @@ export default function Menu() {
 
   const handleAddToCart = () => {
     if (!selectedItem) return;
-    for (let k = 0; k < dialogQty; k++) {
-      addItem({
-        id: selectedItem.id,
-        name: selectedItem.name,
-        price: selectedItem.price,
-        image: selectedItem.image || null,
-      });
-    }
-    closeDialog();
+
+    ensureShiftThen(() => {
+      for (let k = 0; k < dialogQty; k++) {
+        addItem({
+          id: selectedItem.id,
+          name: selectedItem.name,
+          price: selectedItem.price,
+          image: selectedItem.image || null,
+        });
+      }
+      closeDialog();
+    });
   };
+
 
   const [errorDialog, setErrorDialog] = useState({
     open: false,
@@ -414,103 +434,99 @@ export default function Menu() {
             </Typography>
           </Box>
         ) : (
-          <Box className={styles.grid}>
+          <Box className={styles.list}>
             {filteredMenu.map((item) =>
               viewMode === "image" ? (
-                <Card
-                  key={item.id}
-                  onClick={() => openDialog(item)}
-                  className={`${styles.card} ${
-                    !item.available ? styles.cardUnavailable : ""
-                  }`}
-                >
-                  <Box className={styles.cardImageWrapper}>
-                    {item.image ? (
-                      <CardMedia
-                        component="img"
-                        image={item.image}
-                        alt={item.name}
-                        className={styles.cardImage}
-                        loading="lazy"
-                      />
-                    ) : (
-                      <Box
-                        className={styles.cardImageFallback}
-                        sx={{
-                          width: "100%",
-                          height: "100%",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          opacity: 0.6,
-                        }}
-                      >
-                        <ImageIcon />
-                      </Box>
-                    )}
-
-                    {!item.available && (
-                      <Box className={styles.overlayCenter}>
-                        <Typography
-                          variant="h6"
-                          className={styles.overlayText}
-                        >
-                          Unavailable
-                        </Typography>
-                      </Box>
-                    )}
-                  </Box>
-                  <CardContent className={styles.cardContent}>
-                    <Typography
-                      variant="subtitle2"
-                      className={styles.cardTitle}
-                      title={item.name}
-                    >
-                      {item.name}
-                    </Typography>
-                    <Typography variant="body2">
-                      ₱{item.price.toFixed(2)}
-                    </Typography>
-                  </CardContent>
-                </Card>
-              ) : (
                 <Box
                   key={item.id}
                   onClick={() => openDialog(item)}
-                  className={`${styles.textCard} ${
-                    !item.available ? styles.textCardUnavailable : ""
+                  className={`${styles.listRow} ${styles.imgRow} ${
+                    !item.available ? styles.listRowUnavailable : ""
                   }`}
                 >
-                  {!item.available && (
-                    <Box className={styles.overlayCenter}>
-                      <Typography
-                        variant="body1"
-                        className={styles.overlayText}
-                      >
-                        Unavailable
-                      </Typography>
-                    </Box>
-                  )}
-                  <Box>
-                    <Typography
-                      variant="subtitle2"
-                      className={styles.textCardTitle}
-                      title={item.name}
-                    >
+                  {/* LEFT thumbnail */}
+                  <Box className={styles.imgThumb}>
+                    {item.image ? (
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        className={styles.imgThumbImg}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <ImageIcon sx={{ opacity: 0.6 }} />
+                    )}
+                  </Box>
+
+                  {/* MIDDLE details */}
+                  <Box className={styles.imgMiddle}>
+                    <Typography className={styles.imgTitle} title={item.name}>
                       {item.name}
                     </Typography>
-                    <Typography
-                      variant="caption"
-                      className={styles.textCardCategory}
-                    >
+                    <Typography className={styles.imgSub} title={item.category}>
                       {item.category}
                     </Typography>
                   </Box>
-                  <Box className={styles.textCardFooter}>
-                    <Typography
-                      variant="body2"
-                      className={styles.textCardPrice}
-                    >
+
+                  {/* RIGHT chips + price */}
+                  <Box className={styles.listRight}>
+                    {!item.available && (
+                      <Chip
+                        label="Unavailable"
+                        size="small"
+                        variant="outlined"
+                        className={styles.outChip}
+                      />
+                    )}
+
+                    {item.stockState === "low" && (
+                      <Chip label="Low" size="small" variant="outlined" />
+                    )}
+                    {item.stockState === "out" && (
+                      <Chip label="Out" size="small" color="error" variant="outlined" />
+                    )}
+
+                    <Typography className={styles.listPrice}>
+                      ₱{item.price.toFixed(2)}
+                    </Typography>
+                  </Box>
+                </Box>
+              ) : (
+                /* ===== TEXT LIST ROWS (NEW) ===== */
+                <Box
+                  key={item.id}
+                  onClick={() => openDialog(item)}
+                  className={`${styles.listRow} ${
+                    !item.available ? styles.listRowUnavailable : ""
+                  }`}
+                >
+                  <Box className={styles.listLeft}>
+                    <Typography className={styles.listTitle} title={item.name}>
+                      {item.name}
+                    </Typography>
+                    <Typography className={styles.listSub} title={item.category}>
+                      {item.category}
+                    </Typography>
+                  </Box>
+
+                  <Box className={styles.listRight}>
+                    {!item.available && (
+                      <Chip
+                        label="Unavailable"
+                        size="small"
+                        variant="outlined"
+                        className={styles.outChip}
+                      />
+                    )}
+
+                    {item.stockState === "low" && (
+                      <Chip label="Low" size="small" variant="outlined" />
+                    )}
+                    {item.stockState === "out" && (
+                      <Chip label="Out" size="small" color="error" variant="outlined" />
+                    )}
+
+                    <Typography className={styles.listPrice}>
                       ₱{item.price.toFixed(2)}
                     </Typography>
                   </Box>
@@ -644,6 +660,25 @@ export default function Menu() {
           </DialogActions>
         </Dialog>
       </Box>
+
+              {shiftDialogOpen && (
+        <FloatingShiftModal
+          open={shiftDialogOpen}
+          terminalId={terminalId}
+          refreshLatestShift={refreshLatestShift}
+          openShift={openShift}
+          onClose={() => {
+            setShiftDialogOpen(false);
+            nextActionRef.current = null;
+          }}
+          onShiftOpened={() => {
+            setShiftDialogOpen(false);
+            if (typeof nextActionRef.current === "function") nextActionRef.current();
+            nextActionRef.current = null;
+          }}
+        />
+      )}
+
     </Box>
   );
 }

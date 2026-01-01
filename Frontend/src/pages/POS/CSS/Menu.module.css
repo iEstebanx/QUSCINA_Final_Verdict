@@ -391,3 +391,133 @@
 .discountChip {
   cursor: pointer;
 }
+
+/* ====== LIST (Text view) ====== */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px; /* small breathing room for scrollbar */
+}
+
+.listRow {
+  position: relative;
+  background-color: var(--surface);
+  border: 1.5px solid var(--divider);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transition: transform 0.12s ease, background 0.12s ease, color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.listRow:hover {
+  transform: translateY(-1px);
+  border-color: var(--primary);
+  background-color: var(--surface-alt);
+}
+
+.listRowUnavailable {
+  background-color: var(--surface-alt);
+  opacity: 0.75;
+}
+
+.listLeft {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.listTitle {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listSub {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.listPrice {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+/* ====== IMAGE LIST ROW (Image view) ====== */
+.imgRow {
+  composes: listRow;
+  padding: 8px 10px;
+}
+
+.imgThumb {
+  width: 72px;   /* was 64px */
+  height: 72px;  /* was 64px */
+  border-radius: 12px; /* optional: slightly rounder to match bigger thumb */
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--divider);
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+
+.imgThumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.imgMiddle {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.imgTitle {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.imgSub {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

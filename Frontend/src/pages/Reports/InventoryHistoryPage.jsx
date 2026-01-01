@@ -24,6 +24,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tooltip,
 } from "@mui/material";
 
 import dayjs from "dayjs";
@@ -33,6 +34,7 @@ import quarterOfYear from "dayjs/plugin/quarterOfYear";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { DateField } from "@mui/x-date-pickers/DateField";
 
 import SearchIcon from "@mui/icons-material/Search";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
@@ -103,6 +105,45 @@ const pdfHeadStyles = {
   fontStyle: "bold",
 };
 
+const preventDateFieldWheelAndArrows = {
+  onWheel: (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  },
+  onKeyDown: (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  },
+};
+
+const hardNoTypeDateField = {
+  onBeforeInput: (e) => e.preventDefault(),
+  onPaste: (e) => e.preventDefault(),
+  onKeyDown: (e) => {
+    const allowed = new Set([
+      "Tab",
+      "Shift",
+      "Control",
+      "Alt",
+      "Meta",
+      "Escape",
+      "Enter",
+      "ArrowLeft",
+      "ArrowRight",
+    ]);
+
+    if (allowed.has(e.key)) return;
+
+    // block character typing + edits
+    if (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  },
+};
+
 export default function InventoryHistoryPage() {
   const { user } = useAuth();
 
@@ -111,6 +152,8 @@ export default function InventoryHistoryPage() {
 
   const [search, setSearch] = useState("");
   const [pageState, setPageState] = useState({ page: 0, rowsPerPage: 10 });
+
+  const [reloadTick, setReloadTick] = useState(0);
 
   // ✅ Same setup as ReportsPage: Range preset + Custom From/To (ISO)
   const [range, setRange] = useState("days"); // days | weeks | monthly | quarterly | yearly | custom
@@ -130,6 +173,15 @@ export default function InventoryHistoryPage() {
     if (fullName) return `Prepared by: ${fullName}`;
     return "Prepared by: N/A";
   }, [user]);
+
+  const refreshHistory = () => {
+    setRange("days");
+    setCustomFrom("");
+    setCustomTo("");
+    setSearch("");
+    setPageState({ page: 0, rowsPerPage: 10 });
+    setReloadTick((x) => x + 1);
+  };
 
   /* LOAD INGREDIENTS */
   useEffect(() => {
@@ -177,7 +229,7 @@ export default function InventoryHistoryPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reloadTick]);
 
   /* MERGE + COMPUTE */
   const computedRows = useMemo(() => {
@@ -342,6 +394,13 @@ export default function InventoryHistoryPage() {
   useEffect(() => {
     setPageState((p) => ({ ...p, page: 0 }));
   }, [search, range, customFrom, customTo]);
+
+  const customIncomplete = range === "custom" && (!customFrom || !customTo);
+
+  const canExportPdf = useMemo(() => {
+    if (customIncomplete) return false;
+    return filtered.length > 0;
+  }, [customIncomplete, filtered.length]);
 
   /* PAGINATION */
   const paged = useMemo(() => {
@@ -510,12 +569,13 @@ export default function InventoryHistoryPage() {
               format="MM/DD/YYYY"
               value={customFrom ? dayjs(customFrom) : null}
               onChange={(value) => {
-                if (!value) {
+                if (value === null) {
                   setCustomFrom("");
                   return;
                 }
+                if (!dayjs(value).isValid()) return;
 
-                let s = value.format("YYYY-MM-DD");
+                let s = dayjs(value).format("YYYY-MM-DD");
                 const { min, max } = dateBounds;
                 if (min && s < min) s = min;
                 if (max && s > max) s = max;
@@ -526,7 +586,18 @@ export default function InventoryHistoryPage() {
               minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
               maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
               shouldDisableDate={(d) => shouldDisableDate(d)}
-              slotProps={{ textField: { size: "small" } }}
+              slotProps={{
+                field: { readOnly: true }, // ✅ stops section typing mode
+                textField: {
+                  size: "small",
+                  inputProps: {
+                    readOnly: true,
+                    inputMode: "none", // ✅ no mobile keyboard
+                  },
+                  ...hardNoTypeDateField,
+                  ...preventDateFieldWheelAndArrows,
+                },
+              }}
             />
 
             <DatePicker
@@ -535,12 +606,13 @@ export default function InventoryHistoryPage() {
               format="MM/DD/YYYY"
               value={customTo ? dayjs(customTo) : null}
               onChange={(value) => {
-                if (!value) {
+                if (value === null) {
                   setCustomTo("");
                   return;
                 }
+                if (!dayjs(value).isValid()) return;
 
-                let s = value.format("YYYY-MM-DD");
+                let s = dayjs(value).format("YYYY-MM-DD");
                 const { min, max } = dateBounds;
                 if (min && s < min) s = min;
                 if (max && s > max) s = max;
@@ -551,17 +623,23 @@ export default function InventoryHistoryPage() {
               minDate={dateBounds.min ? dayjs(dateBounds.min) : undefined}
               maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
               shouldDisableDate={(d) => shouldDisableDate(d)}
-              slotProps={{ textField: { size: "small" } }}
+              slotProps={{
+                field: { readOnly: true }, // ✅ stops section typing mode
+                textField: {
+                  size: "small",
+                  inputProps: {
+                    readOnly: true,
+                    inputMode: "none",
+                  },
+                  ...hardNoTypeDateField,
+                  ...preventDateFieldWheelAndArrows,
+                },
+              }}
             />
 
-            <Chip
-              size="small"
-              variant="outlined"
-              label={`Range: ${currentRangeLabel}`}
-              sx={{ ml: { xs: 0, sm: 0 } }}
-            />
-
-            <Box sx={{ flexGrow: 1 }} />
+            <Button variant="outlined" onClick={refreshHistory}>
+              Refresh
+            </Button>
 
             <TextField
               size="small"
@@ -578,14 +656,28 @@ export default function InventoryHistoryPage() {
               }}
             />
 
-            <Button
-              variant="contained"
-              color="error"
-              startIcon={<PictureAsPdfIcon />}
-              onClick={buildInventoryPdf}
+           <Tooltip
+              title={
+                range === "custom" && (!customFrom || !customTo)
+                  ? "Select both From and To dates first."
+                  : filtered.length === 0
+                    ? "No inventory activity for the selected range/search."
+                    : ""
+              }
+              disableHoverListener={canExportPdf}
             >
-              PDF
-            </Button>
+              <span>
+                <Button
+                  variant="contained"
+                  color="error"
+                  startIcon={<PictureAsPdfIcon />}
+                  onClick={buildInventoryPdf}
+                  disabled={!canExportPdf}
+                >
+                  PDF
+                </Button>
+              </span>
+            </Tooltip>
           </Stack>
         </Paper>
 

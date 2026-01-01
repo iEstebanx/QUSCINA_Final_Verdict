@@ -83,6 +83,54 @@ const DEFAULT_EXPORT = {
   shiftHistory: true,
 };
 
+const DEFAULT_RANGE = "days"; // Day
+
+const preventDateFieldWheelAndArrows = {
+  onWheel: (e) => {
+    // Prevent wheel from changing focused date section
+    e.preventDefault();
+    e.stopPropagation();
+  },
+  onKeyDown: (e) => {
+    // Prevent ↑/↓ from incrementing day/month/year sections
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  },
+};
+
+// put near your other helpers
+const hardNoTypeDateField = {
+  // blocks text input + paste, but doesn't block clicking to open picker
+  onBeforeInput: (e) => e.preventDefault(),
+  onPaste: (e) => e.preventDefault(),
+  onKeyDown: (e) => {
+    // allow navigation keys so DatePicker can still behave normally
+    const allowed = new Set([
+      "Tab",
+      "Shift",
+      "Control",
+      "Alt",
+      "Meta",
+      "Escape",
+      "Enter",
+      "ArrowLeft",
+      "ArrowRight",
+      // NOTE: ArrowUp/ArrowDown already blocked by preventDateFieldWheelAndArrows
+    ]);
+
+    if (allowed.has(e.key)) return;
+
+    // block ANY character typing + edits
+    if (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  },
+};
+
+
 /* ------------------------- Helpers for money formatting ------------------------- */
 const formatNumberMoney = (n) =>
   Number(n || 0).toLocaleString("en-PH", {
@@ -130,15 +178,25 @@ export default function ReportsPage() {
   const [reloadTick, setReloadTick] = useState(0);
 
   const refreshReports = () => {
-    // For custom, require both dates
-    if (range === "custom" && (!customFrom || !customTo)) {
-      alert("Please select both From and To dates first.");
-      return;
-    }
+    // ✅ Reset filters to default
+    setRange(DEFAULT_RANGE);
+    setCustomFrom("");
+    setCustomTo("");
 
+    // optional: reset other UI states too
+    setSearch("");
+    setSelectedOrder(null);
+    setBestCatOpen(false);
+    setBestCatSelected(null);
+    setBestCatTopItems([]);
+    setBestCatLoading(false);
+
+    // reset pagination
     setPage1(0);
     setPage2(0);
-    setReloadTick((x) => x + 1); // forces reload even if filters didn't change
+
+    // force refetch
+    setReloadTick((x) => x + 1);
   };
 
   const runExport = async () => {
@@ -315,9 +373,12 @@ const preparedBy = useMemo(() => {
   const [bestCatTopItems, setBestCatTopItems] = useState([]);
 
   const bestSellerQS = useMemo(() => {
-    return range === "custom" && customFrom && customTo
-      ? `range=custom&from=${customFrom}&to=${customTo}`
-      : `range=${range}`;
+    const base =
+      range === "custom" && customFrom && customTo
+        ? `range=custom&from=${customFrom}&to=${customTo}`
+        : `range=${range}`;
+
+    return `${base}&_=${reloadTick}`; // ✅ cache-buster
   }, [range, customFrom, customTo, reloadTick]);
 
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
@@ -346,7 +407,7 @@ const preparedBy = useMemo(() => {
       default:
         return "All";
     }
-  }, [range, customFrom, customTo]);
+  }, [range, customFrom, customTo, reloadTick]);
 
   const activeDaySet = useMemo(
     () => new Set(activeDays),
@@ -359,10 +420,13 @@ const preparedBy = useMemo(() => {
 
     async function load() {
       try {
-        const qs =
+        const baseQs =
           range === "custom" && customFrom && customTo
             ? `range=custom&from=${customFrom}&to=${customTo}`
             : `range=${range}`;
+
+        // cache-buster so Refresh always re-fetches
+        const qs = `${baseQs}&_=${reloadTick}`;
 
         const [c1, c2, p, b, o, sp] = await Promise.all([
           fetch(`/api/reports/items-top5?${qs}`).then((r) => r.json()),
@@ -397,7 +461,7 @@ const preparedBy = useMemo(() => {
     return () => {
       alive = false;
     };
-  }, [range, customFrom, customTo]);
+  }, [range, customFrom, customTo, reloadTick]);
 
   const filteredPayments = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -1266,16 +1330,16 @@ const preparedBy = useMemo(() => {
               <DatePicker
                 label="From"
                 views={["year", "month", "day"]}
-                format="MM/DD/YYYY"           // 👈 DISPLAY FORMAT (MUI v6+)
+                format="MM/DD/YYYY"
                 value={customFrom ? dayjs(customFrom) : null}
                 onChange={(value) => {
-                  if (!value) {
+                  if (value === null) {
                     setCustomFrom("");
                     return;
                   }
+                  if (!dayjs(value).isValid()) return;
 
-                  // INTERNAL VALUE stays ISO
-                  let s = value.format("YYYY-MM-DD");
+                  let s = dayjs(value).format("YYYY-MM-DD");
                   const { min, max } = dateBounds;
                   if (min && s < min) s = min;
                   if (max && s > max) s = max;
@@ -1289,11 +1353,19 @@ const preparedBy = useMemo(() => {
                 maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
                 shouldDisableDate={(day) => {
                   if (!activeDaySet.size) return false;
-                  const key = day.format("YYYY-MM-DD");
-                  return !activeDaySet.has(key);
+                  return !activeDaySet.has(day.format("YYYY-MM-DD"));
                 }}
                 slotProps={{
-                  textField: { size: "small" },
+                  field: { readOnly: true }, // ✅ stop section-typing mode
+                  textField: {
+                    size: "small",
+                    inputProps: {
+                      readOnly: true,
+                      inputMode: "none", // ✅ mobile keyboards won’t pop
+                    },
+                    ...hardNoTypeDateField,
+                    ...preventDateFieldWheelAndArrows,
+                  },
                 }}
               />
 
@@ -1303,13 +1375,13 @@ const preparedBy = useMemo(() => {
                 format="MM/DD/YYYY"
                 value={customTo ? dayjs(customTo) : null}
                 onChange={(value) => {
-                  if (!value) {
+                  if (value === null) {
                     setCustomTo("");
                     return;
                   }
+                  if (!dayjs(value).isValid()) return;
 
-                  // INTERNAL stays ISO
-                  let s = value.format("YYYY-MM-DD");
+                  let s = dayjs(value).format("YYYY-MM-DD");
                   const { min, max } = dateBounds;
                   if (min && s < min) s = min;
                   if (max && s > max) s = max;
@@ -1327,7 +1399,16 @@ const preparedBy = useMemo(() => {
                   return !activeDaySet.has(key);
                 }}
                 slotProps={{
-                  textField: { size: "small" },
+                  field: { readOnly: true }, // ✅ stop section-typing mode
+                  textField: {
+                    size: "small",
+                    inputProps: {
+                      readOnly: true,
+                      inputMode: "none",
+                    },
+                    ...hardNoTypeDateField,
+                    ...preventDateFieldWheelAndArrows,
+                  },
                 }}
               />
 
@@ -1335,7 +1416,6 @@ const preparedBy = useMemo(() => {
                 variant="outlined"
                 startIcon={<RefreshIcon />}
                 onClick={refreshReports}
-                disabled={range === "custom" && (!customFrom || !customTo)}
                 sx={{ whiteSpace: "nowrap" }}
               >
                 Refresh

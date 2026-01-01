@@ -1083,7 +1083,9 @@ export default function ItemlistPage() {
               width: "100%",
               borderRadius: 1,
               maxHeight: { xs: 420, md: 520 },
-              overflowX: "auto"
+
+            overflowX: "auto",
+            overflowY: "auto",
             }}
           >
             <Table

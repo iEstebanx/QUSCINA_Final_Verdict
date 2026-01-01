@@ -1269,9 +1269,29 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       return res.json({ ok: true, orders });
     } catch (e) {
       console.error("[Backoffice POS orders/open] failed:", e);
-      return res
-        .status(500)
-        .json({ ok: false, error: e.message || "Failed to load open orders" });
+
+      // ✅ shift is closed / not open -> not a server error
+      if (e?.code === "SHIFT_NOT_OPEN") {
+        return res.status(409).json({
+          ok: false,
+          code: "SHIFT_NOT_OPEN",
+          error: e.message || "Shift is not open",
+        });
+      }
+
+      if (e?.code === "SHIFT_NOT_FOUND") {
+        return res.status(404).json({
+          ok: false,
+          code: "SHIFT_NOT_FOUND",
+          error: e.message || "Shift not found",
+        });
+      }
+
+      return res.status(500).json({
+        ok: false,
+        code: "SERVER_ERROR",
+        error: e.message || "Failed to load open orders",
+      });
     }
   });
 
