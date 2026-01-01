@@ -274,21 +274,42 @@ module.exports = ({ db } = {}) => {
   // Helper: check if an inventory id is used inside item recipes (stockMode=ingredients)
   async function ingredientUsage(ingredientId) {
     const idStr = String(ingredientId || "").trim();
+    const idNum = Number(ingredientId);
+
     if (!idStr) return [];
 
-    // STRICT: only look at $[*].ingredientId values
+    const params = [];
+    let whereJson = "";
+
+    // Match numeric ingredientId (5)
+    if (Number.isFinite(idNum)) {
+      whereJson += `
+        JSON_CONTAINS(
+          JSON_EXTRACT(ingredients, '$[*].ingredientId'),
+          CAST(? AS JSON)
+        )
+      `;
+      params.push(idNum);
+    }
+
+    // Match string ingredientId ("5") — covers older/bad data
+    whereJson += (whereJson ? " OR " : "") + `
+      JSON_CONTAINS(
+        JSON_EXTRACT(ingredients, '$[*].ingredientId'),
+        JSON_QUOTE(?)
+      )
+    `;
+    params.push(idStr);
+
     const rows = await db.query(
       `
       SELECT id, name
       FROM items
       WHERE (stockMode IS NULL OR stockMode = 'ingredients')
-        AND JSON_CONTAINS(
-              JSON_EXTRACT(ingredients, '$[*].ingredientId'),
-              CAST(? AS JSON)
-            )
+        AND (${whereJson})
       LIMIT 5
       `,
-      [idStr]
+      params
     );
 
     return rows || [];
@@ -727,9 +748,10 @@ module.exports = ({ db } = {}) => {
         );
         return res.status(409).json({
           ok: false,
-          error: `Cannot delete ingredient: It still has stock and has ${activityRows.length} linked activity record(s).`,
           reason: "activity-linked",
-          sample: reasons,
+          error: "Cannot delete inventory item because it still has stock.",
+          activityCount: activityRows.length,
+          hasStock: currentStock > 0,
         });
       }
 

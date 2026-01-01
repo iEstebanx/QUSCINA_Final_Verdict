@@ -97,7 +97,6 @@ function renderInvOption(inv) {
 
 function renderRecipeIngOption(inv) {
   const name = inv?.name || "Unnamed";
-  const cat = inv?.category || "—";
   const unit = inv?.unit ? formatUnit(inv.unit) : "—";
   const stock = Number(inv?.currentStock || 0).toLocaleString();
 
@@ -125,7 +124,7 @@ function renderRecipeIngOption(inv) {
         {name}
       </Typography>
 
-      {/* RIGHT — Meta info */}
+      {/* RIGHT — Meta info (NO category) */}
       <Typography
         noWrap
         sx={{
@@ -137,7 +136,7 @@ function renderRecipeIngOption(inv) {
           whiteSpace: "nowrap",
         }}
       >
-        {cat} • {formatKindLabel(inv?.kind)} • {unit} • Stock {stock}
+        {formatKindLabel(inv?.kind)} • {unit} • Stock {stock}
       </Typography>
     </Box>
   );
@@ -1430,7 +1429,8 @@ export default function ItemlistPage() {
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        <TableCell width="70%">Inventory Name</TableCell>
+                        <TableCell width="25%">Inventory Category</TableCell>
+                        <TableCell width="45%">Inventory Name</TableCell>
                         <TableCell width="20%">Qty</TableCell>
                         <TableCell align="right" width={40}></TableCell>
                       </TableRow>
@@ -1448,12 +1448,34 @@ export default function ItemlistPage() {
                       ) : (
                         itemIngredients.map((row) => (
                           <TableRow key={row.id}>
-                            {/* Ingredient selector */}
+                            {/* Category selector (NEW) */}
+                            <TableCell>
+                              <FormControl fullWidth size="small">
+                                <Select
+                                  value={row.category || ""}
+                                  displayEmpty
+                                  onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
+                                  MenuProps={dropdownMenuProps}
+                                >
+                                  <MenuItem value="">
+                                    <em>Select category</em>
+                                  </MenuItem>
+                                  {inventoryCategories.map((c) => (
+                                    <MenuItem key={c} value={c}>
+                                      {c}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </TableCell>
+
+                            {/* Inventory Name selector (FILTERED + DISABLED until category picked) */}
                             <TableCell>
                               <FormControl fullWidth size="small">
                                 <Select
                                   value={row.ingredientId || ""}
                                   displayEmpty
+                                  disabled={!row.category}
                                   onChange={(e) => onSelectInventory(row.id, e.target.value)}
                                   MenuProps={dropdownMenuProps}
                                   sx={{
@@ -1464,17 +1486,20 @@ export default function ItemlistPage() {
                                     },
                                   }}
                                   renderValue={(val) => {
+                                    if (!row.category) return <em>Select category first</em>;
                                     if (!val) return <em>Select ingredient</em>;
                                     const picked = inventory.find((x) => String(x.id) === String(val));
                                     return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
                                   }}
                                 >
                                   <MenuItem value="">
-                                    <em>Select ingredient</em>
+                                    <em>{row.category ? "Select ingredient" : "Select category first"}</em>
                                   </MenuItem>
 
                                   {inventory
                                     .filter((x) => String(x.kind || "").toLowerCase() !== "product")
+                                    .filter((x) => String(x.category || "") === String(row.category || ""))
+                                    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
                                     .map((ing) => (
                                       <MenuItem key={ing.id} value={ing.id}>
                                         {renderRecipeIngOption(ing)}
@@ -1790,6 +1815,7 @@ export default function ItemlistPage() {
                   <Table size="small">
                     <TableHead>
                       <TableRow>
+                        <TableCell sx={{ fontWeight: 700, width: 220 }}>Inventory Category</TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>Inventory Name</TableCell>
                         <TableCell sx={{ fontWeight: 700, width: 160 }}>Qty</TableCell>
                         <TableCell sx={{ width: 48 }} />
@@ -1808,12 +1834,34 @@ export default function ItemlistPage() {
                       ) : (
                         itemIngredients.map((row) => (
                           <TableRow key={row.id} hover>
+                            {/* Category selector (NEW) */}
+                            <TableCell>
+                              <FormControl fullWidth size="small">
+                                <Select
+                                  value={row.category || ""}
+                                  displayEmpty
+                                  onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
+                                  MenuProps={dropdownMenuProps}
+                                >
+                                  <MenuItem value="">
+                                    <em>Select category</em>
+                                  </MenuItem>
+                                  {inventoryCategories.map((c) => (
+                                    <MenuItem key={c} value={c}>
+                                      {c}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </TableCell>
+
                             {/* Inventory Name */}
                             <TableCell>
                               <FormControl fullWidth size="small">
                                 <Select
                                   value={row.ingredientId || ""}
                                   displayEmpty
+                                  disabled={!row.category}
                                   onChange={(e) => onSelectInventory(row.id, e.target.value)}
                                   MenuProps={dropdownMenuProps}
                                   sx={{
@@ -1824,17 +1872,20 @@ export default function ItemlistPage() {
                                     },
                                   }}
                                   renderValue={(val) => {
+                                    if (!row.category) return <em>Select category first</em>;
                                     if (!val) return <em>Select ingredient</em>;
                                     const picked = inventory.find((x) => String(x.id) === String(val));
                                     return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
                                   }}
                                 >
                                   <MenuItem value="">
-                                    <em>Select ingredient</em>
+                                    <em>{row.category ? "Select ingredient" : "Select category first"}</em>
                                   </MenuItem>
 
                                   {inventory
                                     .filter((x) => String(x.kind || "").toLowerCase() !== "product")
+                                    .filter((x) => String(x.category || "") === String(row.category || ""))
+                                    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
                                     .map((ing) => (
                                       <MenuItem key={ing.id} value={ing.id}>
                                         {renderRecipeIngOption(ing)}

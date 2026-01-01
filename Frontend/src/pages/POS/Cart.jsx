@@ -147,6 +147,13 @@ const terminalId = "TERMINAL-1";
 
   const [emptyClearOpen, setEmptyClearOpen] = useState(false);
 
+  const [invErrOpen, setInvErrOpen] = useState(false);
+  const [invErr, setInvErr] = useState({
+    title: "Stock limit reached",
+    message: "",
+    itemName: "",
+  });
+
   const [orderType, setOrderType] = useState(() => {
     try {
       return localStorage.getItem(LS_ORDER_TYPE) || "Dine-in";
@@ -278,7 +285,7 @@ const terminalId = "TERMINAL-1";
   const softAccent = alpha(t.palette.grey[800], 0.06);
   const softAccentStrong = alpha(t.palette.grey[800], 0.12);
 
-  const handleQtyChange = (id, delta) => {
+  const handleQtyChange = async (id, delta) => {
     const item = items.find((i) => i.id === id);
     if (!item) return;
 
@@ -286,13 +293,52 @@ const terminalId = "TERMINAL-1";
     const maxQty = Number(item.maxQty);
     const baseQty = lockedBaseQty[id] || 0;
 
-    // 🔼 Increase → always local
+    // 🔼 Increase → inventory-checked
     if (delta > 0) {
-      if (Number.isFinite(maxQty) && qty >= maxQty) {
-        // optional: show snackbar
-        return;
+      // Build the NEXT cart state (what it would look like after +1)
+      const nextCartItems = items.map((it) => ({
+        id: it.id,
+        qty:
+          it.id === id
+            ? (Number(it.quantity ?? 1) || 1) + 1
+            : Number(it.quantity ?? 1) || 1,
+      }));
+
+      try {
+        const res = await fetch(ordersApi("/check-inventory"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ items: nextCartItems }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || data?.ok === false) {
+          throw data;
+        }
+
+        // ✅ Inventory OK → commit locally
+        incrementItem(id);
+      } catch (e) {
+        // ❌ Inventory blocked
+        if (e?.code === "INSUFFICIENT_INVENTORY") {
+          const itemName = item?.name || "this item";
+
+          setInvErr({
+            title: "Stock limit reached",
+            itemName,
+            message: `We can’t add more of "${itemName}" because the available inventory is not enough.\n\nTry reducing the quantity or update the inventory stocks in Backoffice.`,
+          });
+
+          setInvErrOpen(true);
+          return;
+        }
+
+        console.error("[Cart] inventory check failed", e);
+        window.alert("Failed to check inventory. Please try again.");
       }
-      incrementItem(id);
+
       return;
     }
 
@@ -3416,6 +3462,44 @@ const terminalId = "TERMINAL-1";
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Inventory error dialog */}
+      <Dialog
+        open={invErrOpen}
+        onClose={() => setInvErrOpen(false)}
+        PaperProps={{ sx: { minWidth: 360 } }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
+          {invErr.title}
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={1.25}>
+            {/* Main message */}
+            <Typography
+              sx={{
+                fontSize: 15,
+                fontWeight: 600,
+                lineHeight: 1.5,
+                color: "text.primary",
+              }}
+            >
+              We can’t add more of{" "}
+              <Box component="span" sx={{ fontWeight: 800 }}>
+                “{invErr.itemName}”
+              </Box>{" "}
+              because the available inventory is not enough.
+            </Typography>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button variant="contained" onClick={() => setInvErrOpen(false)}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 }

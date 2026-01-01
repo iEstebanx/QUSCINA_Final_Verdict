@@ -380,6 +380,35 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 }
 
   // ---- cash change helpers (Backoffice POS) ----
+  router.post("/check-inventory", async (req, res) => {
+    try {
+      const { items = [] } = req.body || {};
+
+      if (!Array.isArray(items) || !items.length) {
+        return res.json({ ok: true }); // nothing to check
+      }
+
+      await assertEnoughInventoryForCart(db, items);
+
+      return res.json({ ok: true });
+    } catch (e) {
+      if (e?.code === "INSUFFICIENT_INVENTORY") {
+        return res.status(409).json({
+          ok: false,
+          code: "INSUFFICIENT_INVENTORY",
+          problems: e.problems || [],
+        });
+      }
+
+      console.error("[check-inventory] failed:", e);
+      return res.status(500).json({
+        ok: false,
+        error: e.message || "Inventory check failed",
+      });
+    }
+  });
+
+  
   async function computeExpectedCashForShift(shiftId) {
     // Goal: estimate cash currently in drawer BEFORE this request is applied.
     // Uses:

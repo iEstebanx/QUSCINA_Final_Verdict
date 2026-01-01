@@ -501,7 +501,7 @@ export default function InventoryPage() {
             ingredientName: ingredientToDelete.name,
             recipeCount: reason === "item-linked" ? sample.length : 0,
             directCount: reason === "direct-linked" ? sample.length : 0,
-            activityCount: reason === "activity-linked" ? (Number(data.count) || 0) : 0,
+            activityCount: reason === "activity-linked" ? (Number(data.activityCount) || 0) : 0,
             sampleItems: sample.slice(0, 6),
             message: data?.error || "Cannot delete; inventory record is linked.",
           });
