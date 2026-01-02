@@ -177,6 +177,14 @@ export default function ReportsPage() {
 
   const [reloadTick, setReloadTick] = useState(0);
 
+  const [fromOpen, setFromOpen] = useState(false);
+  const [toOpen, setToOpen] = useState(false);
+
+  const blurOnFocus = (e) => {
+    // kills the section highlight (MM/DD/YYYY) when MUI focuses the field on open/close
+    e.target.blur?.();
+  };
+
   const refreshReports = () => {
     // ✅ Reset filters to default
     setRange(DEFAULT_RANGE);
@@ -1332,6 +1340,9 @@ const preparedBy = useMemo(() => {
                 views={["year", "month", "day"]}
                 format="MM/DD/YYYY"
                 value={customFrom ? dayjs(customFrom) : null}
+                open={fromOpen}
+                onOpen={() => setFromOpen(true)}
+                onClose={() => setFromOpen(false)}
                 onChange={(value) => {
                   if (value === null) {
                     setCustomFrom("");
@@ -1356,12 +1367,18 @@ const preparedBy = useMemo(() => {
                   return !activeDaySet.has(day.format("YYYY-MM-DD"));
                 }}
                 slotProps={{
-                  field: { readOnly: true }, // ✅ stop section-typing mode
+                  field: { readOnly: true },
                   textField: {
                     size: "small",
+                    onMouseDown: (e) => {
+                      e.preventDefault();
+                      setFromOpen(true);
+                    },
+                    onFocus: blurOnFocus,
                     inputProps: {
                       readOnly: true,
-                      inputMode: "none", // ✅ mobile keyboards won’t pop
+                      inputMode: "none",
+                      placeholder: "",
                     },
                     ...hardNoTypeDateField,
                     ...preventDateFieldWheelAndArrows,
@@ -1374,6 +1391,9 @@ const preparedBy = useMemo(() => {
                 views={["year", "month", "day"]}
                 format="MM/DD/YYYY"
                 value={customTo ? dayjs(customTo) : null}
+                open={toOpen}
+                onOpen={() => setToOpen(true)}
+                onClose={() => setToOpen(false)}
                 onChange={(value) => {
                   if (value === null) {
                     setCustomTo("");
@@ -1395,16 +1415,21 @@ const preparedBy = useMemo(() => {
                 maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
                 shouldDisableDate={(day) => {
                   if (!activeDaySet.size) return false;
-                  const key = day.format("YYYY-MM-DD");
-                  return !activeDaySet.has(key);
+                  return !activeDaySet.has(day.format("YYYY-MM-DD"));
                 }}
                 slotProps={{
-                  field: { readOnly: true }, // ✅ stop section-typing mode
+                  field: { readOnly: true },
                   textField: {
                     size: "small",
+                    onMouseDown: (e) => {
+                      e.preventDefault();
+                      setToOpen(true);
+                    },
+                    onFocus: blurOnFocus,
                     inputProps: {
                       readOnly: true,
                       inputMode: "none",
+                      placeholder: "",
                     },
                     ...hardNoTypeDateField,
                     ...preventDateFieldWheelAndArrows,

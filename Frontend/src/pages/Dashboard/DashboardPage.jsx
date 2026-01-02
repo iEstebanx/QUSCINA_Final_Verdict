@@ -40,7 +40,12 @@ import PaymentIcon from "@mui/icons-material/Payment";
 import PeopleIcon from "@mui/icons-material/People";
 import { useNavigate } from "react-router-dom";
 import { subscribeUsers } from "@/services/Users/users";
-import { joinApi } from "@/utils/apiBase"; // ✅ NEW
+import { joinApi } from "@/utils/apiBase";
+
+import dayjs from "dayjs";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 
 const peso = (n) =>
   `₱${Number(n || 0).toLocaleString(undefined, {
@@ -130,6 +135,50 @@ export default function DashboardPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
+  const [fromOpen, setFromOpen] = useState(false);
+  const [toOpen, setToOpen] = useState(false);
+
+  const preventDateFieldWheelAndArrows = {
+    onWheel: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    onKeyDown: (e) => {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+  };
+
+  const hardNoTypeDateField = {
+    onBeforeInput: (e) => e.preventDefault(),
+    onPaste: (e) => e.preventDefault(),
+    onKeyDown: (e) => {
+      const allowed = new Set([
+        "Tab",
+        "Shift",
+        "Control",
+        "Alt",
+        "Meta",
+        "Escape",
+        "Enter",
+        "ArrowLeft",
+        "ArrowRight",
+      ]);
+      if (allowed.has(e.key)) return;
+
+      if (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+  };
+
+  const blurOnFocus = (e) => {
+    e.target.blur?.(); // ✅ kills MM/DD/YYYY highlight
+  };
+
   useEffect(() => {
     // reuse the same live list as UserManagement
     const unsub = subscribeUsers(
@@ -139,7 +188,6 @@ export default function DashboardPage() {
           name: `${e.firstName || ""} ${e.lastName || ""}`.trim(),
           role: e.role,
           status: e.status,
-          username: e.username || "",
           createdAt: e.createdAt,
           lastLoginAt: e.lastLoginAt,
         }));
@@ -369,31 +417,92 @@ export default function DashboardPage() {
               </Select>
             </FormControl>
 
-            <TextField
-              size="small"
-              type="date"
-              label="From"
-              value={customFrom}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (range !== "custom") setRange("custom");
-                setCustomFrom(value);
-              }}
-              InputLabelProps={{ shrink: true }}
-            />
+            <LocalizationProvider dateAdapter={AdapterDayjs}>
+              <DatePicker
+                label="From"
+                views={["year", "month", "day"]}
+                format="MM/DD/YYYY"
+                value={customFrom ? dayjs(customFrom) : null}
+                open={fromOpen}
+                onOpen={() => setFromOpen(true)}
+                onClose={() => {
+                  setFromOpen(false);
+                  requestAnimationFrame(() => document.activeElement?.blur?.());
+                }}
+                onChange={(value) => {
+                  if (value === null) {
+                    setCustomFrom("");
+                    return;
+                  }
+                  if (!dayjs(value).isValid()) return;
 
-            <TextField
-              size="small"
-              type="date"
-              label="To"
-              value={customTo}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (range !== "custom") setRange("custom");
-                setCustomTo(value);
-              }}
-              InputLabelProps={{ shrink: true }}
-            />
+                  const s = dayjs(value).format("YYYY-MM-DD");
+                  if (range !== "custom") setRange("custom");
+                  setCustomFrom(s);
+                }}
+                slotProps={{
+                  field: { readOnly: true },
+                  textField: {
+                    size: "small",
+                    onMouseDown: (e) => {
+                      e.preventDefault();
+                      setFromOpen(true);
+                    },
+                    onFocus: blurOnFocus,
+                    inputProps: {
+                      readOnly: true,
+                      inputMode: "none",
+                      placeholder: "",
+                    },
+                    ...hardNoTypeDateField,
+                    ...preventDateFieldWheelAndArrows,
+                  },
+                }}
+              />
+
+              <DatePicker
+                label="To"
+                views={["year", "month", "day"]}
+                format="MM/DD/YYYY"
+                value={customTo ? dayjs(customTo) : null}
+                open={toOpen}
+                onOpen={() => setToOpen(true)}
+                onClose={() => {
+                  setToOpen(false);
+                  requestAnimationFrame(() => document.activeElement?.blur?.());
+                }}
+                onChange={(value) => {
+                  if (value === null) {
+                    setCustomTo("");
+                    return;
+                  }
+                  if (!dayjs(value).isValid()) return;
+
+                  const s = dayjs(value).format("YYYY-MM-DD");
+                  if (range !== "custom") setRange("custom");
+                  setCustomTo(s);
+                }}
+                slotProps={{
+                  field: { readOnly: true },
+                  textField: {
+                    size: "small",
+                    onMouseDown: (e) => {
+                      e.preventDefault();
+                      setToOpen(true);
+                    },
+                    onFocus: blurOnFocus,
+                    inputProps: {
+                      readOnly: true,
+                      inputMode: "none",
+                      placeholder: "",
+                    },
+                    ...hardNoTypeDateField,
+                    ...preventDateFieldWheelAndArrows,
+                  },
+                }}
+              />
+            </LocalizationProvider>
+
           </Stack>
         </Paper>
 
@@ -444,7 +553,6 @@ export default function DashboardPage() {
                     <TableRow>
                       <TableCell>Name</TableCell>
                       <TableCell>Role</TableCell>
-                      <TableCell>Username</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell>Last Login</TableCell>
                     </TableRow>
@@ -456,34 +564,21 @@ export default function DashboardPage() {
                           <Typography variant="body2" fontWeight={600} noWrap>
                             {emp.name || "(No name)"}
                           </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            noWrap
-                          >
-                            {emp.id}
-                          </Typography>
                         </TableCell>
+
                         <TableCell>
                           <Typography variant="body2">{emp.role}</Typography>
                         </TableCell>
-                        <TableCell>
-                          <Typography variant="body2" noWrap>
-                            {emp.username || "—"}
-                          </Typography>
-                        </TableCell>
+
                         <TableCell>
                           <Chip
                             size="small"
                             label={emp.status || "Unknown"}
-                            color={
-                              emp.status === "Active" ? "success" : "default"
-                            }
-                            variant={
-                              emp.status === "Active" ? "filled" : "outlined"
-                            }
+                            color={emp.status === "Active" ? "success" : "default"}
+                            variant={emp.status === "Active" ? "filled" : "outlined"}
                           />
                         </TableCell>
+
                         <TableCell>
                           <Typography variant="body2" noWrap>
                             {formatDateTime(emp.lastLoginAt || emp.createdAt)}
@@ -494,7 +589,7 @@ export default function DashboardPage() {
 
                     {employees.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={4}>
                           <Box py={4} textAlign="center">
                             <Typography
                               variant="body2"

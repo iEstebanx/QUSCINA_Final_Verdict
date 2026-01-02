@@ -44,7 +44,7 @@ import { API_BASE } from "@/utils/apiBase";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useShift } from "@/context/ShiftContext";
-import { openSafely } from "@/components/POS/FloatingShiftModal";
+import FloatingShiftModal, { openSafely } from "@/components/POS/FloatingShiftModal";
 
 // 🔹 Backoffice auth (not mobileAuth)
 import { useAuth } from "@/context/AuthContext";

@@ -164,6 +164,14 @@ export default function InventoryHistoryPage() {
   const [noDataOpen, setNoDataOpen] = useState(false);
   const [noDataMessage, setNoDataMessage] = useState("");
 
+  const [fromOpen, setFromOpen] = useState(false);
+  const [toOpen, setToOpen] = useState(false);
+
+  const blurOnFocus = (e) => {
+    // kill focus so MUI can't highlight MM/DD/YYYY sections
+    e.target.blur?.();
+  };
+
   const preparedBy = useMemo(() => {
     if (!user) return "Prepared by: N/A";
     const loginId = user.employeeId || user.username || user.email || user.id || "";
@@ -568,6 +576,9 @@ export default function InventoryHistoryPage() {
               views={["year", "month", "day"]}
               format="MM/DD/YYYY"
               value={customFrom ? dayjs(customFrom) : null}
+              open={fromOpen}
+              onOpen={() => setFromOpen(true)}
+              onClose={() => setFromOpen(false)}
               onChange={(value) => {
                 if (value === null) {
                   setCustomFrom("");
@@ -587,12 +598,18 @@ export default function InventoryHistoryPage() {
               maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
               shouldDisableDate={(d) => shouldDisableDate(d)}
               slotProps={{
-                field: { readOnly: true }, // ✅ stops section typing mode
+                field: { readOnly: true },
                 textField: {
                   size: "small",
+                  onMouseDown: (e) => {
+                    e.preventDefault();
+                    setFromOpen(true);
+                  },
+                  onFocus: blurOnFocus, // ✅ stops highlight
                   inputProps: {
                     readOnly: true,
-                    inputMode: "none", // ✅ no mobile keyboard
+                    inputMode: "none",
+                    placeholder: "",
                   },
                   ...hardNoTypeDateField,
                   ...preventDateFieldWheelAndArrows,
@@ -605,6 +622,9 @@ export default function InventoryHistoryPage() {
               views={["year", "month", "day"]}
               format="MM/DD/YYYY"
               value={customTo ? dayjs(customTo) : null}
+              open={toOpen}
+              onOpen={() => setToOpen(true)}
+              onClose={() => setToOpen(false)}
               onChange={(value) => {
                 if (value === null) {
                   setCustomTo("");
@@ -624,12 +644,18 @@ export default function InventoryHistoryPage() {
               maxDate={dateBounds.max ? dayjs(dateBounds.max) : undefined}
               shouldDisableDate={(d) => shouldDisableDate(d)}
               slotProps={{
-                field: { readOnly: true }, // ✅ stops section typing mode
+                field: { readOnly: true },
                 textField: {
                   size: "small",
+                  onMouseDown: (e) => {
+                    e.preventDefault();
+                    setToOpen(true);
+                  },
+                  onFocus: blurOnFocus, // ✅ stops highlight
                   inputProps: {
                     readOnly: true,
                     inputMode: "none",
+                    placeholder: "",
                   },
                   ...hardNoTypeDateField,
                   ...preventDateFieldWheelAndArrows,

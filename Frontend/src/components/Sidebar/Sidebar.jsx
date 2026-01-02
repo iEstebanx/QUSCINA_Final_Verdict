@@ -320,7 +320,7 @@ function SidebarContent({ collapsed }) {
           />
           {!collapsed && (
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              QUSCINA Backoffice
+              QUSCINA
             </Typography>
           )}
         </ButtonBase>
