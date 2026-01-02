@@ -2364,16 +2364,8 @@ export default function UserManagementPage() {
                     <Typography className="rt-note" variant="body2" color="text.secondary">
                       Expires: {rtData.expiresAt ? new Date(rtData.expiresAt).toLocaleString() : "—"}
                     </Typography>
-
-                    <Typography className="rt-note" variant="body2" color="text.secondary">
-                      Token is shown once. If lost, generate again.
-                    </Typography>
                   </>
-                ) : (
-                  <Typography className="rt-note" variant="body2" color="text.secondary">
-                    Token will be shown once. If lost, generate again.
-                  </Typography>
-                )}
+                ) : null}
               </Stack>
             </Paper>
           </Stack>

@@ -332,6 +332,8 @@ export default function LoginPage() {
   const secretAutoComplete =
     loginMode === "pin" ? "one-time-code" : "current-password";
 
+  const isPinResetUi = loginStep === "secret" && loginMode === "pin" && pinResetMode;
+
   // ---------------------- Login: Next (precheck) ----------------------
   const onNext = async () => {
     const idVal = String(identifier || "").trim();
@@ -644,6 +646,17 @@ const submitNewPinConfirm = async (finalPin) => {
   // ---------------------- Login: Submit (role-aware) ----------------------
   const onSubmit = async (e) => {
     e.preventDefault();
+
+    // ✅ If we're in PIN reset mode, never submit login from the form
+    if (loginMode === "pin" && pinResetMode) {
+      return; // pin reset flow uses submitNewPinConfirm() only
+    }
+
+    // (optional but recommended) also avoid form-submit for PIN mode entirely
+    if (loginMode === "pin") {
+      return; // keypad calls submitPinLogin() when PIN is complete
+    }
+
     const idVal = String(identifier || "").trim();
     const secVal = String(loginMode === "pin" ? pinValue : (secret || ""));
 
@@ -1310,7 +1323,7 @@ const submitPinLogin = async (finalPin) => {
             color="text.secondary"
             sx={{ mt: 0.5, fontSize: { xs: 12.5, sm: 13 } }}
           >
-            Backoffice (Admin / Cashier)
+            Quscina Login (Admin / Cashier)
           </Typography>
 
           {loginStep === "secret" && (
@@ -1459,19 +1472,25 @@ const submitPinLogin = async (finalPin) => {
                     <Box key={`row-${ri}`} sx={{ display: "flex", gap: 1, mb: 1 }}>
                       {row.map((key) => (
                         <Button
+                          type="button"
                           key={`k-${key}`}
                           variant="contained"
                           fullWidth
                           disabled={
                             ticketSubmitting ||
-                            (key !== "Back" && isLockedForCurrentId) ||
                             submitting ||
-                            prechecking
+                            prechecking ||
+                            (key !== "Back" && isLockedForCurrentId) ||
+                            (key === "Back" && pinResetMode)
                           }
                           onClick={() => {
-                            if (key === "Back") handlePinBack();
-                            else if (key === "<") handlePinDelete();
-                            else handlePinDigit(key);
+                            if (key === "Back") {
+                              if (pinResetMode) return;
+                              handlePinBack();
+                              return;
+                            }
+                            if (key === "<") return handlePinDelete();
+                            handlePinDigit(key);
                           }}
                           sx={{
                             py: 1.4,
@@ -1490,17 +1509,19 @@ const submitPinLogin = async (finalPin) => {
               </Box>
             )}
 
-            <FormControlLabel
-              sx={{ ml: 0 }}
-              control={
-                <Switch
-                  checked={remember}
-                  onChange={(e) => setRemember(e.target.checked)}
-                  disabled={submitting || prechecking}
-                />
-              }
-              label="Remember me"
-            />
+            {loginStep === "secret" && !isPinResetUi && (
+              <FormControlLabel
+                sx={{ ml: 0 }}
+                control={
+                  <Switch
+                    checked={remember}
+                    onChange={(e) => setRemember(e.target.checked)}
+                    disabled={submitting || prechecking}
+                  />
+                }
+                label="Remember me"
+              />
+            )}
 
             {loginStep === "id" ? (
               <Button
@@ -1511,13 +1532,13 @@ const submitPinLogin = async (finalPin) => {
                 onClick={onNext}
                 disabled={prechecking || submitting || isLockedForCurrentId}
               >
-              {isLockedForCurrentId
-                ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
-                : prechecking
-                ? "Checking..."
-                : "Next"}
+                {isLockedForCurrentId
+                  ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
+                  : prechecking
+                  ? "Checking..."
+                  : "Next"}
               </Button>
-            ) : (
+            ) : isPinResetUi ? null : (   // ✅ HIDE ALL ACTION BUTTONS during pin reset
               (() => {
                 const isCashier = /cashier/i.test(String(roleHint || ""));
                 const hideBackBesideSignIn = isCashier && loginMode === "pin"; // cashier pin keypad already has "Back"
@@ -1525,7 +1546,7 @@ const submitPinLogin = async (finalPin) => {
                 if (hideBackBesideSignIn) {
                   return (
                     <Button
-                      type="submit"
+                      type={loginMode === "pin" ? "button" : "submit"}
                       variant="contained"
                       size="large"
                       fullWidth
