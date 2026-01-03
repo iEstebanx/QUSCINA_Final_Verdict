@@ -178,6 +178,20 @@ export default function LoginPage() {
 
   const [cashierResetRequestId, setCashierResetRequestId] = useState(null);
 
+  const [cashierTicketEmployeeId, setCashierTicketEmployeeId] = useState("");
+
+  // Resolve employeeId from available info
+  const resolveEmployeeIdForTicket = () => {
+    const hint = String(employeeIdHint || "").trim();
+    if (hint) return hint;
+
+    const id = String(identifier || "").trim();
+    if (/^\d{9}$/.test(id)) return id; // if they typed employee id as login id
+
+    return "";
+  };
+
+
   const [pinResetMode, setPinResetMode] = useState(false); // true = keypad is for setting new pin
   const [pinResetStage, setPinResetStage] = useState("new"); // "new" | "confirm"
   const [pinResetFirst, setPinResetFirst] = useState(""); // stores first entry
@@ -328,6 +342,8 @@ export default function LoginPage() {
   const isLockedForCurrentId =
     lockedIdKey === idKey(identifier) && (lockPermanent || lockSecondsLeft > 0);
 
+  const isCashierContext = loginStep === "secret" && loginMode === "pin";
+
   const secretLabel = loginMode === "pin" ? "PIN" : "Password";
   const secretAutoComplete =
     loginMode === "pin" ? "one-time-code" : "current-password";
@@ -347,20 +363,48 @@ export default function LoginPage() {
 
     setPrechecking(true);
     try {
-      const info = await precheckLogin(idVal); // { role, loginMode, employeeId, ... }
-      const role = String(info?.role || "");
-      const mode = String(info?.loginMode || "password");
-      setRoleHint(role || "");
-      setEmployeeIdHint(String(info?.employeeId || ""));
-      setLoginMode(mode === "pin" ? "pin" : "password");
+      const info = await precheckLogin(idVal);
+
+      // ✅ robust extraction (handles different backend shapes)
+      const roleRaw =
+        info?.role ??
+        info?.user?.role ??
+        info?.account?.role ??
+        info?.data?.role ??
+        "";
+
+      const role = String(roleRaw || "");
+      const rawMode = String(
+        info?.loginMode ??
+          info?.user?.loginMode ??
+          info?.data?.loginMode ??
+          ""
+      );
+
+      const empId =
+        info?.employeeId ??
+        info?.user?.employeeId ??
+        info?.data?.employeeId ??
+        "";
+
+      const isCashier = /cashier/i.test(role);
+
+      // ✅ HARD RULE: Cashier MUST be PIN no matter what backend says
+      const resolvedMode = isCashier ? "pin" : rawMode === "pin" ? "pin" : "password";
+
+      setRoleHint(role);
+      setEmployeeIdHint(String(empId || ""));
+      setLoginMode(resolvedMode);
       setLoginStep("secret");
+
+      // reset secret ui
       setSecret("");
       setPinValue("");
       setShowSecret(false);
 
-      // Some cashier flows may need to show “PIN not set” hint
-      if (info?.loginMode === "pin" && info?.pinNotSet) {
-        alert.info("PIN is not set yet. Please use the Cashier Setup / Ticket flow to set your PIN.");
+      // optional hint
+      if (isCashier && info?.pinNotSet) {
+        alert.info("PIN is not set yet. Please use the Reset Ticket flow to set your PIN.");
       }
     } catch (err) {
       const status = err?.status ?? 0;
@@ -375,15 +419,24 @@ export default function LoginPage() {
         if (seconds > 0) {
           setLockPermanent(false);
           setLockUntilIso(new Date(Date.now() + seconds * 1000).toISOString());
-          const m = Math.floor(seconds / 60), s = seconds % 60;
-          alert.error(`Account temporarily locked. Try again in ${m}m ${s}s.`);
+          alert.error(
+            `Account temporarily locked. Try again in ${Math.floor(seconds / 60)}m ${seconds % 60}s.`
+          );
         } else {
-          // permanent lock
           setLockPermanent(true);
           setLockUntilIso(null);
           setLockSecondsLeft(0);
           alert.error("Account locked. Please contact an Admin.");
         }
+
+        setLoginMode("pin");
+
+        // ✅ Move to secret step so recovery buttons are visible
+        setLoginStep("secret");
+        setSecret("");
+        setPinValue("");
+        setShowSecret(false);
+
         return;
       }
 
@@ -414,6 +467,11 @@ export default function LoginPage() {
     setRoleHint("");
     setEmployeeIdHint("");
     setLoginMode("password");
+
+    setLockUntilIso(null);
+    setLockSecondsLeft(0);
+    setLockPermanent(false);
+    setLockedIdKey(null);
   };
 
 // ----- PIN keypad handlers (Backoffice) -----
@@ -490,17 +548,11 @@ const handlePinBack = () => {
 };
 
 const openCashierTicket = () => {
-  // Must already be in PIN login for cashier
-  if (loginStep !== "secret" || loginMode !== "pin") return;
+  if (!isCashierContext) return;
 
-  if (!/cashier/i.test(String(roleHint || ""))) {
-    alert.info("Reset Ticket is for Cashier PIN only.");
-    return;
-  }
-
-  if (!String(employeeIdHint || "").trim()) {
-    alert.error("Missing employee ID. Please re-enter your Login ID.");
-    setLoginStep("id");
+  const empId = resolveEmployeeIdForTicket();
+  if (!/^\d{9}$/.test(empId)) {
+    alert.info("Please use your 9-digit Employee ID as Login ID to use Reset Ticket.");
     return;
   }
 
@@ -516,9 +568,10 @@ const closeCashierTicket = () => {
 const verifyCashierTicket = async (e) => {
   e.preventDefault();
 
-  const empId = String(employeeIdHint || "").trim();
+  const empId = resolveEmployeeIdForTicket();
   const code = String(cashierTicketCode || "").trim();
 
+  if (!/^\d{9}$/.test(empId)) return alert.error("Employee ID must be 9 digits.");
   if (!/^\d{8}$/.test(code)) return alert.error("Ticket code must be 8 digits.");
 
   setCashierTicketSubmitting(true);
@@ -567,10 +620,10 @@ const cancelPinResetMode = () => {
 
 const submitNewPinConfirm = async (finalPin) => {
   if (ticketSubmitting) return;
-  if (pinConfirmInFlightRef.current) return; // ✅ prevent double fire
+  if (pinConfirmInFlightRef.current) return;
   pinConfirmInFlightRef.current = true;
 
-  const empId = String(employeeIdHint || "").trim();
+  const empId = resolveEmployeeIdForTicket();
   const ticket = String(pinResetTicket || "").trim();
   const reqId = String(cashierResetRequestId || "").trim();
 
@@ -1530,18 +1583,13 @@ const submitPinLogin = async (finalPin) => {
                 size="large"
                 fullWidth
                 onClick={onNext}
-                disabled={prechecking || submitting || isLockedForCurrentId}
+                disabled={prechecking || submitting}
               >
-                {isLockedForCurrentId
-                  ? (lockPermanent ? "Locked" : `Locked: ${fmtMMSS(lockSecondsLeft)}`)
-                  : prechecking
-                  ? "Checking..."
-                  : "Next"}
+                {prechecking ? "Checking..." : "Next"}
               </Button>
             ) : isPinResetUi ? null : (   // ✅ HIDE ALL ACTION BUTTONS during pin reset
               (() => {
-                const isCashier = /cashier/i.test(String(roleHint || ""));
-                const hideBackBesideSignIn = isCashier && loginMode === "pin"; // cashier pin keypad already has "Back"
+                const hideBackBesideSignIn = isCashierContext;
 
                 if (hideBackBesideSignIn) {
                   return (
@@ -1621,24 +1669,21 @@ const submitPinLogin = async (finalPin) => {
             )}
 
             {/* Show Reset Ticket ONLY after Next (secret step) AND ONLY for Cashier PIN */}
-            {loginStep === "secret" &&
-              /cashier/i.test(String(roleHint || "")) &&
-              loginMode === "pin" &&
-              !pinResetMode && ( // don’t show while already resetting
-                <>
-                  <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
+            {isCashierContext && !pinResetMode && (
+              <>
+                <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 
-                  <Button
-                    onClick={openCashierTicket}
-                    variant="outlined"
-                    size="large"
-                    fullWidth
-                    disabled={submitting || prechecking || ticketSubmitting || isLockedForCurrentId}
-                  >
-                    Use Reset Ticket
-                  </Button>
-                </>
-              )}
+                <Button
+                  onClick={openCashierTicket}
+                  variant="outlined"
+                  size="large"
+                  fullWidth
+                  disabled={submitting || prechecking || ticketSubmitting}
+                >
+                  Use Reset Ticket
+                </Button>
+              </>
+            )}
           </Stack>
         </Box>
       </Paper>

@@ -100,33 +100,37 @@ module.exports = function authRouterFactory({ db } = {}) {
     const row = await readLockRow(db, employeeId, app);
     const newFails = Number(row.failed_login_count || 0) + 1;
 
-    // compute lock outcome
-    const next = computeNextLock(newFails); // uses LOCK_POLICY
-    const lockUntilSql =
-      next.perm ? null :
-      next.minutes && next.minutes > 0
-        ? `DATE_ADD(UTC_TIMESTAMP(), INTERVAL ${Number(next.minutes)} MINUTE)`
-        : null;
-
-    // upsert
     await db.query(
       `
-      INSERT INTO employee_lock_state (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
-      VALUES (?, ?, 1, ${lockUntilSql ? lockUntilSql : "NULL"}, ?, UTC_TIMESTAMP())
+      INSERT INTO employee_lock_state
+        (employee_id, app, failed_login_count, lock_until, permanent_lock, last_failed_login)
+      VALUES
+        (?, ?, 1, NULL, 0, UTC_TIMESTAMP())
       ON DUPLICATE KEY UPDATE
         failed_login_count = failed_login_count + 1,
-        lock_until = ${lockUntilSql ? lockUntilSql : "lock_until"},
+        last_failed_login = UTC_TIMESTAMP(),
+
+        -- ✅ lock_until follows 4th/5th thresholds, and clears on permanent
+        lock_until = CASE
+          WHEN failed_login_count + 1 >= ? THEN NULL
+          WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+          WHEN failed_login_count + 1 = 4 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+          ELSE lock_until
+        END,
+
+        -- ✅ permanent on 6th+
         permanent_lock = CASE
           WHEN failed_login_count + 1 >= ? THEN 1
           ELSE permanent_lock
-        END,
-        last_failed_login = UTC_TIMESTAMP()
+        END
       `,
       [
         employeeId,
         app,
-        next.perm ? 1 : 0,
-        LOCK_POLICY.permanent_on,
+        LOCK_POLICY.permanent_on,   // >=6 => permanent (also clears lock_until)
+        LOCK_POLICY.step5_minutes,  // 5th => 15 mins
+        LOCK_POLICY.step4_minutes,  // 4th => 5 mins
+        LOCK_POLICY.permanent_on,   // >=6 => permanent_lock=1
       ]
     );
 
@@ -156,9 +160,9 @@ module.exports = function authRouterFactory({ db } = {}) {
   }
 
   const LOCK_POLICY = {
-    step4_minutes: 0,       // no lock on 4th attempt anymore
-    step5_minutes: 15,      // 15-minute lock on 5th attempt
-    permanent_on: 6,        // 6th failed attempt -> permanent lock
+    step4_minutes: 5,   // ✅ 4th failed attempt -> 5 minutes
+    step5_minutes: 15,  // ✅ 5th failed attempt -> 15 minutes
+    permanent_on: 6,    // ✅ 6th failed attempt -> permanent
   };
   const MIRROR_PERM_LOCK_TO_STATUS_INACTIVE = false;
 
@@ -1928,9 +1932,11 @@ router.post("/pin-reset/confirm", async (req, res, next) => {
              failed_login_count = failed_login_count + 1,
              last_failed_login  = UTC_TIMESTAMP(),
              lock_until = CASE
-               WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
-               ELSE lock_until
-             END,
+                WHEN failed_login_count + 1 >= ? THEN NULL
+                WHEN failed_login_count + 1 = 5 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+                WHEN failed_login_count + 1 = 4 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+                ELSE lock_until
+              END,
              permanent_lock = CASE
                WHEN failed_login_count + 1 >= ? THEN 1
                ELSE permanent_lock
@@ -1938,8 +1944,10 @@ router.post("/pin-reset/confirm", async (req, res, next) => {
           [
             employeeId,
             sqApp,
-            LOCK_POLICY.step5_minutes,   // 15 minutes on 5th failed answer
-            LOCK_POLICY.permanent_on,    // 6th+ => permanent lock
+            LOCK_POLICY.permanent_on,
+            LOCK_POLICY.step5_minutes,
+            LOCK_POLICY.step4_minutes,
+            LOCK_POLICY.permanent_on,
           ]
         );
 
