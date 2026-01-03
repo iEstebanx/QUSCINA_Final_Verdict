@@ -169,6 +169,44 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
         [sizeBytes, jobId]
       );
 
+      try {
+        const [sched] = await db.query(`
+          SELECT retention_days
+          FROM backup_schedule
+          WHERE id = 1
+          LIMIT 1
+        `);
+
+        if (sched?.retention_days != null) {
+          const result = await pruneOldBackups({
+            retentionDays: sched.retention_days,
+            keepAtLeast: 1,
+          });
+
+          if (result.deleted > 0) {
+            await logAuditTrail({
+              employee:
+                trigger === "schedule"
+                  ? "System (Schedule)"
+                  : (employeeName || `User #${employeeId}` || "System"),
+              role: employeeRole || "System",
+              action: "Backup Retention Cleanup",
+              detail: {
+                statusMessage: "Old backup files removed based on retention settings.",
+                actionDetails: {
+                  actionType: "Retention Cleanup",
+                  reference: `Retention: ${sched.retention_days} days`,
+                  amount: `${result.deleted} file(s) deleted`,
+                  reason: "Retention policy",
+                },
+              },
+            });
+          }
+        }
+      } catch (e) {
+        console.error("[RETENTION] prune after backup failed:", e);
+      }
+
       // 🔹 AUDIT TRAIL: BACKUP SUCCESS
       const actorEmployee =
         employeeId
@@ -345,6 +383,78 @@ module.exports = function BackupAndRestoreRoutes({ db }) {
     } catch (err) {
       console.error("[SCHEDULE] Error while running scheduled backup:", err);
     }
+  }
+
+  async function pruneOldBackups({ retentionDays, keepAtLeast = 1 } = {}) {
+    const days = parseInt(retentionDays, 10);
+
+    // retention not set or invalid -> do nothing
+    if (!days || Number.isNaN(days) || days <= 0) return { deleted: 0, kept: 0 };
+
+    const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const entries = await fsp.readdir(BACKUP_DIR, { withFileTypes: true });
+    const backups = [];
+
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      if (!ent.name.toLowerCase().endsWith(".sql")) continue;
+
+      const fullPath = path.join(BACKUP_DIR, ent.name);
+      const st = await fsp.stat(fullPath);
+
+      // Try to parse timestamp from filename: backup-full_YYYY-MM-DD_HHMM.sql
+      const m = ent.name.match(
+        /^backup-(.+)_(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})\.sql$/i
+      );
+
+      let timeMs;
+
+      if (m) {
+        const [, , y, mo, d, hh, mm] = m;
+        timeMs = new Date(
+          Number(y),
+          Number(mo) - 1,
+          Number(d),
+          Number(hh),
+          Number(mm),
+          0,
+          0
+        ).getTime();
+      } else {
+        // fallback to file modified time
+        timeMs = new Date(st.mtime).getTime();
+      }
+
+      backups.push({
+        filename: ent.name,
+        fullPath,
+        mtimeMs: timeMs,
+      });
+    }
+
+    // oldest first
+    backups.sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+    let deleted = 0;
+
+    // keep newest N no matter what (safety)
+    const keepNewest = Math.max(keepAtLeast, 0);
+    const deletable = backups.slice(0, Math.max(0, backups.length - keepNewest));
+
+    for (const b of deletable) {
+      if (b.mtimeMs >= cutoffMs) continue; // not old enough
+
+      try {
+        await fsp.unlink(b.fullPath);
+        deleted += 1;
+        console.log(`[RETENTION] Deleted old backup: ${b.filename}`);
+      } catch (err) {
+        console.error(`[RETENTION] Failed deleting ${b.filename}:`, err);
+      }
+    }
+
+    return { deleted, kept: backups.length - deleted };
   }
 
   // check every 60 seconds
