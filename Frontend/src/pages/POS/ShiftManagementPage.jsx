@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 
 import { useShift } from "@/context/ShiftContext";
+import { useCart } from "@/context/CartContext";
 import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 
@@ -26,6 +27,9 @@ export default function ShiftManagementPage() {
   const navigate = useNavigate();
 
   const location = useLocation();
+
+  const { items } = useCart();
+  const hasCartItems = (items?.length || 0) > 0;
 
   const [logoutBlockedOpen, setLogoutBlockedOpen] = useState(false);
   const [logoutBlockedMsg, setLogoutBlockedMsg] = useState("");
@@ -170,6 +174,14 @@ export default function ShiftManagementPage() {
   const handleOpenEndDialog = async () => {
     if (!shiftId || !hasShift) return;
 
+    if (hasCartItems) {
+      setPendingWarnMsg(
+        "Cannot end shift while there are items in the cart. Please save or clear the order first."
+      );
+      setPendingWarnOpen(true);
+      return;
+    }
+
     try {
       const url = `/api/pos/orders/open?shiftId=${encodeURIComponent(shiftId)}`;
       const res = await fetch(url, { credentials: "include" });
@@ -227,17 +239,27 @@ export default function ShiftManagementPage() {
   const handleConfirmEndShift = async () => {
     if (!shiftId) return;
 
+    if (hasCartItems) {
+      setPendingWarnMsg(
+        "Cannot end shift while there are items in the cart. Please save or clear the order first."
+      );
+      setPendingWarnOpen(true);
+      setEndDialogOpen(false);
+      return;
+    }
+
     try {
       setEnding(true);
 
       const declared =
         declaredCash === "" ? shift?.expectedCash : Number(declaredCash || 0);
 
-      const updatedShift = await remitShift({
-        shift_id: shiftId,
-        declared_cash: declared,
-        closing_note: note || undefined,
-      });
+        const updatedShift = await remitShift({
+          shift_id: shiftId,
+          declared_cash: declared,
+          closing_note: note || undefined,
+          cart_item_count: items?.length || 0,
+        });
 
       if (!updatedShift) throw new Error("Failed to end shift");
 

@@ -58,6 +58,8 @@ module.exports = function posShiftRouterFactory({ db }) {
   const RemitBody = z.object({
     declared_cash: z.coerce.number().nonnegative(),
     closing_note: z.coerce.string().trim().max(255).optional(),
+
+    cart_item_count: z.coerce.number().int().nonnegative().optional().default(0),
   });
 
   // ---------- helpers ----------
@@ -594,7 +596,7 @@ module.exports = function posShiftRouterFactory({ db }) {
       });
     }
 
-    const { declared_cash, closing_note } = body;
+    const { declared_cash, closing_note, cart_item_count } = body;
 
     try {
       const result = await db.tx(async (conn) => {
@@ -602,6 +604,16 @@ module.exports = function posShiftRouterFactory({ db }) {
         const shift = rows?.[0];
         if (!shift) throw Object.assign(new Error("Shift not found"), { status: 404 });
         if (shift.status !== "Open") throw Object.assign(new Error("Shift is not open"), { status: 409 });
+
+        if (Number(cart_item_count || 0) > 0) {
+          const err = new Error(
+            "Cannot close shift while there are items in the cart. Please save or clear the order first."
+          );
+          err.status = 409;
+          err.code = "CANNOT_CLOSE_SHIFT_WITH_CART_ITEMS";
+          err.cart_item_count = Number(cart_item_count || 0);
+          throw err;
+        }
 
         const hasPending = await hasPendingOrdersForShift(conn, shiftId);
         if (hasPending) {
@@ -633,7 +645,12 @@ module.exports = function posShiftRouterFactory({ db }) {
       return res.status(200).json({ ok: true, shift: result });
     } catch (e) {
       console.error("[shift/remit] ERROR:", e);
-      return res.status(e.status || 500).json({ ok: false, error: e.message || "Internal Server Error" });
+      return res.status(e.status || 500).json({
+        ok: false,
+        error: e.message || "Internal Server Error",
+        code: e.code || undefined,
+        cart_item_count: typeof e.cart_item_count === "number" ? e.cart_item_count : undefined,
+      });
     }
   });
 
@@ -680,8 +697,10 @@ module.exports = function posShiftRouterFactory({ db }) {
 
       // internally call remit logic
       req.params.id = String(shift.shift_id);
-      req.body = { declared_cash, closing_note };
-      return router.handle(req, res); // will hit "/:id/remit"
+      const cart_item_count = Number(req.body?.cart_item_count ?? 0);
+
+      req.body = { declared_cash, closing_note, cart_item_count };
+      return router.handle(req, res);
     } catch (e) {
       console.error("[shift/close compat]", e);
       return res.status(500).json({ ok: false, error: "Failed to close shift" });

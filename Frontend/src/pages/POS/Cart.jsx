@@ -278,6 +278,23 @@ const terminalId = "TERMINAL-1";
 
   const t = useTheme();
 
+  const blurActive = () => {
+    try {
+      const el = document.activeElement;
+      if (el && typeof el.blur === "function") el.blur();
+
+      if (typeof document.querySelectorAll === "function") {
+        document
+          .querySelectorAll(
+            "input:focus, textarea:focus, [contenteditable]:focus"
+          )
+          .forEach((n) => n.blur?.());
+      }
+    } catch {
+      // ignore safely
+    }
+  };
+
   // Cart uses same light paper background as the rest of the app
   const sidebarBg = t.palette.background.paper;
   const sidebarContrast = t.palette.text.primary;
@@ -1166,7 +1183,7 @@ const terminalId = "TERMINAL-1";
       : JSON.parse(JSON.stringify(order));
 
     setSummaryOrder(safe);
-    blurActive();
+    requestAnimationFrame(() => document.activeElement?.blur?.());
   };
   const closeSummary = () => setSummaryOrder(null);
 
@@ -1351,7 +1368,7 @@ const terminalId = "TERMINAL-1";
   } else if (isReflectingExisting) {
     primaryLabel = isModified ? "Save" : "Open Orders";
   } else {
-    primaryLabel = items.length === 0 ? "Open Orders" : "Pending";
+    primaryLabel = items.length === 0 ? "Open Orders" : "Save Order";
   }
 
   // 🔹 Core primary button logic (requires an open shift)
@@ -1470,7 +1487,7 @@ const terminalId = "TERMINAL-1";
           }}
         >
           <Typography variant="h5" sx={{ fontWeight: "bold" }}>
-            Orders
+            Order
           </Typography>
 
           {/* 🔹 Only show menu for NEW carts (no reflected ticket) */}
