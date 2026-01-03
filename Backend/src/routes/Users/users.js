@@ -133,29 +133,32 @@ module.exports = ({ db } = {}) => {
   router.use(requireAuth);
 
   /* =============================
-     GET /api/users
-     ============================= */
-  router.get("/", async (_req, res) => {
+    GET /api/users
+    - Default: hide tombstoned users (deleted_at IS NOT NULL)
+    - Optional: ?includeDeleted=1 to show them
+    ============================= */
+  router.get("/", async (req, res) => {
     try {
+      const includeDeleted = String(req.query.includeDeleted || "0") === "1";
+
       const rows = await db.query(`
         SELECT
           e.employee_id, e.first_name, e.last_name, e.phone,
           e.role, e.status, e.username, e.email,
           e.login_employee_id, e.login_username, e.login_email,
           e.password_last_changed, e.photo_url, e.created_at, e.updated_at,
+          e.deleted_at, e.deleted_reason,
           (e.pin_hash IS NOT NULL) AS has_pin,
 
           -- legacy/global counters (kept for back-compat)
           e.failed_login_count, e.lock_until, e.permanent_lock,
 
-          -- security questions (ids only; text is mapped on API)
           (
             SELECT JSON_ARRAYAGG(JSON_OBJECT('id', sq.question_id))
             FROM employee_security_questions sq
             WHERE sq.employee_id = e.employee_id
           ) AS sq_json,
 
-          -- NEW: per-system lock states, aggregated to a JSON object
           (
             SELECT JSON_OBJECTAGG(
               els.app,
@@ -171,18 +174,17 @@ module.exports = ({ db } = {}) => {
           ) AS lock_states_json
 
         FROM employees e
+        ${includeDeleted ? "" : "WHERE e.deleted_at IS NULL"}
         ORDER BY e.created_at DESC
       `);
 
       const safe = rows.map((r) => {
-        // SQ ids
         let sqIds = [];
         try {
           const parsed = typeof r.sq_json === "string" ? JSON.parse(r.sq_json || "[]") : (r.sq_json || []);
           sqIds = Array.isArray(parsed) ? parsed : [];
         } catch { sqIds = []; }
 
-        // Per-system lock states
         let lockStates = {};
         try {
           lockStates = typeof r.lock_states_json === "string"
@@ -208,19 +210,17 @@ module.exports = ({ db } = {}) => {
           createdAt: r.created_at,
           updatedAt: r.updated_at,
 
-          // legacy/global (still returned for existing UI)
-          failedLoginCount: r.failed_login_count ?? 0,
-          lockUntil: r.lock_until,                 // may be null
-          permanentLock: !!r.permanent_lock,       // boolean
+          // tombstone metadata (only useful if includeDeleted=1)
+          deletedAt: r.deleted_at,
+          deletedReason: r.deleted_reason,
 
-          // NEW: explicit per-system states with safe defaults
+          failedLoginCount: r.failed_login_count ?? 0,
+          lockUntil: r.lock_until,
+          permanentLock: !!r.permanent_lock,
+
           lockStates: {
-            backoffice: lockStates.backoffice || {
-              failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null,
-            },
-            pos: lockStates.pos || {
-              failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null,
-            },
+            backoffice: lockStates.backoffice || { failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null },
+            pos: lockStates.pos || { failedLoginCount: 0, lockUntil: null, permanentLock: 0, lastFailedLogin: null },
           },
         };
       });
@@ -902,39 +902,131 @@ module.exports = ({ db } = {}) => {
   });
 
   /* =============================
-     DELETE /api/users/:employeeId
-     ============================= */
+    DELETE /api/users/:employeeId
+    - AUTO MODE:
+      - If referenced by RESTRICT FKs => "tombstone" (keeps activities)
+      - If no references => hard delete
+    ============================= */
   router.delete("/:employeeId", async (req, res) => {
     try {
-      const { employeeId } = req.params;
+      const id = String(req.params.employeeId);
+
+      const ADMIN_KEEPER = "202500001";
+      const CASHIER_KEEPER = "202500003";
+      if ([ADMIN_KEEPER, CASHIER_KEEPER].includes(id)) {
+        return res.status(400).json({ error: "Cannot delete keeper accounts." });
+      }
+
+      const unwrapRows = (result) =>
+        Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
 
       await db.tx(async (conn) => {
-        // Fetch current user for audit context
-        let cur = null;
-        try {
-          const rows = await conn.query(
-            `SELECT employee_id, first_name, last_name, phone, role, status, username, email
-             FROM employees
-             WHERE employee_id = ? LIMIT 1`,
-            [String(employeeId)]
+        // fetch user
+        const curR = await conn.query(
+          `SELECT employee_id, first_name, last_name, phone, role, status, username, email
+          FROM employees WHERE employee_id = ? LIMIT 1`,
+          [id]
+        );
+        const curRows = unwrapRows(curR);
+        if (!curRows.length) {
+          const err = new Error("Employee not found");
+          err.statusCode = 404;
+          throw err;
+        }
+        const cur = curRows[0];
+
+        // count RESTRICT blockers (from YOUR schema)
+        const [shiftsR, ordersR, cashMovesR, pinCreatedByR] = await Promise.all([
+          conn.query(`SELECT COUNT(*) c FROM pos_shifts WHERE employee_id = ?`, [id]),
+          conn.query(`SELECT COUNT(*) c FROM pos_orders WHERE created_by = ?`, [id]),
+          conn.query(`SELECT COUNT(*) c FROM pos_cash_moves WHERE created_by = ?`, [id]),
+          conn.query(`SELECT COUNT(*) c FROM employee_pin_reset_requests WHERE created_by = ?`, [id]),
+        ]);
+
+        const shifts = Number(unwrapRows(shiftsR)?.[0]?.c || 0);
+        const orders = Number(unwrapRows(ordersR)?.[0]?.c || 0);
+        const cashMoves = Number(unwrapRows(cashMovesR)?.[0]?.c || 0);
+        const pinCreatedBy = Number(unwrapRows(pinCreatedByR)?.[0]?.c || 0);
+
+        const blockers = {
+          pos_shifts_employee_id: shifts,
+          pos_orders_created_by: orders,
+          pos_cash_moves_created_by: cashMoves,
+          employee_pin_reset_requests_created_by: pinCreatedBy,
+        };
+
+        const totalBlockers = shifts + orders + cashMoves + pinCreatedBy;
+
+        // Always cleanup non-FK tables
+        await conn.execute(`DELETE FROM login_attempts WHERE employee_id = ?`, [id]);
+        await conn.execute(`UPDATE otp SET employee_id = NULL WHERE employee_id = ?`, [id]); // SET NULL FK
+
+        // revoke pending tickets (FK CASCADE is fine, but this keeps logic tidy)
+        await conn.execute(
+          `UPDATE employee_pin_reset_requests
+              SET status='revoked'
+            WHERE employee_id = ? AND status='pending'`,
+          [id]
+        );
+
+        if (totalBlockers > 0) {
+          // ✅ TOMBSTONE MODE (KEEP ACTIVITIES)
+          // remove login ability + optionally scrub PII
+          await conn.execute(
+            `UPDATE employees
+                SET status='Inactive',
+                    username=NULL,
+                    email=NULL,
+                    phone='00000000000',
+                    password_hash=NULL,
+                    pin_hash=NULL,
+                    photo_url=NULL,
+                    deleted_at=NOW(),
+                    deleted_reason='deleted_by_admin'
+              WHERE employee_id = ?`,
+            [id]
           );
-          if (rows.length) cur = rows[0];
-        } catch {
-          // ignore – delete still proceeds
+
+          // aliases must be removed so identifiers can be reused
+          await conn.execute(`DELETE FROM aliases WHERE employee_id = ?`, [id]);
+
+          // optional: wipe lock/sq state (not needed anymore)
+          await conn.execute(`DELETE FROM employee_security_questions WHERE employee_id = ?`, [id]);
+          await conn.execute(`DELETE FROM employee_lock_state WHERE employee_id = ?`, [id]);
+
+          await logUserAudit(conn, req, {
+            action: "User - Deleted (Tombstoned)",
+            actionType: "tombstone",
+            statusChange: "USER_TOMBSTONED",
+            targetEmployeeId: id,
+            subjectBefore: {
+              firstName: cur.first_name,
+              lastName: cur.last_name,
+              phone: cur.phone,
+              role: cur.role,
+              status: cur.status,
+              username: cur.username,
+              email: cur.email,
+            },
+            statusMessage: `User ${cur.first_name} ${cur.last_name} (${id}) tombstoned; activities preserved.`,
+            extraActionDetails: { blockers },
+          });
+
+          return;
         }
 
-        // Defensive: remove aliases first
-        await conn.execute(
-          `DELETE FROM aliases WHERE employee_id = ?`,
-          [String(employeeId)]
-        );
-        await conn.execute(
-          `DELETE FROM employees WHERE employee_id = ?`,
-          [String(employeeId)]
-        );
+        // ✅ HARD DELETE MODE (NO REFERENCES)
+        await conn.execute(`DELETE FROM aliases WHERE employee_id = ?`, [id]);
+        await conn.execute(`DELETE FROM employee_security_questions WHERE employee_id = ?`, [id]);
+        await conn.execute(`DELETE FROM employee_lock_state WHERE employee_id = ?`, [id]);
+        await conn.execute(`DELETE FROM employees WHERE employee_id = ?`, [id]);
 
-        if (cur) {
-          const subjectBefore = {
+        await logUserAudit(conn, req, {
+          action: "User - Deleted",
+          actionType: "delete",
+          statusChange: "USER_DELETED",
+          targetEmployeeId: id,
+          subjectBefore: {
             firstName: cur.first_name,
             lastName: cur.last_name,
             phone: cur.phone,
@@ -942,32 +1034,15 @@ module.exports = ({ db } = {}) => {
             status: cur.status,
             username: cur.username,
             email: cur.email,
-          };
-
-          await logUserAudit(conn, req, {
-            action: "User - Deleted",
-            actionType: "delete",
-            statusChange: "USER_DELETED",
-            targetEmployeeId: String(employeeId),
-            subjectBefore,
-            statusMessage: `Deleted user ${subjectBefore.firstName} ${subjectBefore.lastName} (${employeeId}).`,
-          });
-        }
+          },
+          statusMessage: `Deleted user ${cur.first_name} ${cur.last_name} (${id}).`,
+        });
       });
 
-      res.json({ ok: true });
+      return res.json({ ok: true });
     } catch (e) {
       console.error("[DELETE /api/users/:employeeId] fail:", e);
-
-      // MySQL FK constraint: row is referenced in another table (e.g. pos_shifts)
-      if (e?.code === "ER_ROW_IS_REFERENCED_2" || e?.errno === 1451) {
-        return res.status(400).json({
-          error:
-            "This user cannot be deleted because they are already used in POS shifts or other records. ",
-        });
-      }
-
-      res.status(500).json({ error: e?.message ?? "Failed to delete user" });
+      return res.status(e.statusCode ?? 500).json({ error: e?.message ?? "Failed to delete user" });
     }
   });
 

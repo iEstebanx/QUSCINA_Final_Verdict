@@ -308,6 +308,23 @@ export default function UserManagementPage() {
   // near your render (inside component)
   const isNewUser = !isEditingExisting;
 
+  // ── Delete guards ─────────────────────────────
+  const adminCount = useMemo(
+    () => rows.filter(r => String(r.role).trim() === "Admin").length,
+    [rows]
+  );
+
+  const isLastAdmin =
+    isEditingExisting &&
+    String(form.role).trim() === "Admin" &&
+    adminCount <= 1;
+
+  // already existing
+  const isOnlyRemaining = rows.length <= 1;
+
+  // final delete state
+  const deleteDisabled = isOnlyRemaining || isLastAdmin;
+
   // Show Credentials section only if it will contain at least one row
   const showCredentialsSection =
     needsPassword ||
@@ -896,11 +913,15 @@ export default function UserManagementPage() {
   /* ============================
      🔴 DELETE helpers (dialog)
      ============================ */
-  const isOnlyRemaining = rows.length <= 1;
   const canDeleteAny = rows.length > 1;
 
   async function handleDelete() {
     if (!isEditingExisting) return;
+    if (isLastAdmin) {
+      alert.info("You must keep at least one Admin account.");
+      return;
+    }
+
     if (!canDeleteAny) {
       alert.info("You must keep at least one user account.");
       return;
@@ -1221,9 +1242,14 @@ export default function UserManagementPage() {
                       value={form.username}
                       error={!!errors.username}
                       helperText={errors.username || "Required — must be unique"}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, username: e.target.value }))
-                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((f) => ({ ...f, username: v }));
+
+                        if (errors.username) {
+                          setErrors((prev) => ({ ...prev, username: undefined }));
+                        }
+                      }}
                       slotProps={{
                         htmlInput: {
                           readOnly: false,
@@ -1270,7 +1296,14 @@ export default function UserManagementPage() {
                       value={form.email}
                       error={!!errors.email}
                       helperText={errors.email || "Required — unique, valid email format"}
-                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((f) => ({ ...f, email: v }));
+
+                        if (errors.email) {
+                          setErrors((prev) => ({ ...prev, email: undefined }));
+                        }
+                      }}
                       slotProps={{
                         htmlInput: {
                           autoComplete: "email",
@@ -1307,7 +1340,14 @@ export default function UserManagementPage() {
                   value={form.firstName}
                   error={!!errors.firstName}
                   helperText={errors.firstName}
-                  onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setForm((f) => ({ ...f, firstName: v }));
+
+                    if (errors.firstName) {
+                      setErrors((prev) => ({ ...prev, firstName: undefined }));
+                    }
+                  }}
                   fullWidth
                   slotProps={{
                     input: {
@@ -1331,7 +1371,14 @@ export default function UserManagementPage() {
                   value={form.lastName}
                   error={!!errors.lastName}
                   helperText={errors.lastName}
-                  onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setForm((f) => ({ ...f, lastName: v }));
+
+                    if (errors.lastName) {
+                      setErrors((prev) => ({ ...prev, lastName: undefined }));
+                    }
+                  }}
                   fullWidth
                 />
               </Grid>
@@ -1353,6 +1400,11 @@ export default function UserManagementPage() {
                   onChange={(e) => {
                     const v = e.target.value.replace(/\D/g, "").slice(0, 11);
                     setForm((f) => ({ ...f, phone: v }));
+
+                    // ✅ clear stale error highlight
+                    if (errors.phone) {
+                      setErrors((prev) => ({ ...prev, phone: undefined }));
+                    }
                   }}
                   fullWidth
                   slotProps={{
@@ -1373,7 +1425,12 @@ export default function UserManagementPage() {
                   <Select
                     label="Role"
                     value={form.role}
-                    onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                    onChange={(e) => {
+                      setForm((f) => ({ ...f, role: e.target.value }));
+                      if (errors.role) {
+                        setErrors((prev) => ({ ...prev, role: undefined }));
+                      }
+                    }}
                   >
                     {ROLE_OPTIONS.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
                   </Select>
@@ -1806,15 +1863,23 @@ export default function UserManagementPage() {
 
         <DialogActions sx={{ p: 1.5 }}>
           {isEditingExisting && (
-            <Tooltip title={isOnlyRemaining ? "You must keep at least one user" : "Delete this user"}>
+            <Tooltip
+              title={
+                isOnlyRemaining
+                  ? "You must keep at least one user"
+                  : isLastAdmin
+                  ? "You must keep at least one Admin account"
+                  : "Delete this user"
+              }
+            >
               <span>
                 <Button
                   onClick={handleDelete}
                   color="error"
                   variant="outlined"
                   size="small"
-                  disabled={isOnlyRemaining}
-                  sx={{ mr: "auto" }} // pushes the others to the right
+                  disabled={deleteDisabled}
+                  sx={{ mr: "auto" }}
                 >
                   Delete
                 </Button>

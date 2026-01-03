@@ -59,13 +59,16 @@ CREATE TABLE IF NOT EXISTS employees (
   last_failed_login     DATETIME DEFAULT NULL,
   last_login_at         DATETIME DEFAULT NULL,
   last_login_ip         VARCHAR(45) DEFAULT NULL,
+  deleted_at DATETIME NULL DEFAULT NULL,
+  deleted_reason VARCHAR(255) NULL DEFAULT NULL,
 
   PRIMARY KEY (employee_id),
   UNIQUE KEY uq_username (username),
   UNIQUE KEY uq_email (email),
   KEY ix_role (role),
   KEY ix_status (status),
-  KEY ix_emp_lock (permanent_lock, lock_until)
+  KEY ix_emp_lock (permanent_lock, lock_until),
+  KEY ix_deleted_at (deleted_at)
 ) ENGINE=InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE= utf8mb4_0900_ai_ci 
@@ -909,7 +912,7 @@ ON DUPLICATE KEY UPDATE id = id;
 -- ============================================================
 -- AUDIT TRAIL (Every Actions)
 -- ============================================================
-CREATE TABLE audit_trail (
+CREATE TABLE IF NOT EXISTS audit_trail (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   employee VARCHAR(100) NOT NULL,
   role VARCHAR(50) NOT NULL,
