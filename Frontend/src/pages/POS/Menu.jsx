@@ -19,6 +19,7 @@ import {
   Button,
   IconButton,
 } from "@mui/material";
+import { useSearchParams } from "react-router-dom";
 import { Add, Remove } from "@mui/icons-material";
 import ViewListIcon from "@mui/icons-material/ViewList";
 import ImageIcon from "@mui/icons-material/Image";
@@ -72,6 +73,12 @@ const cssVars = (t) => ({
 export default function Menu() {
   // If you later add a search box, wire it here
   const [search, setSearch] = useState("");
+  const [params] = useSearchParams();
+  const q = params.get("q") || "";
+
+  useEffect(() => {
+    setSearch(q);
+  }, [q]);
 
   const [category, setCategory] = useState("");
   const [sortBy, setSortBy] = useState("name-asc");
@@ -98,6 +105,7 @@ export default function Menu() {
   const [items, setItems] = useState([]);
   const [loadingItems, setLoadingItems] = useState(false);
   const [itemsError, setItemsError] = useState(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   // item dialog
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -177,12 +185,14 @@ export default function Menu() {
 
     fetchItems();
     return () => controller.abort();
-  }, []);
+  }, [reloadTick]);
+
   const handleClearFilters = () => {
     setCategory("");
     setSortBy("name-asc");
     setAvailabilityFilter("available");
-    setSearch("");
+
+    setReloadTick((v) => v + 1);
   };
 
   // Build category options dynamically from loaded items

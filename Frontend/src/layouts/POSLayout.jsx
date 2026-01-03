@@ -10,6 +10,7 @@ import { CartProvider } from "@/context/CartContext";
 
 const SIDEBAR_WIDTH = 240;
 const SIDEBAR_COLLAPSED_WIDTH = 72;
+const CART_WIDTH = 360;
 
 export default function POSLayout() {
   const theme = useTheme();
@@ -18,6 +19,8 @@ export default function POSLayout() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const isPosMenu = location.pathname.startsWith("/pos/menu");
 
   const isPosCharge = location.pathname.startsWith("/pos/charge");
   const isPosOrders = location.pathname.startsWith("/pos/orders");
@@ -29,7 +32,9 @@ export default function POSLayout() {
   const isFullScreenPos = isPosCharge || isPosRefund || isPosCashManagement;
 
   // Hide cart on charge + orders + refund
-   const hideCart = isPosCharge || isPosOrders || isPosRefund || isPosShiftManagement || isPosCashManagement;
+  const hideCart = isPosCharge || isPosOrders || isPosRefund || isPosShiftManagement || isPosCashManagement;
+
+  const showCart = isPosMenu && !hideCart;
 
   // Sidebar width values to pass into header
   const effectiveWidth = isFullScreenPos ? 0 : SIDEBAR_WIDTH;
@@ -43,16 +48,9 @@ export default function POSLayout() {
     }
   };
 
-  return (
+ return (
     <CartProvider>
-      <Box
-        sx={{
-          display: "flex",
-          minHeight: "100vh",
-          bgcolor: "background.default",
-        }}
-      >
-        {/* Sidebar: hide on Charge + Refund */}
+      <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
         {!isFullScreenPos && (
           <Sidebar
             collapsed={collapsed}
@@ -68,21 +66,19 @@ export default function POSLayout() {
           onToggle={handleToggle}
           width={effectiveWidth}
           collapsedWidth={effectiveCollapsedWidth}
+          rightOffset={showCart ? CART_WIDTH : 0} // ✅ NEW
         />
 
-        {/* Main POS area */}
         <Box
           component="main"
           sx={{
             flexGrow: 1,
             display: "flex",
             boxSizing: "border-box",
-
-            // ✅ Main truly fills the viewport
             height: "100vh",
             overflow: "hidden",
+            position: "relative",
 
-            // ✅ keep your sidebar offset
             ml: {
               xs: 0,
               sm: isFullScreenPos
@@ -93,30 +89,48 @@ export default function POSLayout() {
             },
           }}
         >
-          {/* ✅ content area that sits under the header */}
+          {/* LEFT CONTENT */}
           <Box
             sx={{
-              display: "flex",
               flex: 1,
               minWidth: 0,
               minHeight: 0,
-              pt: `${APPBAR_HEIGHT}px`,
+              display: "flex",
+              flexDirection: "column",
+
+              pt: `${APPBAR_HEIGHT}px`, // ✅ content stays under header
+              pr: {
+                xs: 0,
+                sm: showCart ? `${CART_WIDTH}px` : 0, // ✅ prevent underlap with fixed cart
+              },
+
+              overflow: "hidden",
             }}
           >
-            {/* Left */}
-            <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <Outlet />
-            </Box>
-
-            {/* Right */}
-            {!hideCart && (
-              <Box sx={{ width: 360, flexShrink: 0, display: { xs: "none", sm: "block" } }}>
-                <Cart />
-              </Box>
-            )}
+            <Outlet />
           </Box>
-        </Box>
 
+          {/* RIGHT CART (FULL HEIGHT, TOP TO BOTTOM) */}
+          {showCart && (
+            <Box
+              sx={{
+                width: CART_WIDTH,
+                display: { xs: "none", sm: "block" },
+
+                position: "fixed",  // ✅ key
+                top: 0,             // ✅ key (reaches top)
+                right: 0,           // ✅ key
+                height: "100vh",    // ✅ key
+                overflow: "hidden",
+                borderLeft: (t) => `1px solid ${t.palette.divider}`,
+                bgcolor: "background.paper",
+                zIndex: (t) => t.zIndex.appBar - 1, // stays below AppBar
+              }}
+            >
+              <Cart />
+            </Box>
+          )}
+        </Box>
       </Box>
     </CartProvider>
   );

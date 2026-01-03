@@ -1,5 +1,5 @@
-// Frontend/src/components/Header/AppHeader.jsx
-import { useMemo } from "react";
+// QUSCINA_BACKOFFICE/Frontend/src/components/Header/AppHeader.jsx
+import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
 import {
   useLocation,
@@ -16,9 +16,12 @@ import {
   Typography,
   IconButton,
   Button,
+  TextField,
+  InputAdornment,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import SearchIcon from "@mui/icons-material/Search";
 import { useShift } from "@/context/ShiftContext";
 
 export const APPBAR_HEIGHT = 64;
@@ -28,6 +31,7 @@ export default function AppHeader({
   onToggle,
   width = 240,
   collapsedWidth = 72,
+  rightOffset = 0,
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -40,6 +44,16 @@ export default function AppHeader({
   const isPosChargePage = location.pathname === "/pos/charge";
   const isPosRefundPage = location.pathname === "/pos/refund";
   const isPosCashManagementPage = location.pathname === "/pos/cash-management";
+
+  const isPosMenuPage = location.pathname.startsWith("/pos/menu");
+
+  const q = params.get("q") || "";
+  const [menuSearch, setMenuSearch] = useState(q);
+
+  // keep header input in sync if user navigates/back/forward
+  useEffect(() => {
+    setMenuSearch(q);
+  }, [q]);
 
   // --- Split flags via query params (same idea as Cashier POS) ---
   const splitOn = params.get("split") === "1";
@@ -55,6 +69,16 @@ export default function AppHeader({
     } else {
       next.set("split", "1");
     }
+    setParams(next, { replace: true });
+  };
+
+  const setQueryParam = (key, value) => {
+    const next = new URLSearchParams(params);
+    const v = String(value || "").trim();
+
+    if (!v) next.delete(key);
+    else next.set(key, v);
+
     setParams(next, { replace: true });
   };
 
@@ -144,15 +168,15 @@ export default function AppHeader({
         height: APPBAR_HEIGHT,
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: "background.paper",
+
         left: isPosFocusedPage ? 0 : leftOffset,
         width: isPosFocusedPage
           ? "100%"
           : {
               xs: "100%",
-              sm: `calc(100% - ${
-                collapsed ? collapsedWidth : width
-              }px)`,
+              sm: `calc(100% - ${collapsed ? collapsedWidth : width}px - ${rightOffset}px)`,
             },
+
         transition: theme.transitions.create(["left", "width"], {
           easing: theme.transitions.easing.sharp,
           duration: theme.transitions.duration.shortest,
@@ -241,7 +265,45 @@ export default function AppHeader({
         </Box>
 
         {/* RIGHT CLUSTER */}
-        <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+            gap: 1,
+          }}
+        >
+          {/* 🔍 Menu Search (only on POS Menu page, desktop only) */}
+          {isPosMenuPage && (
+            <TextField
+              value={menuSearch}
+              onChange={(e) => {
+                const v = e.target.value;
+                setMenuSearch(v);
+                setQueryParam("q", v);
+              }}
+              placeholder="Search item…"
+              size="small"
+              variant="outlined"
+              sx={{
+                width: 240,
+                display: { xs: "none", sm: "block" },
+                "& .MuiOutlinedInput-root": {
+                  borderRadius: 999,
+                },
+              }}
+              inputProps={{ "aria-label": "Search menu items" }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+            />
+          )}
+
+          {/* Existing Refund button stays */}
           {isPosOrdersPage && (
             <Button
               variant="contained"
@@ -255,6 +317,7 @@ export default function AppHeader({
             </Button>
           )}
         </Box>
+
       </Toolbar>
     </AppBar>
   );
@@ -265,4 +328,5 @@ AppHeader.propTypes = {
   onToggle: PropTypes.func.isRequired,
   width: PropTypes.number,
   collapsedWidth: PropTypes.number,
+  rightOffset: PropTypes.number,
 };

@@ -278,6 +278,8 @@ const terminalId = "TERMINAL-1";
 
   const t = useTheme();
 
+  // Helper: blur whatever is currently focused
+  // (prevents focus staying on search/input when opening summary dialog)
   const blurActive = () => {
     try {
       const el = document.activeElement;
@@ -609,7 +611,8 @@ const terminalId = "TERMINAL-1";
 
   const openItemDiscountPicker = (itemId) => {
     if (!discountChoices.length || discountLoadError) return;
-
+    
+    blurActive();
     setPickerTarget({ type: "item", itemId: String(itemId) });
 
     const existing = itemDiscounts[String(itemId)];
@@ -694,6 +697,7 @@ const terminalId = "TERMINAL-1";
 
   const [newOrderConfirmOpen, setNewOrderConfirmOpen] = useState(false);
   const onClickNewOrder = () => {
+    blurActive();
     openSafely(setNewOrderConfirmOpen);
   };
   const cancelNewOrder = () => setNewOrderConfirmOpen(false);
@@ -854,6 +858,7 @@ const terminalId = "TERMINAL-1";
 
 
   const openPendingDialog = () => {
+    blurActive();
     setCustName("");
     setTableNo("");
     setShowAllTables(false);
@@ -1183,7 +1188,7 @@ const terminalId = "TERMINAL-1";
       : JSON.parse(JSON.stringify(order));
 
     setSummaryOrder(safe);
-    requestAnimationFrame(() => document.activeElement?.blur?.());
+    requestAnimationFrame(blurActive);
   };
   const closeSummary = () => setSummaryOrder(null);
 
