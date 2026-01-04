@@ -139,6 +139,22 @@ const hardNoTypeDateField = {
   },
 };
 
+const startOfWeekMon = (d) => {
+  const dow = d.day();
+  return d.subtract((dow + 6) % 7, "day").startOf("day");
+};
+
+const getWeekRangeMonSun = (base = dayjs()) => {
+  const monday = startOfWeekMon(base);
+  const sunday = monday.add(6, "day").endOf("day");
+  return { from: monday, to: sunday };
+};
+
+const getMonthRange = (year, monthIndex) => {
+  const from = dayjs().year(year).month(monthIndex).date(1).startOf("day");
+  const to = from.endOf("month").endOf("day");
+  return { from, to };
+};
 
 /* ------------------------- Helpers for money formatting ------------------------- */
 const formatNumberMoney = (n) =>
@@ -435,55 +451,53 @@ export default function ReportsPage() {
     return { from: monday, to: sunday };
   };
 
-  function applyPresetRange(preset) {
-    const now = dayjs();
-    let from = null;
-    let to = null;
+function applyPresetRange(nextRange) {
+  setRange(nextRange);
 
-    if (preset === "days") {
-      from = now.startOf("day");
-      to = now.endOf("day");
-    } else if (preset === "weeks") {
-      const w = getIsoWeekRange(now);
-      from = w.from;
-      to = w.to;
-    }
-    // } else if (preset === "weeks") {
-    // // ISO week (Mon-Sun)
-    //   const w = getIsoWeekRange(now);
-
-    //   // Clip to current month only
-    //   const monthStart = now.startOf("month").startOf("day");
-    //   const monthEnd = now.endOf("month").endOf("day");
-
-    //   // from = max(weekStart, monthStart)
-    //   from = w.from.isBefore(monthStart) ? monthStart : w.from;
-
-    //   // to = min(weekEnd, monthEnd)
-    //   to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
-    // } 
-    else if (preset === "monthly") {
-      from = now.startOf("month");
-      to = now.endOf("month");
-    } else if (preset === "quarterly") {
-      from = now.startOf("quarter");
-      to = now.endOf("quarter");
-    } else if (preset === "yearly") {
-      from = now.startOf("year");
-      to = now.endOf("year");
-    }
-
-    if (!from || !to) return;
-
+  const setFromTo = (from, to) => {
     const f = clampToBounds(from.format("YYYY-MM-DD"));
     const t = clampToBounds(to.format("YYYY-MM-DD"));
-
-    setRange(preset);
     setCustomFrom(f);
     setCustomTo(t);
-    setPage1(0);
-    setPage2(0);
   };
+
+  if (nextRange === "days") {
+    setFromTo(dayjs().startOf("day"), dayjs().endOf("day"));
+    return;
+  }
+
+  if (nextRange === "weeks") {
+    const { from, to } = getWeekRangeMonSun(dayjs());
+    setWeekYear(dayjs().year());
+    setWeekMonth(dayjs().month());
+    setWeekKey(from.format("YYYY-MM-DD"));
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "monthly") {
+    const { from, to } = getMonthRange(dayjs().year(), dayjs().month());
+    setMonthYear(dayjs().year());
+    setMonthIndex(dayjs().month());
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "quarterly") {
+    const q = Math.floor(dayjs().month() / 3) * 3;
+    const from = dayjs().month(q).date(1).startOf("day");
+    const to = from.add(2, "month").endOf("month").endOf("day");
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "yearly") {
+    setFromTo(
+      dayjs().month(0).date(1).startOf("day"),
+      dayjs().month(11).endOf("month").endOf("day")
+    );
+  }
+}
 
 useEffect(() => {
   // initialize once, after bounds arrive (so clamping works)
@@ -510,14 +524,145 @@ useEffect(() => {
   const [bestCatSelected, setBestCatSelected] = useState(null); // {categoryId, name, ...}
   const [bestCatTopItems, setBestCatTopItems] = useState([]);
 
-  const bestSellerQS = useMemo(() => {
-    const base =
-      range === "custom" && customFrom && customTo
-        ? `range=custom&from=${customFrom}&to=${customTo}`
-        : `range=${range}`;
+const now = dayjs();
 
-    return `${base}&_=${reloadTick}`; // ✅ cache-buster
-  }, [range, customFrom, customTo, reloadTick]);
+// 🔹 Available options (from backend)
+const [availableYears, setAvailableYears] = useState([]);
+const [availableMonthsByYear, setAvailableMonthsByYear] = useState({});
+const [availableWeekKeys, setAvailableWeekKeys] = useState([]);
+
+// 🔹 Week picker
+const [weekYear, setWeekYear] = useState(now.year());
+const [weekMonth, setWeekMonth] = useState(now.month());
+const [weekKey, setWeekKey] = useState(startOfWeekMon(now).format("YYYY-MM-DD"));
+
+// 🔹 Month picker
+const [monthYear, setMonthYear] = useState(now.year());
+const [monthIndex, setMonthIndex] = useState(now.month());
+
+const yearOptions = availableYears.length ? availableYears : [now.year()];
+const weekMonthOptions = availableMonthsByYear[weekYear] || [];
+const monthOptions = availableMonthsByYear[monthYear] || [];
+
+useEffect(() => {
+  if (!monthOptions.length) return;
+
+  if (!monthOptions.includes(monthIndex)) {
+    const nextMonth = monthOptions[0];
+    setMonthIndex(nextMonth);
+    applySelectedMonth(monthYear, nextMonth);
+  }
+}, [monthYear, monthOptions]);
+
+const applySelectedWeek = (y, m, key) => {
+  const from = dayjs(key).startOf("day");
+  const to = from.add(6, "day").endOf("day");
+
+  setRange("weeks");
+  setWeekYear(y);
+  setWeekMonth(m);
+  setWeekKey(key);
+
+  setCustomFrom(from.format("YYYY-MM-DD"));
+  setCustomTo(to.format("YYYY-MM-DD"));
+};
+
+const applySelectedMonth = (y, m) => {
+  const { from, to } = getMonthRange(y, m);
+
+  setRange("monthly");
+  setMonthYear(y);
+  setMonthIndex(m);
+
+  setCustomFrom(from.format("YYYY-MM-DD"));
+  setCustomTo(to.format("YYYY-MM-DD"));
+};
+
+const weekOptions = useMemo(() => {
+  return (availableWeekKeys || []).map((key, i) => {
+    const from = dayjs(key).startOf("day");
+    const to = from.add(6, "day").endOf("day");
+    return {
+      key,
+      from,
+      to,
+      label: `Week ${i + 1} (${from.format("MMM DD")}–${to.format("MMM DD")})`,
+    };
+  });
+}, [availableWeekKeys]);
+
+useEffect(() => {
+  if (range !== "weeks") return;
+
+  if (!weekOptions.some((w) => w.key === weekKey)) {
+    const first = weekOptions[0];
+    if (first) {
+      setWeekKey(first.key);
+      setCustomFrom(first.from.format("YYYY-MM-DD"));
+      setCustomTo(first.to.format("YYYY-MM-DD"));
+    } else {
+      setWeekKey("");
+      setCustomFrom("");
+      setCustomTo("");
+    }
+  }
+}, [range, weekOptions]); // (weekKey handled by the check)
+
+useEffect(() => {
+  if (weekMonthOptions.length && !weekMonthOptions.includes(weekMonth)) {
+    const nextMonth = weekMonthOptions[0];
+    setWeekMonth(nextMonth);
+
+    // pick first available week in that month
+    const firstKey = weekOptions[0]?.key || "";
+    if (firstKey) applySelectedWeek(weekYear, nextMonth, firstKey);
+  }
+}, [weekYear, weekMonthOptions]);
+
+
+
+
+const buildReportsQS = () => {
+  // if we have explicit dates, always use custom
+  if (customFrom && customTo) {
+    return `range=custom&from=${customFrom}&to=${customTo}`;
+  }
+  return `range=${range}`;
+};
+
+useEffect(() => {
+  fetch("/api/dashboard/available-years")
+    .then((r) => r.json())
+    .then((j) => j?.ok && setAvailableYears(j.years || []))
+    .catch(() => setAvailableYears([]));
+}, []);
+
+useEffect(() => {
+  const years = Array.from(new Set([weekYear, monthYear]));
+
+  years.forEach((y) => {
+    fetch(`/api/dashboard/available-months?year=${y}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!j?.ok) return;
+        setAvailableMonthsByYear((p) => ({ ...p, [y]: j.months || [] }));
+      });
+  });
+}, [weekYear, monthYear]);
+
+useEffect(() => {
+  if (range !== "weeks") return;
+
+  fetch(`/api/dashboard/available-weeks?year=${weekYear}&month=${weekMonth}`)
+    .then((r) => r.json())
+    .then((j) => setAvailableWeekKeys(j?.weeks || []))
+    .catch(() => setAvailableWeekKeys([]));
+}, [range, weekYear, weekMonth]);
+
+const bestSellerQS = useMemo(() => {
+  const base = buildReportsQS();
+  return `${base}&_=${reloadTick}`; // ✅ cache-buster
+}, [range, customFrom, customTo, reloadTick]);
 
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
@@ -558,10 +703,7 @@ useEffect(() => {
 
     async function load() {
       try {
-        const baseQs =
-          range === "custom" && customFrom && customTo
-            ? `range=custom&from=${customFrom}&to=${customTo}`
-            : `range=${range}`;
+        const baseQs = buildReportsQS();
 
         // cache-buster so Refresh always re-fetches
         const qs = `${baseQs}&_=${reloadTick}`;
@@ -672,6 +814,7 @@ useEffect(() => {
       { key: "c4", width: 16 },
       { key: "c5", width: 16 },
       { key: "c6", width: 18 },
+      { key: "c7", width: 24 },
     ];
 
     const moneyFmt = '"₱"#,##0.00';
@@ -1328,6 +1471,84 @@ useEffect(() => {
                   <MenuItem value="yearly">This Year</MenuItem>
                 </Select>
               </FormControl>
+
+              {range === "weeks" && (
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <FormControl size="small" sx={{ minWidth: 110 }}>
+                    <InputLabel>Year</InputLabel>
+                    <Select value={weekYear} label="Year" 
+                      onChange={(e) => {
+                        const y = +e.target.value;
+                        setWeekYear(y);
+                        const firstKey = buildWeeksForMonth(y, weekMonth)[0]?.key || "";
+                        if (firstKey) applySelectedWeek(y, weekMonth, firstKey);
+                      }}
+                    >
+                      {yearOptions.map((y) => (
+                        <MenuItem key={y} value={y}>{y}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <FormControl size="small" sx={{ minWidth: 130 }}>
+                    <InputLabel>Month</InputLabel>
+                    <Select value={weekMonth} label="Month" onChange={(e) => setWeekMonth(+e.target.value)}>
+                      {weekMonthOptions.map((m) => (
+                        <MenuItem key={m} value={m}>
+                          {dayjs().month(m).format("MMMM")}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <FormControl size="small" sx={{ minWidth: 200 }}>
+                    <InputLabel>Week</InputLabel>
+                    <Select
+                      value={weekKey}
+                      label="Week"
+                      onChange={(e) => applySelectedWeek(weekYear, weekMonth, e.target.value)}
+                    >
+                      {availableWeekKeys.map((k, i) => {
+                        const f = dayjs(k);
+                        const t = f.add(6, "day");
+                        return (
+                          <MenuItem key={k} value={k}>
+                            Week {i + 1} ({f.format("MMM DD")}–{t.format("MMM DD")})
+                          </MenuItem>
+                        );
+                      })}
+                    </Select>
+                  </FormControl>
+                </Stack>
+              )}
+
+              {range === "monthly" && (
+                <Stack direction="row" spacing={1}>
+                  <FormControl size="small" sx={{ minWidth: 110 }}>
+                    <InputLabel>Year</InputLabel>
+                    <Select value={monthYear} label="Year" onChange={(e) => setMonthYear(+e.target.value)}>
+                      {yearOptions.map((y) => (
+                        <MenuItem key={y} value={y}>{y}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <FormControl size="small" sx={{ minWidth: 160 }}>
+                    <InputLabel>Month</InputLabel>
+                    <Select
+                      value={monthIndex}
+                      label="Month"
+                      onChange={(e) => applySelectedMonth(monthYear, +e.target.value)}
+                    >
+                      {monthOptions.map((m) => (
+                        <MenuItem key={m} value={m}>
+                          {dayjs().month(m).format("MMMM")}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Stack>
+              )}
 
               {/* 🔸 Custom date range */}
               <DatePicker
