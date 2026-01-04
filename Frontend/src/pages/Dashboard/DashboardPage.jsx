@@ -1,5 +1,5 @@
 // QUSCINA_BACKOFFICE/Frontend/src/pages/Dashboard/DashboardPage.jsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Box,
   Paper,
@@ -86,11 +86,52 @@ const RANGE_LABELS = {
 
 const DEFAULT_RANGE = "days";
 
-const getIsoWeekRange = (base = dayjs()) => {
-  const dow = base.day(); // 0..6 (Sun..Sat)
-  const monday = base.subtract((dow + 6) % 7, "day").startOf("day");
+const startOfWeekMon = (d) => {
+  const dow = d.day(); // 0..6 (Sun..Sat)
+  return d.subtract((dow + 6) % 7, "day").startOf("day"); // Monday
+};
+
+const getWeekRangeMonSun = (base = dayjs()) => {
+  const monday = startOfWeekMon(base);
   const sunday = monday.add(6, "day").endOf("day");
   return { from: monday, to: sunday };
+};
+
+const getMonthRange = (year, monthIndex) => {
+  const from = dayjs().year(year).month(monthIndex).date(1).startOf("day");
+  const to = from.endOf("month").endOf("day");
+  return { from, to };
+};
+
+// Returns [{ key: "YYYY-MM-DD", from: dayjsMonday, to: dayjsSunday, label: "Week 1 (Jan 01–Jan 07)" }, ...]
+const buildWeeksForMonth = (year, monthIndex) => {
+  const monthStart = dayjs().year(year).month(monthIndex).date(1).startOf("day");
+  const monthEnd = monthStart.endOf("month").endOf("day");
+
+  let cursor = startOfWeekMon(monthStart);
+  const weeks = [];
+  let i = 1;
+
+  while (cursor.isBefore(monthEnd) || cursor.isSame(monthEnd, "day")) {
+    const from = cursor;
+    const to = cursor.add(6, "day").endOf("day");
+
+    const label = `Week ${i} (${from.format("MMM DD")}–${to.format("MMM DD")})`;
+    weeks.push({
+      key: from.format("YYYY-MM-DD"), // monday key
+      from,
+      to,
+      label,
+    });
+
+    cursor = cursor.add(7, "day");
+    i += 1;
+
+    // safety cap (should never hit)
+    if (i > 6) break;
+  }
+
+  return weeks;
 };
 
 // Quick Stats Component (responsive: row on desktop, wrap on small screens)
@@ -213,6 +254,249 @@ export default function DashboardPage() {
   const [fromOpen, setFromOpen] = useState(false);
   const [toOpen, setToOpen] = useState(false);
 
+  const [availableYears, setAvailableYears] = useState([]);
+const [availableMonthsByYear, setAvailableMonthsByYear] = useState({});
+
+const now = dayjs();
+
+// Week picker state
+const [weekYear, setWeekYear] = useState(now.year());
+const [weekMonth, setWeekMonth] = useState(now.month()); // 0..11
+const [weekKey, setWeekKey] = useState(startOfWeekMon(now).format("YYYY-MM-DD"));
+
+// Month picker state
+const [monthYear, setMonthYear] = useState(now.year());
+const [monthIndex, setMonthIndex] = useState(now.month()); // 0..11
+
+const [availableWeekKeys, setAvailableWeekKeys] = useState([]); // ["YYYY-MM-DD", ...]
+
+const weekMonthOptions = availableMonthsByYear[weekYear] || [];
+const monthOptions = availableMonthsByYear[monthYear] || [];
+
+const weekOptions = useMemo(() => {
+  return (availableWeekKeys || []).map((key, i) => {
+    const from = dayjs(key).startOf("day");
+    const to = from.add(6, "day").endOf("day");
+    return {
+      key,
+      from,
+      to,
+      label: `Week ${i + 1} (${from.format("MMM DD")}–${to.format("MMM DD")})`,
+    };
+  });
+}, [availableWeekKeys]);
+
+const yearOptions = availableYears.length ? availableYears : [dayjs().year()];
+
+useEffect(() => {
+  let alive = true;
+  (async () => {
+    try {
+      const res = await fetch(joinApi("api/dashboard/available-years"), {
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
+
+      if (!alive) return;
+
+      const years = Array.isArray(data.years) ? data.years : [];
+      setAvailableYears(years);
+
+      // Optional: if current selected year isn't available, auto-fallback to newest
+      if (years.length) {
+        setWeekYear((cur) => (years.includes(cur) ? cur : years[0]));
+        setMonthYear((cur) => (years.includes(cur) ? cur : years[0]));
+      }
+    } catch (e) {
+      console.error("[dashboard] available-years:", e);
+      if (!alive) return;
+      setAvailableYears([]); // fallback: empty list
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, []);
+
+useEffect(() => {
+  if (range !== "weeks") return;
+
+  // if current weekKey isn't valid, auto-pick first available week
+  if (!weekOptions.some((w) => w.key === weekKey)) {
+    const first = weekOptions[0];
+    if (first) {
+      setWeekKey(first.key);
+      setCustomFrom(first.from.format("YYYY-MM-DD"));
+      setCustomTo(first.to.format("YYYY-MM-DD"));
+    } else {
+      setWeekKey("");
+      setCustomFrom("");
+      setCustomTo("");
+    }
+  }
+}, [range, weekOptions]);
+
+useEffect(() => {
+  let alive = true;
+
+  const loadMonths = async (year) => {
+    const res = await fetch(joinApi(`api/dashboard/available-months?year=${year}`), {
+      cache: "no-store",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
+    return Array.isArray(data.months) ? data.months : [];
+  };
+
+  (async () => {
+    try {
+      const yearsToLoad = Array.from(new Set([weekYear, monthYear]));
+
+      const results = await Promise.all(
+        yearsToLoad.map(async (y) => [y, await loadMonths(y)])
+      );
+
+      if (!alive) return;
+
+      setAvailableMonthsByYear((prev) => {
+        const next = { ...prev };
+        for (const [y, months] of results) next[y] = months;
+        return next;
+      });
+    } catch (e) {
+      console.error("[dashboard] available-months:", e);
+      if (!alive) return;
+      // don’t wipe everything—just keep what you already have
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, [weekYear, monthYear]);
+
+useEffect(() => {
+  if (weekMonthOptions.length && !weekMonthOptions.includes(weekMonth)) {
+    const nextMonth = weekMonthOptions[0];
+    setWeekMonth(nextMonth);
+
+    const firstKey = buildWeeksForMonth(weekYear, nextMonth)[0]?.key || "";
+    applySelectedWeek(weekYear, nextMonth, firstKey);
+  }
+}, [weekYear, weekMonthOptions]);
+
+useEffect(() => {
+  if (monthOptions.length && !monthOptions.includes(monthIndex)) {
+    const nextMonth = monthOptions[0];
+    setMonthIndex(nextMonth);
+    applySelectedMonth(monthYear, nextMonth);
+  }
+}, [monthYear, monthOptions]);
+
+useEffect(() => {
+  let alive = true;
+
+  // only when in weeks mode
+  if (range !== "weeks") return;
+
+  (async () => {
+    try {
+      const res = await fetch(
+        joinApi(`api/dashboard/available-weeks?year=${weekYear}&month=${weekMonth}`),
+        { cache: "no-store" }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok !== true) throw new Error(data?.error || `HTTP ${res.status}`);
+
+      if (!alive) return;
+      setAvailableWeekKeys(Array.isArray(data.weeks) ? data.weeks : []);
+    } catch (e) {
+      console.error("[dashboard] available-weeks:", e);
+      if (!alive) return;
+      setAvailableWeekKeys([]);
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, [range, weekYear, weekMonth]);
+
+const applyPresetRange = (nextRange) => {
+  setRange(nextRange);
+
+  const setFromTo = (fromD, toD) => {
+    setCustomFrom(fromD.format("YYYY-MM-DD"));
+    setCustomTo(toD.format("YYYY-MM-DD"));
+  };
+
+  if (nextRange === "days") {
+    const from = dayjs().startOf("day");
+    const to = dayjs().endOf("day");
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "weeks") {
+    // default to "current week" but user can change via selectors
+    const { from, to } = getWeekRangeMonSun(dayjs());
+    setWeekYear(dayjs().year());
+    setWeekMonth(dayjs().month());
+    setWeekKey(from.format("YYYY-MM-DD"));
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "monthly") {
+    const { from, to } = getMonthRange(dayjs().year(), dayjs().month());
+    setMonthYear(dayjs().year());
+    setMonthIndex(dayjs().month());
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "quarterly") {
+    const qStartMonth = Math.floor(dayjs().month() / 3) * 3;
+    const from = dayjs().month(qStartMonth).date(1).startOf("day");
+    const to = from.add(2, "month").endOf("month").endOf("day");
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "yearly") {
+    const from = dayjs().month(0).date(1).startOf("day");
+    const to = dayjs().month(11).endOf("month").endOf("day");
+    setFromTo(from, to);
+    return;
+  }
+};
+
+const applySelectedWeek = (y, m, key) => {
+  const chosen = weekOptions.find((w) => w.key === key);
+  if (!chosen) return;
+
+  setRange("weeks");
+  setWeekYear(y);
+  setWeekMonth(m);
+  setWeekKey(key);
+
+  setCustomFrom(chosen.from.format("YYYY-MM-DD"));
+  setCustomTo(chosen.to.format("YYYY-MM-DD"));
+};
+
+const applySelectedMonth = (y, m) => {
+  const { from, to } = getMonthRange(y, m);
+
+  setRange("custom"); // ✅ IMPORTANT: so backend uses from/to
+  setMonthYear(y);
+  setMonthIndex(m);
+
+  setCustomFrom(from.format("YYYY-MM-DD"));
+  setCustomTo(to.format("YYYY-MM-DD"));
+};
+
   const preventDateFieldWheelAndArrows = {
     onWheel: (e) => {
       e.preventDefault();
@@ -251,7 +535,7 @@ export default function DashboardPage() {
   };
 
   const blurOnFocus = (e) => {
-    e.target.blur?.(); // ✅ kills MM/DD/YYYY highlight
+    e.target.blur?.();
   };
 
   useEffect(() => {
@@ -288,7 +572,7 @@ export default function DashboardPage() {
     (async () => {
       try {
         const res = await fetch(
-          joinApi("api/inventory/ingredients/low-stock"), // ✅ use joinApi
+          joinApi("api/inventory/ingredients/low-stock"),
           { cache: "no-store" }
         );
         const data = await res.json().catch(() => ({}));
@@ -325,7 +609,7 @@ export default function DashboardPage() {
 
     const load = async () => {
       const qs =
-        range === "custom" && customFrom && customTo
+        customFrom && customTo
           ? `range=custom&from=${customFrom}&to=${customTo}`
           : `range=${range}`;
 
@@ -489,6 +773,123 @@ export default function DashboardPage() {
                 <MenuItem value="yearly">This Year</MenuItem>
               </Select>
             </FormControl>
+
+            {/* Extra controls for Week/Month */}
+            {range === "weeks" && (
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <FormControl size="small" sx={{ minWidth: 110 }}>
+                  <InputLabel>Year</InputLabel>
+                  <Select
+                    label="Year"
+                    value={weekYear}
+                    onChange={(e) => {
+                      const y = Number(e.target.value);
+                      setWeekYear(y);
+                    }}
+                  >
+                    {yearOptions.map((y) => (
+                      <MenuItem key={y} value={y}>
+                        {y}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <FormControl size="small" sx={{ minWidth: 130 }}>
+                  <InputLabel>Month</InputLabel>
+                  <Select
+                    label="Month"
+                    value={weekMonth}
+                    onChange={(e) => {
+                      const m = Number(e.target.value);
+                      setWeekMonth(m);
+                    }}
+                  >
+                    {weekMonthOptions.length === 0 ? (
+                      <MenuItem value={weekMonth} disabled>
+                        No months with transactions
+                      </MenuItem>
+                    ) : (
+                      weekMonthOptions.map((m) => (
+                        <MenuItem key={m} value={m}>
+                          {dayjs().month(m).format("MMMM")}
+                        </MenuItem>
+                      ))
+                    )}
+                  </Select>
+                </FormControl>
+
+                <FormControl size="small" sx={{ minWidth: 200 }}>
+                  <InputLabel>Week</InputLabel>
+                  <Select
+                    label="Week"
+                    value={weekKey}
+                    onChange={(e) => applySelectedWeek(weekYear, weekMonth, e.target.value)}
+                  >
+                    {weekOptions.length === 0 ? (
+                      <MenuItem value="" disabled>
+                        No weeks with transactions
+                      </MenuItem>
+                    ) : (
+                      weekOptions.map((w) => (
+                        <MenuItem key={w.key} value={w.key}>
+                          {w.label}
+                        </MenuItem>
+                      ))
+                    )}
+                  </Select>
+                </FormControl>
+              </Stack>
+            )}
+
+            {range === "monthly" && (
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <FormControl size="small" sx={{ minWidth: 110 }}>
+                  <InputLabel>Year</InputLabel>
+                  <Select
+                    label="Year"
+                    value={monthYear}
+                    onChange={(e) => {
+                      const y = Number(e.target.value);
+                      setMonthYear(y);
+                      applySelectedMonth(y, monthIndex);
+                    }}
+                  >
+                    {yearOptions.map((y) => (
+                      <MenuItem key={y} value={y}>
+                        {y}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <FormControl size="small" sx={{ minWidth: 160 }}>
+                  <InputLabel>Month</InputLabel>
+                    <Select
+                      label="Month"
+                      value={monthIndex}
+                      onChange={(e) => {
+                        const m = Number(e.target.value);
+                        setMonthIndex(m);
+                        applySelectedMonth(monthYear, m);
+                      }}
+                    >
+                      {monthOptions.length === 0 ? (
+                        <MenuItem value={monthIndex} disabled>
+                          No months with transactions
+                        </MenuItem>
+                      ) : (
+                        monthOptions.map((m) => (
+                          <MenuItem key={m} value={m}>
+                            {dayjs().month(m).format("MMMM")}
+                          </MenuItem>
+                        ))
+                      )}
+                    </Select>
+                </FormControl>
+              </Stack>
+            )}
+
             <LocalizationProvider dateAdapter={AdapterDayjs}>
               <DatePicker
                 label="From"

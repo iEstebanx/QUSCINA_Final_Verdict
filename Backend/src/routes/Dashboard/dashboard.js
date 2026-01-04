@@ -40,6 +40,111 @@ module.exports = ({ db }) => {
   }
 
   /* =========================================================================
+ * 0) AVAILABLE YEARS (for dropdown)
+ * ========================================================================= */
+router.get("/available-years", async (req, res) => {
+  try {
+    // only years that have transactions that matter to dashboard
+    const rows = await db.query(`
+      SELECT DISTINCT YEAR(o.closed_at) AS y
+      FROM pos_orders o
+      WHERE o.status IN ('paid','refunded')
+      AND o.closed_at IS NOT NULL
+      ORDER BY y DESC
+    `);
+
+    const years = (rows || [])
+      .map((r) => Number(r.y))
+      .filter((y) => Number.isFinite(y));
+
+    return res.json({ ok: true, years });
+  } catch (e) {
+    console.error("[dashboard/available-years]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * 0b) AVAILABLE MONTHS (for dropdown) - months that have txns in given year
+ * ========================================================================= */
+router.get("/available-months", async (req, res) => {
+  try {
+    const year = Number(req.query.year);
+    if (!Number.isFinite(year)) {
+      return res.status(400).json({ ok: false, error: "year is required" });
+    }
+
+    const rows = await db.query(
+      `
+      SELECT DISTINCT MONTH(o.closed_at) AS m
+      FROM pos_orders o
+      WHERE o.status IN ('paid','refunded')
+        AND o.closed_at IS NOT NULL
+        AND YEAR(o.closed_at) = ?
+      ORDER BY m ASC
+      `,
+      [year]
+    );
+
+    const months = (rows || [])
+      .map((r) => Number(r.m))        // 1..12
+      .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12)
+      .map((m) => m - 1);             // convert to 0..11 for dayjs UI
+
+    return res.json({ ok: true, months });
+  } catch (e) {
+    console.error("[dashboard/available-months]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * 0c) AVAILABLE WEEKS (for dropdown) - weeks that have txns in given year+month
+ *    returns monday keys: ["YYYY-MM-DD", ...]
+ * ========================================================================= */
+router.get("/available-weeks", async (req, res) => {
+  try {
+    const year = Number(req.query.year);
+    const monthIndex = Number(req.query.month); // 0..11 from UI
+
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) {
+      return res.status(400).json({ ok: false, error: "year and month are required" });
+    }
+    if (monthIndex < 0 || monthIndex > 11) {
+      return res.status(400).json({ ok: false, error: "month must be 0..11" });
+    }
+
+    const month = monthIndex + 1; // SQL MONTH() is 1..12
+
+    const rows = await db.query(
+      `
+      SELECT DISTINCT
+        DATE_FORMAT(
+          DATE_SUB(DATE(o.closed_at), INTERVAL WEEKDAY(o.closed_at) DAY),
+          '%Y-%m-%d'
+        ) AS monday_key
+      FROM pos_orders o
+      WHERE o.status IN ('paid','refunded')
+        AND o.closed_at IS NOT NULL
+        AND YEAR(o.closed_at) = ?
+        AND MONTH(o.closed_at) = ?
+      ORDER BY monday_key ASC
+      `,
+      [year, month]
+    );
+
+    const weeks = (rows || [])
+      .map((r) => String(r.monday_key))
+      .filter(Boolean);
+
+    return res.json({ ok: true, weeks });
+  } catch (e) {
+    console.error("[dashboard/available-weeks]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+  /* =========================================================================
    * 1) TOTAL METRICS (sales, orders, avg order)
    * ========================================================================= */
   router.get("/metrics", async (req, res) => {
