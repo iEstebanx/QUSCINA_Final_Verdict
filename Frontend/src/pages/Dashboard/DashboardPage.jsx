@@ -75,6 +75,24 @@ const formatDateTime = (iso) => {
   }
 };
 
+const RANGE_LABELS = {
+  days: "Today",
+  weeks: "This Week",
+  monthly: "This Month",
+  quarterly: "This Quarter",
+  yearly: "This Year",
+  custom: "Custom",
+};
+
+const DEFAULT_RANGE = "days";
+
+const getIsoWeekRange = (base = dayjs()) => {
+  const dow = base.day(); // 0..6 (Sun..Sat)
+  const monday = base.subtract((dow + 6) % 7, "day").startOf("day");
+  const sunday = monday.add(6, "day").endOf("day");
+  return { from: monday, to: sunday };
+};
+
 // Quick Stats Component (responsive: row on desktop, wrap on small screens)
 // Quick Stats Component (center content inside cards)
 const QuickStats = ({ metrics }) => (
@@ -454,26 +472,23 @@ export default function DashboardPage() {
               <InputLabel id="range-label">Range</InputLabel>
               <Select
                 labelId="range-label"
-                value={range}
                 label="Range"
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setRange(value);
-                  if (value !== "custom") {
-                    setCustomFrom("");
-                    setCustomTo("");
-                  }
-                }}
+                value={range}
+                renderValue={(v) => RANGE_LABELS[v] || "Range"}
+                onChange={(e) => applyPresetRange(e.target.value)}
               >
-                <MenuItem value="days">Day</MenuItem>
-                <MenuItem value="weeks">Week</MenuItem>
-                <MenuItem value="monthly">Monthly</MenuItem>
-                <MenuItem value="quarterly">Quarterly</MenuItem>
-                <MenuItem value="yearly">Yearly</MenuItem>
-                <MenuItem value="custom">Custom</MenuItem>
+                {/* hidden display-only option so MUI never renders blank */}
+                <MenuItem value="__custom__" disabled sx={{ display: "none" }}>
+                  Custom
+                </MenuItem>
+
+                <MenuItem value="days">Today</MenuItem>
+                <MenuItem value="weeks">This Week</MenuItem>
+                <MenuItem value="monthly">This Month</MenuItem>
+                <MenuItem value="quarterly">This Quarter</MenuItem>
+                <MenuItem value="yearly">This Year</MenuItem>
               </Select>
             </FormControl>
-
             <LocalizationProvider dateAdapter={AdapterDayjs}>
               <DatePicker
                 label="From"

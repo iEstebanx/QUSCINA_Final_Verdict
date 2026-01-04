@@ -249,27 +249,146 @@ export default function Menu() {
   const closeDialog = () => setDialogOpen(false);
   const changeQty = (d) => setDialogQty((q) => Math.max(1, q + d));
 
-  const handleAddToCart = () => {
+  const handleAddToCart = async () => {
     if (!selectedItem) return;
 
-    ensureShiftThen(() => {
-      for (let k = 0; k < dialogQty; k++) {
-        addItem({
-          id: selectedItem.id,
-          name: selectedItem.name,
-          price: selectedItem.price,
-          image: selectedItem.image || null,
+    ensureShiftThen(async () => {
+      // quick UI block
+      if (adding) return;
+
+      try {
+        setAdding(true);
+
+        // 1) Build virtual cart (cart + selected qty)
+        const itemsForCheck = buildInventoryCheckItems(selectedItem.id, dialogQty);
+
+        // 2) Call backend pre-check
+        const res = await fetch(posOrdersApi("/check-inventory"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ items: itemsForCheck }),
         });
+
+        const data = await res.json().catch(() => ({}));
+
+        // 3) If insufficient inventory, show error and stop
+        if (res.status === 409 && data?.code === "INSUFFICIENT_INVENTORY") {
+          showError(formatInventoryProblems(data?.problems || []));
+          return;
+        }
+
+        if (!res.ok || data?.ok === false) {
+          throw new Error(data?.error || "Inventory check failed.");
+        }
+
+        // 4) OK → add to cart
+        // If your CartContext supports adding qty in one go, use it.
+        // Otherwise keep your loop.
+        for (let k = 0; k < dialogQty; k++) {
+          addItem({
+            id: selectedItem.id,
+            name: selectedItem.name,
+            price: selectedItem.price,
+            image: selectedItem.image || null,
+          });
+        }
+
+        closeDialog();
+      } catch (err) {
+        console.error("Add to cart failed:", err);
+        showError(err?.message || "Failed to add item to cart.");
+      } finally {
+        setAdding(false);
       }
-      closeDialog();
     });
   };
-
 
   const [errorDialog, setErrorDialog] = useState({
     open: false,
     message: "",
   });
+
+  // --- inventory pre-check (Option A) ---
+  const [adding, setAdding] = useState(false);
+
+  // Prefer orders API for this file
+  const posOrdersApi = (subPath = "") => {
+    const base = API_BASE || "";
+    const clean = subPath.startsWith("/") ? subPath : `/${subPath}`;
+    if (!base) return `/api/pos/orders${clean}`;
+    return `${base}/api/pos/orders${clean}`;
+  };
+
+  // Builds [{id, qty}] from cart + the new selection
+  const buildInventoryCheckItems = (selectedId, addQty) => {
+    // your CartContext commonly exposes `items`
+    const cartItems = Array.isArray(cart.items) ? cart.items : [];
+
+    const qtyById = new Map();
+
+    for (const it of cartItems) {
+      const id = Number(it?.id);
+      const qty = Number(it?.qty ?? it?.quantity ?? 1);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      qtyById.set(id, (qtyById.get(id) || 0) + qty);
+    }
+
+    const sid = Number(selectedId);
+    const aq = Number(addQty);
+
+    if (Number.isFinite(sid) && sid > 0 && Number.isFinite(aq) && aq > 0) {
+      qtyById.set(sid, (qtyById.get(sid) || 0) + aq);
+    }
+
+    return Array.from(qtyById.entries()).map(([id, qty]) => ({ id, qty }));
+  };
+
+const fmt = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "0";
+  // show integers without .00, keep decimals if needed
+  const rounded = Math.round(v * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+};
+
+const formatInventoryProblems = (problems = []) => {
+  if (!Array.isArray(problems) || problems.length === 0) {
+    return "Cannot add this item — not enough stock.\n\nPlease reduce the quantity or restock inventory.";
+  }
+
+  const lines = problems.map((p) => {
+    const name = (p?.invName || "").trim() || `Inventory #${p?.invId ?? "?"}`;
+
+    if (p?.reason === "direct_not_product") {
+      return `• ${name}: invalid setup (Direct stock must link to a Product)`;
+    }
+
+    if (p?.reason === "missing_inventory_row") {
+      return `• ${name}: missing inventory record`;
+    }
+
+    if (p?.reason === "insufficient_stock") {
+      const req = Number(p?.required ?? 0);
+      const cur = Number(p?.currentStock ?? 0);
+      const short = Math.max(0, req - cur);
+
+      return `• ${name}: available ${fmt(cur)}, required ${fmt(req)} (short ${fmt(short)})`;
+    }
+
+    return `• ${name}: ${p?.reason || "problem"}`;
+  });
+
+  return [
+    "Cannot add to cart — insufficient inventory.",
+    "",
+    "What’s missing:",
+    ...lines,
+    "",
+    "Reduce the quantity or restock the inventory.",
+  ].join("\n");
+};
 
   const showError = (message) =>
     setErrorDialog({ open: true, message: message || "Something went wrong." });
@@ -630,10 +749,10 @@ export default function Menu() {
                     <Button
                       variant="contained"
                       onClick={handleAddToCart}
-                      disabled={!canAdd}
+                      disabled={!canAdd || adding}
                       className={styles.addToCartBtn}
                     >
-                      Add to Cart
+                      {adding ? "Checking…" : "Add to Cart"}
                     </Button>
 
                     {selectedItem.price > 0 && (
@@ -659,9 +778,11 @@ export default function Menu() {
 
         {/* Error dialog for availability problems */}
         <Dialog open={errorDialog.open} onClose={closeErrorDialog}>
-          <DialogTitle>Cannot Update Availability</DialogTitle>
+          <DialogTitle>Cannot Proceed</DialogTitle>
           <DialogContent>
-            <Typography variant="body2">{errorDialog.message}</Typography>
+            <Typography variant="body2" sx={{ whiteSpace: "pre-line" }}>
+              {errorDialog.message}
+            </Typography>
           </DialogContent>
           <DialogActions>
             <Button onClick={closeErrorDialog} autoFocus>

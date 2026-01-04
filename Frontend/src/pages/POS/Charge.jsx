@@ -28,6 +28,12 @@ import { API_BASE } from "@/utils/apiBase";
 
 const PHP = (n) => `₱${Number(n).toFixed(2)}`;
 
+const fmtQty = (n) => {
+  const x = Math.round((Number(n) || 0) * 100) / 100; // keep up to 2 decimals
+  const s = x.toFixed(2);
+  return s.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1"); // 8.00->8, 8.50->8.5
+};
+
 // 🔹 Helper for Backoffice POS /pos/orders API
 const posOrdersApi = (subPath = "") => {
   const base = API_BASE || "";
@@ -258,6 +264,10 @@ export default function Charge() {
 
   const [custOpen, setCustOpen] = useState(false);
   const [custErr, setCustErr] = useState("");
+  const [invWarnOpen, setInvWarnOpen] = useState(false);
+  const [invWarn, setInvWarn] = useState({
+    problems: [],
+  });
 
   const [chargeCustName, setChargeCustName] = useState(() => {
     // priority: navigation state → saved draft → empty (force ask)
@@ -680,7 +690,9 @@ export default function Charge() {
       });
 
       const data = await res.json().catch(() => ({}));
+
       if (!res.ok || data?.ok === false) {
+        // ✅ existing change handling
         if (res.status === 409 && data?.code === "INSUFFICIENT_CHANGE") {
           setChangeWarn({
             required: Number(data.requiredChange) || 0,
@@ -691,6 +703,16 @@ export default function Charge() {
           setChangeWarnOpen(true);
           return;
         }
+
+        // ✅ NEW: inventory handling
+        if (res.status === 409 && data?.code === "INSUFFICIENT_INVENTORY") {
+          setInvWarn({
+            problems: Array.isArray(data?.problems) ? data.problems : [],
+          });
+          setInvWarnOpen(true);
+          return;
+        }
+
         throw new Error(data?.error || `Checkout failed (${res.status})`);
       }
 
@@ -1367,6 +1389,92 @@ export default function Charge() {
             disabled={isPosting}
           >
             Yes, Payment Received
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* NEW: Insufficient Inventory Dialog */}
+      <Dialog
+        open={invWarnOpen}
+        onClose={() => setInvWarnOpen(false)}
+        PaperProps={{ sx: { minWidth: 520, borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, textAlign: "center" }}>
+          Not Enough Stock
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Typography sx={{ textAlign: "center", opacity: 0.9 }}>
+              You can’t charge this order because some items exceed the available inventory.
+            </Typography>
+
+            {(!invWarn.problems || invWarn.problems.length === 0) ? (
+              <Typography variant="body2" sx={{ textAlign: "center", opacity: 0.8 }}>
+                Please review your cart quantities and try again.
+              </Typography>
+            ) : (
+              <Box sx={{ mt: 1 }}>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 120px 120px",
+                    gap: 1,
+                    px: 1,
+                    py: 1,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                  }}
+                >
+                  <Typography sx={{ fontWeight: 800 }}>Inventory</Typography>
+                  <Typography sx={{ fontWeight: 800, textAlign: "right" }}>
+                    Needed
+                  </Typography>
+                  <Typography sx={{ fontWeight: 800, textAlign: "right" }}>
+                    In Stock
+                  </Typography>
+                </Box>
+
+                {invWarn.problems.map((p, idx) => (
+                  <Box
+                    key={idx}
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 120px 120px",
+                      gap: 1,
+                      px: 1,
+                      py: 0.75,
+                      borderBottom: 1,
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Typography sx={{ fontWeight: 700 }}>
+                      {p.invName || p.name || `#${p.invId}`}
+                    </Typography>
+                    <Typography sx={{ textAlign: "right", fontWeight: 700 }}>
+                      {fmtQty(p.required)}
+                    </Typography>
+                    <Typography sx={{ textAlign: "right", fontWeight: 800 }}>
+                      {fmtQty(p.currentStock)}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+
+            <Typography variant="body2" sx={{ opacity: 0.8, textAlign: "center" }}>
+              Adjust the cart quantity (or restock) then try charging again.
+            </Typography>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2.5, py: 2, gap: 1 }}>
+          <Button
+            variant="contained"
+            onClick={() => setInvWarnOpen(false)}
+            sx={{ fontWeight: 800 }}
+          >
+            OK
           </Button>
         </DialogActions>
       </Dialog>

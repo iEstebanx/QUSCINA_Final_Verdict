@@ -443,25 +443,26 @@ export default function ReportsPage() {
     if (preset === "days") {
       from = now.startOf("day");
       to = now.endOf("day");
-    // } else if (preset === "weeks") {
-    //   const w = getIsoWeekRange(now);
-    //   from = w.from;
-    //   to = w.to;
-    // }
     } else if (preset === "weeks") {
-    // ISO week (Mon-Sun)
       const w = getIsoWeekRange(now);
+      from = w.from;
+      to = w.to;
+    }
+    // } else if (preset === "weeks") {
+    // // ISO week (Mon-Sun)
+    //   const w = getIsoWeekRange(now);
 
-      // Clip to current month only
-      const monthStart = now.startOf("month").startOf("day");
-      const monthEnd = now.endOf("month").endOf("day");
+    //   // Clip to current month only
+    //   const monthStart = now.startOf("month").startOf("day");
+    //   const monthEnd = now.endOf("month").endOf("day");
 
-      // from = max(weekStart, monthStart)
-      from = w.from.isBefore(monthStart) ? monthStart : w.from;
+    //   // from = max(weekStart, monthStart)
+    //   from = w.from.isBefore(monthStart) ? monthStart : w.from;
 
-      // to = min(weekEnd, monthEnd)
-      to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
-    } else if (preset === "monthly") {
+    //   // to = min(weekEnd, monthEnd)
+    //   to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
+    // } 
+    else if (preset === "monthly") {
       from = now.startOf("month");
       to = now.endOf("month");
     } else if (preset === "quarterly") {

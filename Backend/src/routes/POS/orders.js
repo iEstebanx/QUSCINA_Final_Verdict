@@ -297,7 +297,7 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
   const invRows = asArray(
     await conn.query(
       `
-      SELECT id, kind, currentStock
+      SELECT id, name, kind, currentStock
       FROM inventory_ingredients
       WHERE id IN (${placeholders})
       `,
@@ -309,6 +309,7 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
     invRows.map((r) => [
       Number(r.id),
       {
+        invName: String(r.name || "").trim(),      // ✅ ADD THIS
         kind: String(r.kind || "ingredient"),
         currentStock: safeNumber(r.currentStock, 0),
       },
@@ -323,7 +324,12 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
   for (const [invId, required] of deduceByInvId.entries()) {
     const inv = invById.get(invId);
     if (!inv) {
-      problems.push({ invId, required, reason: "missing_inventory_row" });
+      problems.push({
+        invId,
+        invName: "",
+        required,
+        reason: "missing_inventory_row",
+      });
       continue;
     }
 
@@ -331,13 +337,20 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
     // by looking at details. We'll be strict: if ANY detail indicates direct invId, enforce kind.
     const usedAsDirect = details.some((d) => d?.stockMode === "direct" && Number(d?.invId) === invId);
     if (usedAsDirect && inv.kind !== "product") {
-      problems.push({ invId, required, reason: "direct_not_product", kind: inv.kind });
+      problems.push({
+        invId,
+        invName: inv.invName || "",     // ✅ ADD THIS
+        required,
+        reason: "direct_not_product",
+        kind: inv.kind,
+      });
       continue;
     }
 
     if (inv.currentStock + 0.0001 < required) {
       problems.push({
         invId,
+        invName: inv.invName || "",
         required,
         currentStock: inv.currentStock,
         reason: "insufficient_stock",

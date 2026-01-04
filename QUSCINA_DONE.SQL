@@ -709,7 +709,7 @@ CREATE TABLE IF NOT EXISTS pos_order_items (
   item_name    VARCHAR(60) NOT NULL,             -- snapshot
   item_price   DECIMAL(12,2) NOT NULL DEFAULT 0, -- per unit
   qty          DECIMAL(12,3) NOT NULL DEFAULT 1, -- allow fractional if ever needed
-  voided_qty DECIMAL(12,3) NOT NULL DEFAULT 0;
+  voided_qty DECIMAL(12,3) NOT NULL DEFAULT 0,
   refunded_qty DECIMAL(12,3) NOT NULL DEFAULT 0,
   line_total   DECIMAL(12,2) NOT NULL DEFAULT 0, -- item_price * qty
 
