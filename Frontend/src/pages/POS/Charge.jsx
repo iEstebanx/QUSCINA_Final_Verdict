@@ -477,6 +477,25 @@ export default function Charge() {
   const minFor1 = 0;
   const minFor2 = slot1Charged ? remainingDue : 0;
 
+  // cents helpers (avoid float issues)
+  const toCents = (n) => Math.round((Number(n) || 0) * 100);
+  const centsToPHP = (c) => (Number(c || 0) / 100);
+
+  // in split mode, slot 1 must leave at least ₱0.01 for slot 2
+  const MIN_REMAINING_AFTER_SLOT1_CENTS = 100;
+
+  const remainingC = toCents(remainingDue);
+  const paid1C = toCents(paid1);
+  const paid2C = toCents(paid2);
+
+  // max allowed for slot 1 (so slot 2 is never useless)
+  const maxSlot1C = Math.max(0, remainingC - MIN_REMAINING_AFTER_SLOT1_CENTS);
+  const maxSlot1 = centsToPHP(maxSlot1C);
+
+  // slot1 invalid if it would fully settle remaining
+  const slot1OverMax =
+    mode === "split" && !slot1Charged && !saleLocked && paid1 > 0 && paid1C > maxSlot1C;
+
   const slot1Short = minFor1 > 0 && paid1 > 0 && paid1 < minFor1;
   const slot2Short = minFor2 > 0 && paid2 > 0 && paid2 < minFor2;
 
@@ -484,28 +503,28 @@ export default function Charge() {
     step === "charge" && mode === "split" ? `Remaining ${PHP(remainingSplit)}` : "";
 
   const resetToMenu = () => {
-    try {
-      localStorage.removeItem("currentOrderId");
-    } catch {}
+      try {
+        localStorage.removeItem("currentOrderId");
+      } catch {}
 
-    // ✅ clear customer draft on NEW SALE
-    setChargeCustName("");
-    try { localStorage.removeItem(LS_CHARGE_CUSTOMER); } catch {}
+      // ✅ clear customer draft on NEW SALE
+      setChargeCustName("");
+      try { localStorage.removeItem(LS_CHARGE_CUSTOMER); } catch {}
 
-    // unlock back when starting a new sale
-    try {
-      const next = new URLSearchParams(params);
-      next.delete("backlock");
-      setParams(next, { replace: true });
-    } catch {}
+      // unlock back when starting a new sale
+      try {
+        const next = new URLSearchParams(params);
+        next.delete("backlock");
+        setParams(next, { replace: true });
+      } catch {}
 
-    nav("/pos/menu", { replace: true });
-    setTimeout(() => {
-      clearDiscounts();
-      clearItemDiscounts();
-      clearCart();
-    }, 0);
-};
+      nav("/pos/menu", { replace: true });
+      setTimeout(() => {
+        clearDiscounts();
+        clearItemDiscounts();
+        clearCart();
+      }, 0);
+  };
 
   const ensureCustomerName = (slot) => {
     setPendingSlot(slot);
@@ -578,6 +597,22 @@ export default function Charge() {
     const isSlot1 = slot === 1;
     const paidThis = isSlot1 ? paid1 : paid2;
     const method = isSlot1 ? method1 : method2;
+
+    if (mode === "split" && slot === 1) {
+      const remainingBefore = Math.max(0, totalDue - paidSoFar);
+      // leave at least ₱0.01 for slot 2
+      const remainingBeforeC = toCents(remainingBefore);
+      const paidThisC = toCents(paidThis);
+
+      if (paidThisC > remainingBeforeC - MIN_REMAINING_AFTER_SLOT1_CENTS) {
+        window.alert(
+          `Split payment: the first payment must be partial. Please leave at least ${PHP(
+            centsToPHP(MIN_REMAINING_AFTER_SLOT1_CENTS)
+          )} for the second payment.`
+        );
+        return;
+      }
+    }
 
     if (paidThis <= 0) return;
 
@@ -861,11 +896,13 @@ export default function Charge() {
                       e.target.value.replace(/[^\d.]/g, "")
                     )
                   }
-                  disabled={slot1Charged || saleLocked}
-                  error={slot1Short}
+                  disabled={slot1Charged || saleLocked || (mode === "split" && remainingC <= MIN_REMAINING_AFTER_SLOT1_CENTS)}
+                  error={slot1Short || slot1OverMax}
                   helperText={
                     slot1Charged || saleLocked
                       ? "This payment is already marked as PAID."
+                      : slot1OverMax
+                      ? `Split payment: Payment 1 must be less than the total.`
                       : slot1Short
                       ? `Must be at least ${PHP(minFor1)}`
                       : minFor1 > 0
@@ -890,7 +927,7 @@ export default function Charge() {
                     setConfirmSlot(1);
                     setConfirmOpen(true);
                   }}
-                  disabled={!paid1 || slot1Short}
+                  disabled={!paid1 || slot1Short || slot1OverMax}
                 >
                   CHARGE
                 </Button>

@@ -76,6 +76,7 @@ const formatDateTime = (iso) => {
 };
 
 // Quick Stats Component (responsive: row on desktop, wrap on small screens)
+// Quick Stats Component (center content inside cards)
 const QuickStats = ({ metrics }) => (
   <Stack
     direction="row"
@@ -86,8 +87,27 @@ const QuickStats = ({ metrics }) => (
     alignItems="stretch"
     sx={{ height: "100%" }}
   >
-    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 140, flex: "1 1 140px" }}>
-      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+    {/* Total Sales */}
+    <Card
+      sx={{
+        minWidth: 140,
+        flex: "1 1 140px",
+        display: "flex",
+      }}
+    >
+      <CardContent
+        sx={{
+          flex: 1,
+          p: 1.25,
+          "&:last-child": { pb: 1.25 },
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          gap: 0.25,
+        }}
+      >
         <Typography variant="h6" fontWeight="bold" color="primary">
           {peso(metrics.totalSales)}
         </Typography>
@@ -97,8 +117,27 @@ const QuickStats = ({ metrics }) => (
       </CardContent>
     </Card>
 
-    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 140, flex: "1 1 140px" }}>
-      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+    {/* Total Orders */}
+    <Card
+      sx={{
+        minWidth: 140,
+        flex: "1 1 140px",
+        display: "flex",
+      }}
+    >
+      <CardContent
+        sx={{
+          flex: 1,
+          p: 1.25,
+          "&:last-child": { pb: 1.25 },
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          gap: 0.25,
+        }}
+      >
         <Typography variant="h6" fontWeight="bold" color="secondary">
           {metrics.totalOrders}
         </Typography>
@@ -108,8 +147,27 @@ const QuickStats = ({ metrics }) => (
       </CardContent>
     </Card>
 
-    <Card sx={{ textAlign: "center", px: 1.5, py: 1, minWidth: 160, flex: "1 1 160px" }}>
-      <CardContent sx={{ p: 1.25, "&:last-child": { pb: 1.25 } }}>
+    {/* Total User Accounts */}
+    <Card
+      sx={{
+        minWidth: 160,
+        flex: "1 1 160px",
+        display: "flex",
+      }}
+    >
+      <CardContent
+        sx={{
+          flex: 1,
+          p: 1.25,
+          "&:last-child": { pb: 1.25 },
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          gap: 0.25,
+        }}
+      >
         <Typography variant="h6" fontWeight="bold" color="info.main">
           {metrics.customerCount}
         </Typography>
@@ -120,7 +178,6 @@ const QuickStats = ({ metrics }) => (
     </Card>
   </Stack>
 );
-
 
 export default function DashboardPage() {
   const theme = useTheme();

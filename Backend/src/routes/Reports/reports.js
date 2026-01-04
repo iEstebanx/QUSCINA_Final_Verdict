@@ -409,10 +409,12 @@ module.exports = ({ db }) => {
             o.closed_at,
             o.net_amount AS total,
             o.status,
-            e.first_name,
-            e.last_name
+            COALESCE(
+              NULLIF(CONCAT_WS(' ', e.first_name, e.last_name), ''),
+              CONCAT('[Deleted User] ', COALESCE(o.created_by, 'Unknown'))
+            ) AS staff_name
         FROM pos_orders o
-        JOIN employees e ON e.employee_id = o.created_by
+        LEFT JOIN employees e ON e.employee_id = o.created_by
         WHERE o.status IN ('paid','refunded')
         ORDER BY o.closed_at DESC
         LIMIT 100
@@ -422,7 +424,7 @@ module.exports = ({ db }) => {
         const list = rows.map((r) => ({
         id: `#${r.order_id}`,
         date: r.closed_at,
-        employee: `${r.first_name} ${r.last_name}`,
+        employee: r.staff_name,
         type: r.status === "refunded" ? "Refund" : "Sale",
         total: Number(r.total || 0),
         }));
@@ -466,10 +468,12 @@ module.exports = ({ db }) => {
           s.declared_cash,
           s.variance_cash,
           s.closing_note,
-          e.first_name,
-          e.last_name
+          COALESCE(
+            NULLIF(CONCAT_WS(' ', e.first_name, e.last_name), ''),
+            CONCAT('[Deleted User] ', COALESCE(s.employee_id, 'Unknown'))
+          ) AS staff_name
         FROM pos_shifts s
-        JOIN employees e ON e.employee_id = s.employee_id
+        LEFT JOIN employees e ON e.employee_id = s.employee_id
         LEFT JOIN (
           SELECT
             shift_id,
@@ -501,7 +505,7 @@ module.exports = ({ db }) => {
 
         return {
           shiftNo: r.shift_id,
-          staffName: `${r.first_name} ${r.last_name}`,
+          staffName: r.staff_name,
           date: r.opened_at, // front will format
           startingCash: Number(r.opening_float || 0),
           cashInOut: `+₱${cashIn.toFixed(2)} / -₱${cashOut.toFixed(2)}`,

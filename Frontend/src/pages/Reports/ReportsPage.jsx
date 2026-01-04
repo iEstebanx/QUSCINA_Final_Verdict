@@ -83,6 +83,15 @@ const DEFAULT_EXPORT = {
   shiftHistory: true,
 };
 
+const RANGE_LABELS = {
+  days: "Today",
+  weeks: "This Week",
+  monthly: "This Month",
+  quarterly: "This Quarter",
+  yearly: "This Year",
+  custom: "Custom",
+};
+
 const DEFAULT_RANGE = "days"; // Day
 
 const preventDateFieldWheelAndArrows = {
@@ -163,6 +172,51 @@ const pdfHeadStyles = {
   fontStyle: "bold",
 };
 
+const getSeriesSectionLabel = (range, customFrom, customTo) => {
+  if (range === "custom") {
+    const f = customFrom ? dayjs(customFrom).format("MM/DD/YYYY") : "";
+    const t = customTo ? dayjs(customTo).format("MM/DD/YYYY") : "";
+    return f && t ? `Sales (${f} – ${t})` : "Sales (Custom Range)";
+  }
+
+  // reuse your existing RANGE_LABELS mapping
+  return `${RANGE_LABELS[range] || "Sales"} Sales`;
+};
+
+const getSeriesPeriodHeader = (range) => {
+  switch (range) {
+    case "weeks":
+      return "Week";
+    case "monthly":
+      return "Month";
+    case "quarterly":
+      return "Quarter";
+    case "yearly":
+      return "Year";
+    default:
+      return "Date";
+  }
+};
+
+// optional: make week labels nicer if backend returns YEARWEEK like 202601
+const formatSeriesLabel = (range, x) => {
+  if (range === "weeks") {
+    const n = Number(x);
+    if (!Number.isFinite(n)) return String(x);
+    const year = Math.floor(n / 100);
+    const week = String(n % 100).padStart(2, "0");
+    return `${year}-W${week}`;
+  }
+
+  if (range === "monthly") {
+    // x is "YYYY-MM"
+    const d = dayjs(`${x}-01`);
+    return d.isValid() ? d.format("MMM YYYY") : String(x);
+  }
+
+  return String(x);
+};
+
 /* --------------------------------- Page --------------------------------- */
 export default function ReportsPage() {
   const { user } = useAuth();
@@ -186,12 +240,7 @@ export default function ReportsPage() {
   };
 
   const refreshReports = () => {
-    // ✅ Reset filters to default
-    setRange(DEFAULT_RANGE);
-    setCustomFrom("");
-    setCustomTo("");
-
-    // optional: reset other UI states too
+    // reset other UI states too
     setSearch("");
     setSelectedOrder(null);
     setBestCatOpen(false);
@@ -203,9 +252,13 @@ export default function ReportsPage() {
     setPage1(0);
     setPage2(0);
 
+    // ✅ Reset to default range AND refresh From/To to default
+    applyPresetRange(DEFAULT_RANGE);
+
     // force refetch
     setReloadTick((x) => x + 1);
   };
+
 
   const runExport = async () => {
     if (!ensureCustomRangeComplete()) return;
@@ -258,14 +311,25 @@ export default function ReportsPage() {
     setExportOpen(false);
   };
 
-  const exportKeys = [
-    { key: "dailySales", label: "Daily Sales (Table)" },
-    { key: "top5Items", label: "Top 5 Items" },
-    { key: "paymentTypes", label: "Sales by Payment Type" },
-    { key: "bestSellerCats", label: "Best Seller Categories (Top 5)" },
-    { key: "bestSellerItemsPerCat", label: "Best Seller Items per Category (Top 5 each)" },
-    { key: "shiftHistory", label: "Shift History" },
-  ];
+  // 🔹 Range preset (Day/Week/Monthly/etc. + Custom)
+  const [range, setRange] = useState("days");
+
+  // 🔹 Custom date range (YYYY-MM-DD from <input type="date" />)
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  const exportKeys = useMemo(() => {
+    const seriesLabel = `${getSeriesSectionLabel(range, customFrom, customTo)} (Table)`;
+
+    return [
+      { key: "dailySales", label: seriesLabel },
+      { key: "top5Items", label: "Top 5 Items" },
+      { key: "paymentTypes", label: "Sales by Payment Type" },
+      { key: "bestSellerCats", label: "Best Seller Categories (Top 5)" },
+      { key: "bestSellerItemsPerCat", label: "Best Seller Items per Category (Top 5 each)" },
+      { key: "shiftHistory", label: "Shift History" },
+    ];
+  }, [range, customFrom, customTo]);
 
   const openExportDialog = (kind) => {
     setExportKind(kind);          // "pdf" | "excel"
@@ -327,34 +391,27 @@ export default function ReportsPage() {
     };
   }, []);
 
-const preparedBy = useMemo(() => {
-  if (!user) return "Prepared by: N/A";
+  const preparedBy = useMemo(() => {
+    if (!user) return "Prepared by: N/A";
 
-  const first =
-    user.firstName || user.first_name || user.firstname || "";
-  const last =
-    user.lastName || user.last_name || user.lastname || "";
+    const first =
+      user.firstName || user.first_name || user.firstname || "";
+    const last =
+      user.lastName || user.last_name || user.lastname || "";
 
-  const fullName = `${first} ${last}`.trim() || String(user.name || "").trim();
+    const fullName = `${first} ${last}`.trim() || String(user.name || "").trim();
 
-  const loginIdUsed =
-    sessionStorage.getItem("qd_login_identifier") ||
-    localStorage.getItem("qd_login_identifier") ||
-    "";
+    const loginIdUsed =
+      sessionStorage.getItem("qd_login_identifier") ||
+      localStorage.getItem("qd_login_identifier") ||
+      "";
 
-  if (fullName && loginIdUsed) return `Prepared by: ${fullName} (${loginIdUsed})`;
-  if (fullName) return `Prepared by: ${fullName}`;
-  if (loginIdUsed) return `Prepared by: ${loginIdUsed}`;
+    if (fullName && loginIdUsed) return `Prepared by: ${fullName} (${loginIdUsed})`;
+    if (fullName) return `Prepared by: ${fullName}`;
+    if (loginIdUsed) return `Prepared by: ${loginIdUsed}`;
 
-  return `Prepared by: ${user.employeeId || user.username || user.email || "N/A"}`;
-}, [user]);
-
-  // 🔹 Range preset (Day/Week/Monthly/etc. + Custom)
-  const [range, setRange] = useState("days");
-
-  // 🔹 Custom date range (YYYY-MM-DD from <input type="date" />)
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+    return `Prepared by: ${user.employeeId || user.username || user.email || "N/A"}`;
+  }, [user]);
 
   const [search, setSearch] = useState("");
   const [page1, setPage1] = useState(0);
@@ -362,6 +419,78 @@ const preparedBy = useMemo(() => {
 
   const [page2, setPage2] = useState(0);
   const [rpp2, setRpp2] = useState(10);
+
+  const clampToBounds = (s) => {
+    const { min, max } = dateBounds || {};
+    let out = s;
+    if (min && out < min) out = min;
+    if (max && out > max) out = max;
+    return out;
+  };
+
+  const getIsoWeekRange = (base = dayjs()) => {
+    const dow = base.day(); // 0..6 (Sun..Sat)
+    const monday = base.subtract((dow + 6) % 7, "day").startOf("day");
+    const sunday = monday.add(6, "day").endOf("day");
+    return { from: monday, to: sunday };
+  };
+
+  function applyPresetRange(preset) {
+    const now = dayjs();
+    let from = null;
+    let to = null;
+
+    if (preset === "days") {
+      from = now.startOf("day");
+      to = now.endOf("day");
+    // } else if (preset === "weeks") {
+    //   const w = getIsoWeekRange(now);
+    //   from = w.from;
+    //   to = w.to;
+    // }
+    } else if (preset === "weeks") {
+    // ISO week (Mon-Sun)
+      const w = getIsoWeekRange(now);
+
+      // Clip to current month only
+      const monthStart = now.startOf("month").startOf("day");
+      const monthEnd = now.endOf("month").endOf("day");
+
+      // from = max(weekStart, monthStart)
+      from = w.from.isBefore(monthStart) ? monthStart : w.from;
+
+      // to = min(weekEnd, monthEnd)
+      to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
+    } else if (preset === "monthly") {
+      from = now.startOf("month");
+      to = now.endOf("month");
+    } else if (preset === "quarterly") {
+      from = now.startOf("quarter");
+      to = now.endOf("quarter");
+    } else if (preset === "yearly") {
+      from = now.startOf("year");
+      to = now.endOf("year");
+    }
+
+    if (!from || !to) return;
+
+    const f = clampToBounds(from.format("YYYY-MM-DD"));
+    const t = clampToBounds(to.format("YYYY-MM-DD"));
+
+    setRange(preset);
+    setCustomFrom(f);
+    setCustomTo(t);
+    setPage1(0);
+    setPage2(0);
+  };
+
+useEffect(() => {
+  // initialize once, after bounds arrive (so clamping works)
+  if (!customFrom && !customTo) {
+    applyPresetRange(DEFAULT_RANGE);
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [dateBounds.min, dateBounds.max]);
 
   // 🔹 REAL data from backend
   const [categoryTop5, setCategoryTop5] = useState([]);
@@ -504,147 +633,6 @@ const preparedBy = useMemo(() => {
   const hasTransactions = txCount > 0;
 
   /* ---------------------- Shared Excel / CSV builder ---------------------- */
-  const buildSalesExcelCsv = ({
-    rangeText,
-    categoryTop5Data,
-    categorySeriesData,
-    paymentsData,
-    bestSellerData,
-    bestSellerDetails,
-    staffPerformanceData,
-    preparedBy,
-  }) => {
-    const reportInfo = {
-      title: "Sales Report",
-      dateRange: rangeText,
-      generatedAt: new Date().toLocaleString(),
-    };
-
-    const convertToCSV = (data, headers) => {
-      if (!data || data.length === 0) return "";
-      const csvHeaders = headers.map((h) => `"${h.label}"`).join(",");
-      const csvRows = data.map((row) =>
-        headers
-          .map((h) => {
-            const value = row[h.key] ?? "";
-            return `"${String(value).replace(/"/g, '""')}"`;
-          })
-          .join(",")
-      );
-      return [csvHeaders, ...csvRows].join("\n");
-    };
-
-    const categoryCSV = convertToCSV(
-      (categoryTop5Data || []).map((row, idx) => ({
-        rank: idx + 1,
-        name: row.name,
-        net: row.net,
-      })),
-      [
-        { label: "Rank", key: "rank" },
-        { label: "Item", key: "name" },
-        { label: "Net Sales", key: "net" },
-      ]
-    );
-
-    const paymentsCSV = convertToCSV(paymentsData || [], [
-      { label: "Payment Type", key: "type" },
-      { label: "Payment Transactions", key: "tx" },
-      { label: "Refund Transactions", key: "refundTx" },
-      { label: "Net Amount", key: "net" },
-    ]);
-
-    const bestSellerCSV = convertToCSV(bestSellerData || [], [
-      { label: "Rank", key: "rank" },
-      { label: "Category", key: "name" },
-      { label: "Total Orders", key: "orders" },
-      { label: "Total Sales", key: "sales" },
-    ]);
-
-    const bestSellerDetailsCSV = (bestSellerDetails || [])
-      .map((cat) => {
-        const header = `\nCATEGORY: ${cat.rank}. ${cat.name} | Orders: ${cat.orders} | Sales: ${peso(cat.sales)}\n`;
-        const items = cat.topItems || [];
-
-        const itemsCsv = convertToCSV(
-          items.map((it) => ({
-            rank: it.rank,
-            name: it.name,
-            orders: it.orders,
-            qty: it.qty,
-            sales: peso(it.sales),
-          })),
-          [
-            { label: "Rank", key: "rank" },
-            { label: "Item", key: "name" },
-            { label: "Orders", key: "orders" },
-            { label: "Qty", key: "qty" },
-            { label: "Sales", key: "sales" },
-          ]
-        );
-
-        return header + (itemsCsv || "No data");
-      })
-      .join("\n");
-
-    const staffCSV = convertToCSV(staffPerformanceData || [], [
-      { label: "Shift No.", key: "shiftNo" },
-      { label: "Staff Name", key: "staffName" },
-      { label: "Date", key: "date" },
-      { label: "Starting Cash", key: "startingCash" },
-      { label: "Cash In/Out", key: "cashInOut" },
-      { label: "Count Cash", key: "countCash" },
-      { label: "Actual Cash", key: "actualCash" },
-      { label: "Remarks", key: "remarks" },
-    ]);
-
-    const chartCSV =
-      categorySeriesData && categorySeriesData.length > 0
-        ? categorySeriesData.map((item) => `"${item.x}","${item.y}"`).join("\n")
-        : "";
-
-    const fullCSV = `Sales Report - ${reportInfo.dateRange}
-  Generated: ${reportInfo.generatedAt}
-
-  TOP 5 ITEMS
-  ${categoryCSV || "No data"}
-
-  SALES BY PAYMENT TYPE
-  ${paymentsCSV || "No data"}
-
-  BEST SELLER CATEGORIES (TOP 5)
-  ${bestSellerCSV || "No data"}
-
-  BEST SELLER ITEMS PER CATEGORY (TOP 5 EACH)
-  ${bestSellerDetailsCSV || "No data"}
-
-  SHIFT HISTORY
-  ${staffCSV || "No data"}
-
-  SALES CHART DATA
-  Date,Amount
-  ${chartCSV || ""}
-
-  ${preparedBy || "Prepared by: N/A"}`;
-
-    return fullCSV;
-  };
-
-  const triggerExcelDownload = (csv, label) => {
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute(
-      "download",
-      `sales-report-${label.replace(/\s+/g, "-")}-${Date.now()}.csv`
-    );
-    link.style.visibility = "hidden";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const ensureCustomRangeComplete = () => {
     if (range === "custom" && (!customFrom || !customTo)) {
       alert("Please select both From and To dates for custom range.");
@@ -781,7 +769,7 @@ const preparedBy = useMemo(() => {
     // --------------------------
     // TOP 5 ITEMS
     // --------------------------
-    sectionTitle(r++, "TOP 5 ITEMS");
+    sectionTitle(r++, "Top 5 Items");
     tableHeader(r++, ["Rank", "Item", "Net Sales"]);
     if ((categoryTop5Data || []).length) {
       categoryTop5Data.forEach((it, idx) => {
@@ -916,16 +904,22 @@ const preparedBy = useMemo(() => {
     const ws2 = wb.addWorksheet("Chart Data", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
+
     ws2.columns = [
-      { header: "Date/Label", key: "x", width: 18 },
+      { header: getSeriesPeriodHeader(range), key: "x", width: 18 },
       { header: "Amount", key: "y", width: 16 },
     ];
+
     ws2.getRow(1).font = { bold: true };
     ws2.getRow(1).fill = fillHeader;
 
     (categorySeriesData || []).forEach((d) => {
-      ws2.addRow({ x: d.x, y: Number(d.y || 0) });
+      ws2.addRow({
+        x: formatSeriesLabel(range, d.x),
+        y: Number(d.y || 0),
+      });
     });
+
     ws2.getColumn(2).numFmt = moneyFmt;
 
     // Download
@@ -1051,25 +1045,27 @@ const preparedBy = useMemo(() => {
     doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
     cursorY += 26;
 
-    // DAILY SALES
+    // DAILY / PERIOD SALES
     if (categorySeriesData?.length) {
       doc.setFont(undefined, "bold");
-      doc.text("Daily sales", 72, cursorY);
+      const seriesTitle = getSeriesSectionLabel(range, customFrom, customTo);
+      const periodHeader = getSeriesPeriodHeader(range);
+
+      doc.text(seriesTitle, 72, cursorY);
       cursorY += 8;
 
       autoTable(doc, {
         startY: cursorY + 8,
         head: [[
-          "Date",
+          periodHeader,
           "Total Orders",
           "Discounted Orders",
-          "Total Revenue(Discount Included)",
+          "Total Revenue (Discount Included)",
           "Total Profit",
         ]],
         body: dailyRows.map((r) => [
-          r.date,
+          formatSeriesLabel(range, r.date),
           r.totalOrders,
-          formatNumberMoney(r.retail),
           r.discountedOrders,
           formatNumberMoney(r.totalRevenue),
           formatNumberMoney(r.totalProfit),
@@ -1314,23 +1310,21 @@ const preparedBy = useMemo(() => {
                 <InputLabel id="range-label">Range</InputLabel>
                 <Select
                   labelId="range-label"
-                  value={range}
                   label="Range"
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setRange(value);
-                    if (value !== "custom") {
-                      setCustomFrom("");
-                      setCustomTo("");
-                    }
-                  }}
+                  value={range}
+                  renderValue={(v) => RANGE_LABELS[v] || "Range"}
+                  onChange={(e) => applyPresetRange(e.target.value)}
                 >
-                  <MenuItem value="days">Day</MenuItem>
-                  <MenuItem value="weeks">Week</MenuItem>
-                  <MenuItem value="monthly">Monthly</MenuItem>
-                  <MenuItem value="quarterly">Quarterly</MenuItem>
-                  <MenuItem value="yearly">Yearly</MenuItem>
-                  <MenuItem value="custom">Custom</MenuItem>
+                  {/* hidden display-only option so MUI never renders blank */}
+                  <MenuItem value="__custom__" disabled sx={{ display: "none" }}>
+                    Custom
+                  </MenuItem>
+
+                  <MenuItem value="days">Today</MenuItem>
+                  <MenuItem value="weeks">This Week</MenuItem>
+                  <MenuItem value="monthly">This Month</MenuItem>
+                  <MenuItem value="quarterly">This Quarter</MenuItem>
+                  <MenuItem value="yearly">This Year</MenuItem>
                 </Select>
               </FormControl>
 
@@ -1342,7 +1336,10 @@ const preparedBy = useMemo(() => {
                 value={customFrom ? dayjs(customFrom) : null}
                 open={fromOpen}
                 onOpen={() => setFromOpen(true)}
-                onClose={() => setFromOpen(false)}
+                onClose={() => {
+                  setFromOpen(false);
+                  requestAnimationFrame(() => document.activeElement?.blur?.());
+                }}
                 onChange={(value) => {
                   if (value === null) {
                     setCustomFrom("");

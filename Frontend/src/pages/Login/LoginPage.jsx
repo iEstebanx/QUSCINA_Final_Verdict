@@ -117,24 +117,6 @@ export default function LoginPage() {
   const [secret, setSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
 
-  // ----- PIN keypad behavior (Backoffice) -----
-  const PIN_LEN = 6; // set to 6 to match Cashier POS; if you want 4–8, see note below
-  const [pinValue, setPinValue] = useState("");
-
-  // dots slots
-  const pinSlots = useMemo(
-    () => Array.from({ length: PIN_LEN }, (_, i) => `pin-slot-${i}`),
-    []
-  );
-
-  const activeSecretValue = loginMode === "pin" ? pinValue : secret;
-
-  // keep secret state in sync for submit()
-  useEffect(() => {
-    if (loginMode !== "pin") return;
-    setSecret(pinValue); // so onSubmit continues to work without rewriting logic
-  }, [loginMode, pinValue, setSecret]);
-
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [prechecking, setPrechecking] = useState(false);
@@ -170,6 +152,32 @@ export default function LoginPage() {
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [ticketSubmitting, setTicketSubmitting] = useState(false);
+
+  // ----- PIN keypad behavior (Backoffice) -----
+  const PIN_LEN = 6; // actual PIN stays 6 digits
+  const [pinValue, setPinValue] = useState("");
+
+  // ----- NEW Cashier Setup (new account: PIN not set) -----
+  const [newCashierSetup, setNewCashierSetup] = useState(false); // special flow
+  const [newCashierStage, setNewCashierStage] = useState("ticket"); // "ticket" | "new" | "confirm"
+  const [newCashierTicket, setNewCashierTicket] = useState(""); // 8-digit ticket typed on keypad
+  const [newCashierRequestId, setNewCashierRequestId] = useState(null);
+  const [newCashierError, setNewCashierError] = useState("");
+
+  // ticket is 8 digits only when in new-cashier setup "ticket" stage
+  const activePinLen =
+    loginStep === "secret" &&
+    loginMode === "pin" &&
+    newCashierSetup &&
+    newCashierStage === "ticket"
+      ? 8
+      : PIN_LEN;
+
+  // dots slots (depends on activePinLen)
+  const pinSlots = useMemo(
+    () => Array.from({ length: activePinLen }, (_, i) => `pin-slot-${i}`),
+    [activePinLen]
+  );
 
   // ----- Cashier Reset Ticket -> PIN reset inside Enter PIN keypad -----
   const [cashierTicketOpen, setCashierTicketOpen] = useState(false);
@@ -342,13 +350,18 @@ export default function LoginPage() {
   const isLockedForCurrentId =
     lockedIdKey === idKey(identifier) && (lockPermanent || lockSecondsLeft > 0);
 
+  const blockDigitsForLock = isLockedForCurrentId && !newCashierSetup;
+
   const isCashierContext = loginStep === "secret" && loginMode === "pin";
 
   const secretLabel = loginMode === "pin" ? "PIN" : "Password";
   const secretAutoComplete =
     loginMode === "pin" ? "one-time-code" : "current-password";
 
-  const isPinResetUi = loginStep === "secret" && loginMode === "pin" && pinResetMode;
+  const isPinResetUi =
+    loginStep === "secret" &&
+    loginMode === "pin" &&
+    (pinResetMode || newCashierSetup);
 
   // ---------------------- Login: Next (precheck) ----------------------
   const onNext = async () => {
@@ -404,7 +417,24 @@ export default function LoginPage() {
 
       // optional hint
       if (isCashier && info?.pinNotSet) {
-        alert.info("PIN is not set yet. Please use the Reset Ticket flow to set your PIN.");
+        // ✅ NEW ACCOUNT SETUP: ticket on keypad -> new pin -> confirm pin
+        setNewCashierSetup(true);
+        setNewCashierStage("ticket");
+        setNewCashierTicket("");
+        setNewCashierRequestId(null);
+        setNewCashierError("");
+
+        setPinValue("");      // clear dots
+        setSecretError("");
+        // Optional: you can show a one-time hint toast
+        // alert.info("New Cashier account: enter your 8-digit ticket to set your PIN.");
+      } else {
+        // existing cashier / admin
+        setNewCashierSetup(false);
+        setNewCashierStage("ticket");
+        setNewCashierTicket("");
+        setNewCashierRequestId(null);
+        setNewCashierError("");
       }
     } catch (err) {
       const status = err?.status ?? 0;
@@ -429,10 +459,8 @@ export default function LoginPage() {
           alert.error("Account locked. Please contact an Admin.");
         }
 
-        setLoginMode("pin");
-
-        // ✅ Move to secret step so recovery buttons are visible
         setLoginStep("secret");
+        setLoginMode(String(roleHint || "").toLowerCase() === "cashier" ? "pin" : "password");
         setSecret("");
         setPinValue("");
         setShowSecret(false);
@@ -472,19 +500,68 @@ export default function LoginPage() {
     setLockSecondsLeft(0);
     setLockPermanent(false);
     setLockedIdKey(null);
+
+    setNewCashierSetup(false);
+    setNewCashierStage("ticket");
+    setNewCashierTicket("");
+    setNewCashierRequestId(null);
+    setNewCashierError("");
   };
 
 // ----- PIN keypad handlers (Backoffice) -----
 const handlePinDigit = (digit) => {
-  if (submitting || prechecking || ticketSubmitting || isLockedForCurrentId) return;
+  // ✅ During new cashier setup, we do NOT block on isLockedForCurrentId
+  const shouldBlockForLock = !newCashierSetup;
+
+  if (submitting || prechecking || ticketSubmitting) return;
+  if (shouldBlockForLock && isLockedForCurrentId) return;
 
   setPinValue((prev) => {
-    if (prev.length >= PIN_LEN) return prev;
+    const maxLen = activePinLen; // 8 for ticket stage, else 6
+    if (prev.length >= maxLen) return prev;
+
     const next = prev + String(digit);
 
-    if (next.length === PIN_LEN) {
+    if (next.length === maxLen) {
       setTimeout(() => {
-        // If resetting PIN, do NOT submit login — drive reset stages
+        // ✅ NEW CASHIER SETUP FLOW
+        if (newCashierSetup) {
+          // Stage 1: Ticket entry (8 digits)
+          if (newCashierStage === "ticket") {
+            setPinValue("");
+            verifyNewCashierTicketFromKeypad(next);
+            return;
+          }
+
+          // Stage 2/3: New PIN + Confirm PIN (6 digits)
+          if (newCashierStage === "new") {
+            setPinResetFirst(next);
+            setNewCashierError("");
+            setPinResetError("");
+            setNewCashierStage("confirm");
+            setPinValue("");
+            return;
+          }
+
+          // confirm
+          if (newCashierStage === "confirm") {
+            if (next !== pinResetFirst) {
+              setPinResetError("PINs do not match. Try again.");
+              setNewCashierStage("new");
+              setPinResetFirst("");
+              setPinValue("");
+              return;
+            }
+
+            setPinValue("");
+            // ✅ reuse your existing confirm endpoint call
+            // but use newCashierTicket + newCashierRequestId
+            submitNewCashierPinConfirm(next);
+            return;
+          }
+        }
+
+        // EXISTING PIN RESET MODE (recovery)
         if (pinResetMode) {
           if (pinResetStage === "new") {
             setPinResetFirst(next);
@@ -494,7 +571,6 @@ const handlePinDigit = (digit) => {
             return;
           }
 
-          // confirm
           if (next !== pinResetFirst) {
             setPinResetError("PINs do not match. Try again.");
             setPinResetStage("new");
@@ -508,7 +584,7 @@ const handlePinDigit = (digit) => {
           return;
         }
 
-        // ✅ normal login (submit exact pin)
+        // NORMAL CASHIER LOGIN (submit pin)
         setPinValue("");
         setSecret("");
         submitPinLogin(next);
@@ -519,17 +595,31 @@ const handlePinDigit = (digit) => {
   });
 };
 
-
 const handlePinDelete = () => {
-  if (submitting || prechecking || ticketSubmitting || isLockedForCurrentId) return;
+  const shouldBlockForLock = !newCashierSetup;
+  if (submitting || prechecking || ticketSubmitting) return;
+  if (shouldBlockForLock && isLockedForCurrentId) return;
   setPinValue((prev) => prev.slice(0, -1));
 };
 
 const handlePinBack = () => {
   if (submitting || prechecking || ticketSubmitting) return;
 
+  // ✅ NEW CASHIER SETUP:
+  if (newCashierSetup) {
+    // Back disabled during new/confirm (as requested)
+    if (newCashierStage === "new" || newCashierStage === "confirm") {
+      return;
+    }
+    // On ticket stage, allow backing out to Login ID
+    setPinValue("");
+    setSecret("");
+    onBackToId();
+    return;
+  }
+
+  // existing reset flow
   if (pinResetMode) {
-    // back inside reset flow
     if (pinResetStage === "confirm") {
       setPinResetStage("new");
       setPinResetFirst("");
@@ -537,7 +627,6 @@ const handlePinBack = () => {
       setPinValue("");
       return;
     }
-    // stage "new" -> cancel reset mode
     cancelPinResetMode();
     return;
   }
@@ -696,6 +785,119 @@ const submitNewPinConfirm = async (finalPin) => {
   }
 };
 
+const verifyNewCashierTicketFromKeypad = async (ticket8) => {
+  const empId = resolveEmployeeIdForTicket();
+
+  if (!/^\d{9}$/.test(empId)) {
+    setNewCashierError("Please use your 9-digit Employee ID as Login ID for new Cashier setup.");
+    setPinValue("");
+    return;
+  }
+
+  if (!/^\d{8}$/.test(ticket8)) {
+    setNewCashierError("Ticket must be 8 digits.");
+    setPinValue("");
+    return;
+  }
+
+  setTicketSubmitting(true);
+  setNewCashierError("");
+
+  try {
+    const resp = await fetch(join("/api/auth/pin-reset/verify-ticket"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+      credentials: "include",
+      body: JSON.stringify({ employeeId: empId, ticket: ticket8 }),
+    });
+
+    const j = await safeJson(resp);
+    if (!resp.ok) throw new Error(j?.error || "Invalid / expired ticket.");
+
+    const reqId = j?.requestId ?? null;
+    if (!reqId) throw new Error("Missing requestId from server.");
+
+    setNewCashierTicket(ticket8);
+    setNewCashierRequestId(reqId);
+
+    // move to PIN creation
+    setNewCashierStage("new");
+    setPinValue("");
+    setPinResetError(""); // optional: keep yours clean
+    alert.success("Ticket verified. Set your new PIN.");
+  } catch (err) {
+    setNewCashierError(err?.message || "Unable to verify ticket.");
+    setPinValue("");
+  } finally {
+    setTicketSubmitting(false);
+  }
+};
+
+const submitNewCashierPinConfirm = async (finalPin) => {
+  if (ticketSubmitting) return;
+  if (pinConfirmInFlightRef.current) return;
+  pinConfirmInFlightRef.current = true;
+
+  const empId = resolveEmployeeIdForTicket();
+  const ticket = String(newCashierTicket || "").trim();
+  const reqId = String(newCashierRequestId || "").trim();
+
+  if (!empId) { pinConfirmInFlightRef.current = false; return alert.error("Missing employee ID."); }
+  if (!/^\d{8}$/.test(ticket)) { pinConfirmInFlightRef.current = false; return alert.error("Missing / invalid ticket."); }
+  if (!reqId) { pinConfirmInFlightRef.current = false; return alert.error("Missing requestId. Please re-enter your ticket."); }
+
+  setTicketSubmitting(true);
+  try {
+    const resp = await fetch(join("/api/auth/pin-reset/confirm"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App": "backoffice" },
+      credentials: "include",
+      body: JSON.stringify({
+        employeeId: empId,
+        ticket,
+        requestId: reqId,
+        newPin: String(finalPin),
+      }),
+    });
+
+    const j = await safeJson(resp);
+    if (!resp.ok) throw new Error(j?.error || "Unable to set PIN");
+
+    alert.success("PIN created! Please enter your PIN to sign in.");
+
+    // exit new-cashier setup mode
+    setNewCashierSetup(false);
+    setNewCashierStage("ticket");
+    setNewCashierTicket("");
+    setNewCashierRequestId(null);
+    setNewCashierError("");
+
+    setPinResetFirst("");
+    setPinResetError("");
+    setPinValue("");
+    setSecret("");
+    setSecretError("");
+
+    // now show normal Enter PIN screen
+    setLoginStep("secret");
+    setLoginMode("pin");
+  } catch (err) {
+    alert.error(err?.message || "Unable to set PIN. Please try again.");
+
+    // if ticket invalid/expired, return to ticket stage (still no lock)
+    setNewCashierStage("ticket");
+    setNewCashierTicket("");
+    setNewCashierRequestId(null);
+    setNewCashierError("Ticket expired/used. Please enter a new ticket.");
+    setPinResetFirst("");
+    setPinResetError("");
+    setPinValue("");
+  } finally {
+    setTicketSubmitting(false);
+    pinConfirmInFlightRef.current = false;
+  }
+};
+
   // ---------------------- Login: Submit (role-aware) ----------------------
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -723,7 +925,7 @@ const submitNewPinConfirm = async (finalPin) => {
       alert.success("Welcome back!");
 
       const from = loc.state?.from?.pathname;
-      const role = roleHint || user?.role || "";
+      const role = roleHint || "";
       const dest = resolvePostLoginDest(role, from);
 
       nav(dest, { replace: true });
@@ -1473,7 +1675,13 @@ const submitPinLogin = async (finalPin) => {
               <Box>
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                   <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                    {pinResetMode
+                    {newCashierSetup
+                      ? newCashierStage === "ticket"
+                        ? "New Account — Use your Ticket"
+                        : newCashierStage === "new"
+                        ? "Set New PIN"
+                        : "Confirm New PIN"
+                      : pinResetMode
                       ? pinResetStage === "new"
                         ? "Set New PIN"
                         : "Confirm New PIN"
@@ -1484,6 +1692,12 @@ const submitPinLogin = async (finalPin) => {
                 {!!pinResetError && (
                   <Typography color="error" variant="body2" sx={{ textAlign: "center", mb: 1 }}>
                     {pinResetError}
+                  </Typography>
+                )}
+
+                {!!newCashierError && (
+                  <Typography color="error" variant="body2" sx={{ textAlign: "center", mb: 1 }}>
+                    {newCashierError}
                   </Typography>
                 )}
 
@@ -1533,7 +1747,7 @@ const submitPinLogin = async (finalPin) => {
                             ticketSubmitting ||
                             submitting ||
                             prechecking ||
-                            (key !== "Back" && isLockedForCurrentId) ||
+                            (key !== "Back" && blockDigitsForLock) ||
                             (key === "Back" && pinResetMode)
                           }
                           onClick={() => {
@@ -1669,7 +1883,7 @@ const submitPinLogin = async (finalPin) => {
             )}
 
             {/* Show Reset Ticket ONLY after Next (secret step) AND ONLY for Cashier PIN */}
-            {isCashierContext && !pinResetMode && (
+            {isCashierContext && !pinResetMode && !newCashierSetup && (
               <>
                 <Divider sx={{ my: { xs: 0, sm: 0.5 } }}>or</Divider>
 

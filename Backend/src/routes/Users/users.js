@@ -114,13 +114,21 @@ async function buildSQEntries(inputArr) {
 // Generate next 9-digit id: "YYYYxxxxx"
 async function generateNextEmployeeId(conn, year = new Date().getFullYear()) {
   const prefix = String(year);
-  const [rows] = await conn.query(
+
+  const r = await conn.query(
     `SELECT MAX(employee_id) AS max_id FROM employees WHERE employee_id LIKE ?`,
     [`${prefix}%`]
   );
+
+  const rows = Array.isArray(r)
+    ? (Array.isArray(r[0]) ? r[0] : r)   // mysql2 vs some wrappers
+    : [];
+
   const max_id = rows?.[0]?.max_id;
+
   const base = Number(`${prefix}00000`);
   const nextNum = Math.max(base, Number(max_id || 0)) + 1;
+
   const nextStr = String(nextNum);
   return /^\d{9}$/.test(nextStr) ? nextStr : `${prefix}00001`;
 }
@@ -291,10 +299,12 @@ module.exports = ({ db } = {}) => {
 
       // ✅ will be filled only for NEW Cashier
       let initialTicket = null; // { token, expiresAt, requestId }
+      let createdEmployeeId = null;
 
       await db.tx(async (conn) => {
         let id = /^\d{9}$/.test(String(employeeId)) ? String(employeeId) : null;
         const lv = objToDbLoginVia(desiredLoginVia);
+        let inserted = false;
 
         // --- INSERT employee (retry on employee_id collision)
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -347,6 +357,7 @@ module.exports = ({ db } = {}) => {
               );
             }
 
+            inserted = true;
             break; // success
           } catch (err) {
             if (err?.code === "ER_DUP_ENTRY") {
@@ -356,6 +367,14 @@ module.exports = ({ db } = {}) => {
             throw err;
           }
         }
+
+        if (!inserted || !id) {
+          const err = new Error("Failed to allocate employee_id (too many collisions).");
+          err.statusCode = 500;
+          throw err;
+        }
+
+        createdEmployeeId = String(id); // ✅ make available outside tx
 
         // --- INSERT aliases
         const aliasesWanted = makeAliases(desiredLoginVia, uname, mail, id);
@@ -393,7 +412,6 @@ module.exports = ({ db } = {}) => {
         }
 
         // ✅ AUTO-ISSUE "FIRST TIME PIN SETUP" ticket (Cashier-only, 1 hour)
-        // - This is separate from the 15-minute reset-ticket endpoint.
         if (roleNorm === "Cashier") {
           const token = String(Math.floor(Math.random() * 1e8)).padStart(8, "0");
           const tokenHash = await bcrypt.hash(token, SALT_ROUNDS);
@@ -405,7 +423,6 @@ module.exports = ({ db } = {}) => {
             throw err;
           }
 
-          // revoke any prior pending tickets (defensive)
           await conn.execute(
             `UPDATE employee_pin_reset_requests
                 SET status='revoked'
@@ -429,16 +446,15 @@ module.exports = ({ db } = {}) => {
 
           const requestId = ins?.insertId ?? null;
 
-          const [r2] = await conn.query(
+          const r2 = await conn.query(
             `SELECT id, expires_at FROM employee_pin_reset_requests WHERE id = ? LIMIT 1`,
             [requestId]
           );
-
-          const expiresAt = r2?.[0]?.expires_at ?? null;
+          const r2rows = Array.isArray(r2) ? (Array.isArray(r2[0]) ? r2[0] : r2) : [];
+          const expiresAt = r2rows?.[0]?.expires_at ?? null;
 
           initialTicket = { token, expiresAt, requestId };
 
-          // Audit for ticket issuance on create
           await logUserAudit(conn, req, {
             action: "User - POS PIN Reset Ticket Issued",
             actionType: "pin_reset_ticket_initial",
@@ -465,8 +481,7 @@ module.exports = ({ db } = {}) => {
             username: subjectAfter.username,
             email: subjectAfter.email,
             loginVia: subjectAfter.loginVia,
-            // helpful for audit review:
-            initialPinTicketIssued: roleNorm === "Cashier" ? true : false,
+            initialPinTicketIssued: roleNorm === "Cashier",
           },
         });
       });
@@ -474,6 +489,7 @@ module.exports = ({ db } = {}) => {
       // ✅ Return ticket ONLY for newly created Cashier
       return res.status(201).json({
         ok: true,
+        employeeId: createdEmployeeId,
         ...(initialTicket ? { initialTicket } : {}),
       });
     } catch (e) {

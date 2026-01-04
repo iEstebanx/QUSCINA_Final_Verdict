@@ -591,7 +591,7 @@ export default function UserManagementPage() {
       // ✅ IMPORTANT: set ticket BEFORE closing main dialog
       if (!isEditing && form.role === "Cashier" && res?.initialTicket) {
         setCreateResult({
-          employeeId: form.employeeId,
+          employeeId: res.employeeId || form.employeeId,
           username: form.username,
           email: form.email,
           ticket: res.initialTicket,
@@ -1245,38 +1245,13 @@ export default function UserManagementPage() {
                       onChange={(e) => {
                         const v = e.target.value;
                         setForm((f) => ({ ...f, username: v }));
-
-                        if (errors.username) {
-                          setErrors((prev) => ({ ...prev, username: undefined }));
-                        }
+                        if (errors.username) setErrors((p) => ({ ...p, username: undefined }));
                       }}
                       slotProps={{
                         htmlInput: {
-                          readOnly: false,
                           autoComplete: "username",
                           inputMode: "text",
                           "aria-label": "Username",
-                        },
-                        input: {
-                          startAdornment: (
-                            <InputAdornment position="start">
-                              <AccountCircleOutlinedIcon fontSize="small" />
-                            </InputAdornment>
-                          ),
-                          endAdornment: isEditingExisting ? (
-                            <InputAdornment position="end">
-                              <Switch
-                                size="small"
-                                checked={form.loginVia.username}
-                                onChange={(_, c) => {
-                                  const next = { ...form.loginVia, username: c };
-                                  if (!next.employeeId && !next.username) return;
-                                  setForm((f) => ({ ...f, loginVia: next }));
-                                }}
-                              />
-                            </InputAdornment>
-                          ) : null,
-                          sx: undefined,
                         },
                       }}
                     />
@@ -1299,23 +1274,13 @@ export default function UserManagementPage() {
                       onChange={(e) => {
                         const v = e.target.value;
                         setForm((f) => ({ ...f, email: v }));
-
-                        if (errors.email) {
-                          setErrors((prev) => ({ ...prev, email: undefined }));
-                        }
+                        if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
                       }}
                       slotProps={{
                         htmlInput: {
                           autoComplete: "email",
                           inputMode: "email",
                           "aria-label": "Email",
-                        },
-                        input: {
-                          startAdornment: (
-                            <InputAdornment position="start">
-                              <MailOutlineIcon fontSize="small" />
-                            </InputAdornment>
-                          ),
                         },
                       }}
                     />
@@ -1349,19 +1314,6 @@ export default function UserManagementPage() {
                     }
                   }}
                   fullWidth
-                  slotProps={{
-                    input: {
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <PersonOutlineIcon fontSize="small" />
-                        </InputAdornment>
-                      ),
-                    },
-                    htmlInput: {
-                      autoComplete: "given-name",
-                      "aria-label": "First name",
-                    },
-                  }}
                 />
               </Grid>
               <Grid item xs={12} md={6}>
