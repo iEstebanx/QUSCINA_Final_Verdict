@@ -15,10 +15,15 @@ try {
 const normalize = (s) =>
   String(s ?? "").replace(/\s+/g, " ").trim();
 
-const KIND_ALLOWED = new Set(["ingredient", "product"]);
-const normalizeKind = (v) => {
+const INV_TYPE_IDS = new Set([1, 2]);
+const normalizeTypeId = (v) => Number(String(v ?? "").trim());
+const isValidTypeId = (n) => Number.isFinite(n) && INV_TYPE_IDS.has(n);
+
+const kindToTypeId = (v) => {
   const k = String(v ?? "").trim().toLowerCase();
-  return KIND_ALLOWED.has(k) ? k : null;
+  if (k === "product") return 2;
+  if (k === "ingredient") return 1;
+  return null;
 };
 
 
@@ -46,7 +51,7 @@ function mapIngredientItem(row) {
   return {
     id: String(row.id),
     name: row.name,
-    kind: row.kind || "ingredient", 
+    kind: Number(row.inventory_type_id || row.inventoryTypeId || 1) === 2 ? "product" : "ingredient",
     category: row.category,
     type: row.type,
     currentStock: Number(row.currentStock || 0),
@@ -149,16 +154,26 @@ module.exports = ({ db } = {}) => {
       // const normalizeKind = (...) => "ingredient"|"product"|null;
 
       const category = normalize(req.query.category);
+
       const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
-      const kind = rawKind === "all" ? "all" : normalizeKind(rawKind);
+      const rawTypeId = req.query.inventoryTypeId ?? req.query.inventory_type_id;
+
+      const typeIdFromKind = rawKind === "all" ? "all" : kindToTypeId(rawKind);
+      const typeIdFromQuery = isValidTypeId(normalizeTypeId(rawTypeId))
+        ? normalizeTypeId(rawTypeId)
+        : null;
+
+      const typeFilter = rawKind === "all"
+        ? "all"
+        : (typeIdFromQuery ?? typeIdFromKind ?? null);
 
       const params = [];
       const where = [];
 
       // We filter via inventory_ingredients (joined as ii)
-      if (kind && kind !== "all") {
-        where.push("ii.kind = ?");
-        params.push(kind);
+      if (typeFilter && typeFilter !== "all") {
+        where.push("ii.inventory_type_id = ?");
+        params.push(typeFilter);
       }
       if (category && category !== "all") {
         where.push("ii.category = ?");

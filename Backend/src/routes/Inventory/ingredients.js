@@ -42,11 +42,11 @@ function mapIngredientItem(row) {
   return {
     id: String(row.id),
     name: row.name,
-    kind: row.kind || "ingredient",
+    kind: Number(row.inventory_type_id || row.inventoryTypeId || 1) === 2 ? "product" : "ingredient",
     category: row.category,
     type: row.type,
-    currentStock: Number(row.currentStock || 0),
-    lowStock: Number(row.lowStock || 0),
+    currentStock: Number(row.currentStock ?? row.current_stock ?? 0),
+    lowStock: Number(row.lowStock ?? row.low_stock ?? 0),
   };
 }
 
@@ -139,10 +139,16 @@ const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const isValidName = (s) =>
   !!s && s.length > 0 && s.length <= NAME_MAX && NAME_ALLOWED.test(s);
 
-const KIND_ALLOWED = new Set(["ingredient", "product"]);
-const normalizeKind = (v) => {
+const INV_TYPE_IDS = new Set([1, 2]); // 1=ingredient, 2=product
+const normalizeTypeId = (v) => Number(String(v ?? "").trim());
+const isValidTypeId = (n) => Number.isFinite(n) && INV_TYPE_IDS.has(n);
+
+// Backward compat: allow ?kind=ingredient|product and map to type id
+const kindToTypeId = (v) => {
   const k = String(v ?? "").trim().toLowerCase();
-  return KIND_ALLOWED.has(k) ? k : null;
+  if (k === "product") return 2;
+  if (k === "ingredient") return 1;
+  return null;
 };
 
 module.exports = ({ db } = {}) => {
@@ -170,11 +176,6 @@ module.exports = ({ db } = {}) => {
     try {
       const { category, limit } = req.query;
 
-      // allow: ingredient | product | all
-      const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
-      const kind =
-        rawKind === "all" ? "all" : (normalizeKind(rawKind) || "ingredient");
-
       const L = Math.min(Number(limit) || 50, 200);
 
       const params = [];
@@ -184,10 +185,20 @@ module.exports = ({ db } = {}) => {
         AND currentStock <= lowStock
       `;
 
-      // only filter by kind when NOT "all"
-      if (kind !== "all") {
-        where = `kind = ? AND ` + where;
-        params.push(kind);
+      // allow: ingredient | product | all
+      const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
+      const rawTypeId = req.query.inventoryTypeId ?? req.query.inventory_type_id;
+
+      const typeIdFromKind = rawKind === "all" ? "all" : kindToTypeId(rawKind);
+      const typeIdFromQuery = isValidTypeId(normalizeTypeId(rawTypeId)) ? normalizeTypeId(rawTypeId) : null;
+
+      const typeFilter = rawKind === "all"
+        ? "all"
+        : (typeIdFromQuery ?? typeIdFromKind ?? 1);
+
+      if (typeFilter !== "all") {
+        where = `inventory_type_id = ? AND ` + where;
+        params.push(typeFilter);
       }
 
       if (category) {
@@ -197,7 +208,7 @@ module.exports = ({ db } = {}) => {
 
       const rows = await db.query(
         `
-        SELECT id, name, kind, category, type, currentStock, lowStock, updatedAt
+        SELECT id, name, inventory_type_id, category, type, currentStock, lowStock, updatedAt
         FROM inventory_ingredients
         WHERE ${where}
         ORDER BY (currentStock / lowStock) ASC, updatedAt DESC
@@ -221,7 +232,7 @@ module.exports = ({ db } = {}) => {
         return {
           id: r.id,
           name: r.name,
-          kind: r.kind || "ingredient",
+          inventoryTypeId: Number(r.inventory_type_id || 1),
           category: r.category,
           type: r.type,
           currentStock,
@@ -245,7 +256,7 @@ module.exports = ({ db } = {}) => {
   router.get("/", async (_req, res) => {
     try {
       const rows = await db.query(
-        `SELECT id, name, kind, category, type, currentStock, lowStock, createdAt, updatedAt
+        `SELECT id, name, inventory_type_id, category, type, currentStock, lowStock, createdAt, updatedAt
            FROM inventory_ingredients
           ORDER BY updatedAt DESC, createdAt DESC, name ASC`
       );
@@ -253,7 +264,7 @@ module.exports = ({ db } = {}) => {
       const ingredients = rows.map((r) => ({
         id: String(r.id),
         name: r.name,
-        kind: r.kind || "ingredient",
+        inventoryTypeId: Number(r.inventory_type_id || 1),
         category: r.category,
         type: r.type || "",
         currentStock: Number(r.currentStock || 0),
@@ -370,7 +381,10 @@ module.exports = ({ db } = {}) => {
       const name = normalize(req.body?.name);
       const category = normalize(req.body?.category);
       const type = normalize(req.body?.type);
-      const kind = normalizeKind(req.body?.kind) || "ingredient";
+      const typeId =
+        isValidTypeId(normalizeTypeId(req.body?.inventoryTypeId))
+          ? normalizeTypeId(req.body?.inventoryTypeId)
+          : (kindToTypeId(req.body?.kind) ?? 1);
 
       if (!isValidName(name)) {
         return res.status(400).json({
@@ -400,9 +414,9 @@ module.exports = ({ db } = {}) => {
       );
       const result = await db.query(
         `INSERT INTO inventory_ingredients
-          (name, kind, category, type, currentStock, lowStock, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
-        [name, kind, category, type, now, now]
+          (name, inventory_type_id, category, type, currentStock, lowStock, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
+        [name, typeId, category, type, now, now]
       );
 
       const newId = result.insertId;
@@ -414,9 +428,10 @@ module.exports = ({ db } = {}) => {
       );
       const created = createdRows[0] || null;
 
+      const label = Number(created?.inventory_type_id || typeId) === 2 ? "Product" : "Ingredient";
       const statusMessage = created
-        ? `Ingredient "${created.name}" created.`
-        : "Ingredient created.";
+        ? `${label} "${created.name}" created.`
+        : `${label} created.`;
 
       await logInventoryIngredientAuditSafe(db, req, {
         action: "Inventory - Ingredient Created",
@@ -489,38 +504,50 @@ module.exports = ({ db } = {}) => {
         u.name = name;
       }
 
-      if (req.body?.kind !== undefined) {
-        const k = normalizeKind(req.body.kind);
-        if (!k) {
-          return res.status(400).json({ ok: false, error: "kind must be 'ingredient' or 'product'." });
+      if (req.body?.inventoryTypeId !== undefined || req.body?.inventory_type_id !== undefined || req.body?.kind !== undefined) {
+        const incoming =
+          isValidTypeId(normalizeTypeId(req.body?.inventoryTypeId))
+            ? normalizeTypeId(req.body?.inventoryTypeId)
+            : isValidTypeId(normalizeTypeId(req.body?.inventory_type_id))
+              ? normalizeTypeId(req.body?.inventory_type_id)
+              : (kindToTypeId(req.body?.kind) ?? null);
+
+        if (!incoming) {
+          return res.status(400).json({ ok: false, error: "inventoryTypeId must be 1 (ingredient) or 2 (product)." });
         }
 
-        // needs directUsage() to be INSIDE module.exports so it can use db
-        if ((before.kind || "ingredient") !== k && k === "product") {
-          const usedInRecipe = await ingredientUsage(String(id));
-          if (usedInRecipe.length) {
-            return res.status(409).json({
-              ok: false,
-              error: "Cannot set kind='product' because this inventory record is used in item recipes.",
-              reason: "recipe-linked",
-              sample: [...new Set(usedInRecipe.map(r => r.name || "Unnamed Item"))].slice(0, 5),
-            });
+        const beforeTypeId = Number(before.inventory_type_id || 1);
+        const nextTypeId = Number(incoming);
+
+        if (beforeTypeId !== nextTypeId) {
+          // to PRODUCT (2): block if used in recipe JSON
+          if (nextTypeId === 2) {
+            const usedInRecipe = await ingredientUsage(String(id));
+            if (usedInRecipe.length) {
+              return res.status(409).json({
+                ok: false,
+                error: "Cannot set type=Product because this inventory record is used in item recipes.",
+                reason: "recipe-linked",
+                sample: [...new Set(usedInRecipe.map(r => r.name || "Unnamed Item"))].slice(0, 5),
+              });
+            }
           }
-        }
 
-        if ((before.kind || "ingredient") !== k && k === "ingredient") {
-          const usedDirect = await directUsage(id);
-          if (usedDirect.length) {
-            return res.status(409).json({
-              ok: false,
-              error: "Cannot set kind='ingredient' because this inventory record is linked to items in Direct mode.",
-              reason: "direct-linked",
-              sample: [...new Set(usedDirect.map(r => r.name || "Unnamed Item"))].slice(0, 5),
-            });
+          // to INGREDIENT (1): block if used in direct-link items
+          if (nextTypeId === 1) {
+            const usedDirect = await directUsage(id);
+            if (usedDirect.length) {
+              return res.status(409).json({
+                ok: false,
+                error: "Cannot set type=Ingredient because this inventory record is linked to items in Direct mode.",
+                reason: "direct-linked",
+                sample: [...new Set(usedDirect.map(r => r.name || "Unnamed Item"))].slice(0, 5),
+              });
+            }
           }
-        }
 
-        u.kind = k;
+          u.inventory_type_id = nextTypeId;
+        }
       }
 
       // Category
@@ -610,7 +637,7 @@ module.exports = ({ db } = {}) => {
       // Compute field-level changes for audit
       const fieldsToCompare = [
         "name",
-        "kind",
+        "inventory_type_id",
         "category",
         "type",
         "currentStock",
@@ -634,7 +661,7 @@ module.exports = ({ db } = {}) => {
       // 🔹 We only want this route to log **metadata** edits
       //    (name, category, unit, lowStock). Stock movements are
       //    logged exclusively by inv-activity.js.
-      const META_FIELDS = ["name", "kind", "category", "type", "lowStock"];
+      const META_FIELDS = ["name", "inventory_type_id", "category", "type", "lowStock"];
       const metaChangedKeys = changedKeys.filter((k) =>
         META_FIELDS.includes(k)
       );

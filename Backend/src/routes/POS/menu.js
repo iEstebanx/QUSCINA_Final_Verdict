@@ -82,7 +82,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
       // 2) Load inventory stocks + kind
       const rawInv = await db.query(
         `
-        SELECT id, kind, currentStock
+        SELECT id, inventory_type_id, currentStock
         FROM inventory_ingredients
         `
       );
@@ -95,7 +95,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           Number(r.id),
           {
             id: Number(r.id),
-            kind: String(r.kind || "ingredient"),
+            inventoryTypeId: Number(r.inventory_type_id || 1),
             currentStock: num(r.currentStock, 0),
           },
         ])
@@ -159,8 +159,8 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
             if (!inv) {
               hasStock = false;
               stockReason = "direct-link-missing";
-            } else if (String(inv.kind || "ingredient") !== "product") {
-              // matches your backend rule: direct must link to kind='product'
+            } else if (Number(inv.inventoryTypeId || 1) !== 2) {
+              // direct must link to Product (inventory_type_id=2)
               hasStock = false;
               stockReason = "direct-link-not-product";
             } else {
@@ -367,7 +367,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           }
 
           const invRows = await db.query(
-            `SELECT id, kind, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+            `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
             [invIdNum]
           );
           const inv = asArray(invRows)[0];
@@ -379,10 +379,10 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
             });
           }
 
-          if (String(inv.kind || "ingredient") !== "product") {
+          if (Number(inv.inventory_type_id || 1) !== 2) {
             return res.status(400).json({
               ok: false,
-              error: "Direct stock mode can only link to inventory items marked as kind='product'.",
+              error: "Direct stock mode can only link to inventory items marked as Product (inventory_type_id=2).",
             });
           }
 

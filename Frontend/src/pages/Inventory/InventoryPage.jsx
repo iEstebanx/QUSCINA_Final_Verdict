@@ -240,29 +240,38 @@ export default function InventoryPage() {
     if (!addTouchedRef.current) addTouchedRef.current = true;
   };
 
-  // Load categories
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await fetch(INV_CATS_API, { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data?.ok !== true)
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        const names = (data.categories ?? [])
-          .map((c) => String(c?.name || "").trim())
-          .filter(Boolean)
-          .sort((a, b) => a.localeCompare(b));
-        if (alive) setCategories(names);
-      } catch (e) {
-        console.error("[inv-categories] load failed:", e);
-        if (alive) setCategories([]);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+// Load categories (typed)
+useEffect(() => {
+  let alive = true;
+  (async () => {
+    try {
+      const res = await fetch(INV_CATS_API, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok !== true)
+        throw new Error(data?.error || `HTTP ${res.status}`);
+
+      const list = (data.categories ?? [])
+        .map((c) => ({
+          id: String(c?.id ?? ""),
+          name: String(c?.name ?? "").trim(),
+          inventoryTypeId: Number(c?.inventoryTypeId || 1),
+          active: Number(c?.active || 1),
+        }))
+        .filter((c) => c.name && c.active === 1);
+
+      // sort by name
+      list.sort((a, b) => a.name.localeCompare(b.name));
+
+      if (alive) setCategories(list);
+    } catch (e) {
+      console.error("[inv-categories] load failed:", e);
+      if (alive) setCategories([]);
+    }
+  })();
+  return () => {
+    alive = false;
+  };
+}, []);
 
   // Load ingredients — backend returns newest-first
   useEffect(() => {
@@ -277,7 +286,7 @@ export default function InventoryPage() {
         const list = (data.ingredients ?? []).map((x) => ({
           id: x.id,
           name: x.name || "",
-          kind: x.kind || "ingredient",  
+          kind: Number(x.inventoryTypeId || x.inventory_type_id || 1) === 2 ? "product" : "ingredient",
           category: x.category,
           type: x.type,
           currentStock: Number(x.currentStock || 0),
@@ -433,6 +442,40 @@ export default function InventoryPage() {
 
     return n;
   };
+
+// ===================== EDIT INGREDIENT (metadata only) =====================
+const [openEdit, setOpenEdit] = useState(false);
+const [editTouched, setEditTouched] = useState(false);
+const [showEditConfirm, setShowEditConfirm] = useState(false);
+
+const [editForm, setEditForm] = useState({
+  id: "",
+  name: "",
+  kind: "ingredient", 
+  category: "",
+  type: DEFAULT_UNIT,
+  lowStock: 0,
+});
+
+const [initialEditForm, setInitialEditForm] = useState(null);
+
+  const kindToTypeId = (k) => (String(k || "").toLowerCase() === "product" ? 2 : 1);
+
+  const allCategoryNames = useMemo(() => {
+    // used by the top filter dropdown (Category: All)
+    const set = new Set(categories.map((c) => c.name));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [categories]);
+
+  const addCategoryOptions = useMemo(() => {
+    const typeId = kindToTypeId(newKind);
+    return categories.filter((c) => c.inventoryTypeId === typeId);
+  }, [categories, newKind]);
+
+  const editCategoryOptions = useMemo(() => {
+    const typeId = kindToTypeId(editForm.kind);
+    return categories.filter((c) => c.inventoryTypeId === typeId);
+  }, [categories, editForm.kind]);
 
   // Delete flow
   const handleDeleteClick = async (ingredient) => {
@@ -916,22 +959,6 @@ const handleStockSave = async () => {
   }
 };
 
-// ===================== EDIT INGREDIENT (metadata only) =====================
-const [openEdit, setOpenEdit] = useState(false);
-const [editTouched, setEditTouched] = useState(false);
-const [showEditConfirm, setShowEditConfirm] = useState(false);
-
-const [editForm, setEditForm] = useState({
-  id: "",
-  name: "",
-  kind: "ingredient", 
-  category: "",
-  type: DEFAULT_UNIT,
-  lowStock: 0,
-});
-
-const [initialEditForm, setInitialEditForm] = useState(null);
-
 const editChanged = useMemo(() => {
   if (!initialEditForm) return false;
   return JSON.stringify(editForm) !== JSON.stringify(initialEditForm);
@@ -1171,9 +1198,9 @@ const handleResetFilters = () => {
                 MenuProps={dropdownMenuProps}
               >
                 <MenuItem value="all">All</MenuItem>
-                {categories.map((c) => (
-                  <MenuItem key={c} value={c}>
-                    {c}
+                {allCategoryNames.map((name) => (
+                  <MenuItem key={name} value={name}>
+                    {name}
                   </MenuItem>
                 ))}
               </Select>
@@ -1595,7 +1622,13 @@ const handleResetFilters = () => {
                   label="Kind"
                   value={newKind}
                   onChange={(e) => {
-                    setNewKind(e.target.value);
+                    const nextKind = e.target.value;
+
+                    setNewKind(nextKind);
+
+                    // ✅ reset category if switching type
+                    setNewCat("");
+
                     handleAddFormChange();
                   }}
                 >
@@ -1630,9 +1663,9 @@ const handleResetFilters = () => {
                   <MenuItem value="" disabled>
                     <em>Select a category</em>
                   </MenuItem>
-                  {categories.map((c) => (
-                    <MenuItem key={c} value={c}>
-                      {c}
+                  {addCategoryOptions.map((c) => (
+                    <MenuItem key={c.id || c.name} value={c.name}>
+                      {c.name}
                     </MenuItem>
                   ))}
                 </Select>
@@ -2126,9 +2159,9 @@ const handleResetFilters = () => {
                   <MenuItem value="" disabled>
                     <em>Select a category</em>
                   </MenuItem>
-                  {categories.map((c) => (
-                    <MenuItem key={c} value={c}>
-                      {c}
+                  {editCategoryOptions.map((c) => (
+                    <MenuItem key={c.id || c.name} value={c.name}>
+                      {c.name}
                     </MenuItem>
                   ))}
                 </Select>
@@ -2147,9 +2180,16 @@ const handleResetFilters = () => {
                   labelId="edit-kind-label"
                   label="Inventory Type"
                   value={editForm.kind || "ingredient"}
-                  onChange={(e) =>
-                    setEditForm((f) => ({ ...f, kind: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    const nextKind = e.target.value;
+
+                    setEditForm((f) => ({
+                      ...f,
+                      kind: nextKind,
+                      // clear category so user must re-pick from the correct list
+                      category: "",
+                    }));
+                  }}
                 >
                   {KIND_OPTIONS.map((k) => (
                     <MenuItem key={k.value} value={k.value}>

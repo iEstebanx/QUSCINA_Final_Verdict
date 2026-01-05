@@ -201,6 +201,8 @@ export default function ItemlistPage() {
     imagePreview: "",
 
     stockMode: "ingredients",
+
+    inventoryProductCategory: "",
     inventoryIngredientId: "",
     inventoryDeductQty: "1",
   };
@@ -209,6 +211,8 @@ export default function ItemlistPage() {
 
   // inventory list (for selectors inside Add/Edit)
   const [inventory, setInventory] = useState([]); // {id,name,category,unit,kind,currentStock}
+
+  const [invCategories, setInvCategories] = useState([]);
 
   // recipe rows used by the item (composition)
   const [itemIngredients, setItemIngredients] = useState([]); // { id, ingredientId, name, category, unit, currentStock, qty }
@@ -227,24 +231,43 @@ export default function ItemlistPage() {
     return rows.some(r => r.name && r.name.trim().toLowerCase() === t && String(r.id) !== String(exceptId || ""));
   }
 
-  // Unique categories from inventory for per-row category dropdown
-  const inventoryCategories = useMemo(() => {
-    const set = new Set();
-    for (const ing of inventory) {
-      if (ing.category) set.add(ing.category);
-    }
-    return Array.from(set).sort((a, b) => String(a).localeCompare(String(b)));
-  }, [inventory]);
+const INGREDIENT_TYPE_ID = 1;
+const PRODUCT_TYPE_ID = 2;
 
-  const inventoryProducts = useMemo(() => {
-    return inventory
-      .filter(x => String(x.kind || "").toLowerCase() === "product")
-      .sort((a, b) => {
-        const c = String(a.category || "").localeCompare(String(b.category || ""));
-        if (c) return c;
-        return String(a.name).localeCompare(String(b.name));
-      });
-  }, [inventory]);
+function getInvCatTypeId(c) {
+  // supports both backend shapes: inventoryTypeId (camel) or inventory_type_id (snake)
+  const raw = c?.inventoryTypeId ?? c?.inventory_type_id ?? c?.inventoryTypeID ?? c?.inventory_typeId;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+const ingredientInvCategories = useMemo(() => {
+  return invCategories
+    .filter(c => getInvCatTypeId(c) === INGREDIENT_TYPE_ID)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+}, [invCategories]);
+
+const productInvCategories = useMemo(() => {
+  return invCategories
+    .filter(c => getInvCatTypeId(c) === PRODUCT_TYPE_ID)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+}, [invCategories]);
+
+const inventoryProducts = useMemo(() => {
+  const list = inventory
+    .filter(x => Number(x.inventoryTypeId) === PRODUCT_TYPE_ID);
+    
+  const cat = String(f.inventoryProductCategory || "");
+  const filtered = cat
+    ? list.filter(x => String(x.category || "") === cat)
+    : list;
+
+  return filtered.sort((a, b) => {
+    const c = String(a.category || "").localeCompare(String(b.category || ""));
+    if (c) return c;
+    return String(a.name).localeCompare(String(b.name));
+  });
+}, [inventory, f.inventoryProductCategory]);
 
   // Build query string for items
   const qs = useMemo(() => {
@@ -292,28 +315,57 @@ export default function ItemlistPage() {
   }
 
   // Load inventory ingredients for selector (no pricing)
-  async function loadInventory() {
-    setIngLoading(true);
-    try {
-      const res = await fetch(`/api/inventory/ingredients`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      const list = (res.ok && data?.ok && Array.isArray(data.ingredients)) ? data.ingredients : [];
-      setInventory(list.map(x => ({
-        id: x.id,
+async function loadInventory() {
+  setIngLoading(true);
+  try {
+    const res = await fetch(`/api/inventory/ingredients`, { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    const list =
+      res.ok && data?.ok && Array.isArray(data.ingredients)
+        ? data.ingredients
+        : [];
+
+    setInventory(
+      list.map((x) => ({
+        id: String(x.id),
         name: x.name || "",
         category: x.category || "",
-        unit: x.unit || x.type || "",
-        kind: x.kind || "ingredient",
+        unit: x.type || "", // backend uses `type`, not `unit`
+        inventoryTypeId: Number(x.inventoryTypeId || x.inventory_type_id || 1),
+        kind:
+          Number(x.inventoryTypeId || x.inventory_type_id || 1) === 2
+            ? "product"
+            : "ingredient",
         currentStock: Number(x.currentStock || 0),
-      })));
-    } catch {
-      setInventory([]);
-    } finally {
-      setIngLoading(false);
-    }
+      }))
+    );
+  } catch {
+    setInventory([]);
+  } finally {
+    setIngLoading(false);
   }
+}
 
-  useEffect(() => { loadCategories(); loadInventory(); }, []);
+async function loadInventoryCategories() {
+  try {
+    const res = await fetch(`/api/inventory/inv-categories`, { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    const list =
+      res.ok && data?.ok && Array.isArray(data.categories)
+        ? data.categories
+        : [];
+    setInvCategories(list);
+  } catch {
+    setInvCategories([]);
+  }
+}
+
+useEffect(() => {
+  loadCategories();
+  loadInventory();
+  loadInventoryCategories(); // ✅ ADD
+}, []);
+
   useEffect(() => { loadItems(); }, [qs]);
 
   // keep selection valid
@@ -449,25 +501,33 @@ export default function ItemlistPage() {
     }));
   }
 
-  // Select category at ingredient-row level
-  function onSelectIngredientCategory(rowId, categoryName) {
-    setItemIngredients(prev =>
-      prev.map(r => {
-        if (r.id !== rowId) return r;
+// Select category at ingredient-row level
+function onSelectIngredientCategory(rowId, categoryName) {
+  const nextCat = categoryName || "";
 
-        // When category changes, clear ingredient selection + stock/qty
-        return {
-          ...r,
-          category: categoryName || "",
-          ingredientId: "",
-          name: "",
-          unit: "",
-          currentStock: 0,
-          qty: "",
-        };
-      })
-    );
+  // defensive: only allow Ingredient categories here
+  if (nextCat) {
+    const valid = ingredientInvCategories.some(c => String(c.name) === String(nextCat));
+    if (!valid) return;
   }
+
+  setItemIngredients(prev =>
+    prev.map(r => {
+      if (r.id !== rowId) return r;
+
+      // When category changes, clear ingredient selection + stock/qty
+      return {
+        ...r,
+        category: nextCat,
+        ingredientId: "",
+        name: "",
+        unit: "",
+        currentStock: 0,
+        qty: "",
+      };
+    })
+  );
+}
 
   // ========== CREATE ==========
   async function saveItem() {
@@ -730,6 +790,7 @@ export default function ItemlistPage() {
       price: full.price != null ? String(full.price) : "",
       imageFile: null,
       imagePreview: full.imageUrl || "",
+      inventoryProductCategory: "",
       inventoryIngredientId: full.inventoryIngredientId || "",
       inventoryDeductQty: full.inventoryDeductQty != null ? String(full.inventoryDeductQty) : "1",
       stockMode: normalizedStockMode,
@@ -1351,7 +1412,11 @@ export default function ItemlistPage() {
                     ...s,
                     stockMode: mode,
                     ...(mode !== "direct"
-                      ? { inventoryIngredientId: "", inventoryDeductQty: "1" }
+                      ? {
+                          inventoryIngredientId: "",
+                          inventoryDeductQty: "1",
+                          inventoryProductCategory: "",
+                        }
                       : {}),
                   }));
                 }}
@@ -1363,52 +1428,84 @@ export default function ItemlistPage() {
             </FormControl>
 
             {String(f.stockMode || "ingredients") === "direct" && (
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                <FormControl
-                  fullWidth
-                  size="small"
-                  required
-                  error={createShowErrors && !f.inventoryIngredientId}
-                >
-                  <InputLabel id="create-direct-product-label">Inventory Product</InputLabel>
+              <Stack spacing={2}>
+                {/* ✅ Product Category filter */}
+                <FormControl fullWidth size="small">
+                  <InputLabel id="create-direct-cat-label">Product Category</InputLabel>
                   <Select
-                    labelId="create-direct-product-label"
-                    label="Inventory Product"
-                    value={f.inventoryIngredientId || ""}
-                    onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                    labelId="create-direct-cat-label"
+                    label="Product Category"
+                    value={f.inventoryProductCategory || ""}
+                    onChange={(e) =>
+                      setF((s) => ({
+                        ...s,
+                        inventoryProductCategory: e.target.value,
+                        inventoryIngredientId: "", // reset product when category changes
+                      }))
+                    }
                     MenuProps={dropdownMenuProps}
-                    renderValue={(val) => {
-                      if (!val) return <em>Select Inventory Product</em>;
-                      const picked = inventoryProducts.find(p => String(p.id) === String(val));
-                      return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                    }}
                   >
-                    {inventoryProducts.length === 0 ? (
-                      <MenuItem value="" disabled>
-                        <em>No products (kind=product) found</em>
+                    <MenuItem value="">
+                      <em>All categories</em>
+                    </MenuItem>
+
+                    {productInvCategories.map((c) => (
+                      <MenuItem key={c.id} value={c.name}>
+                        {c.name}
                       </MenuItem>
-                    ) : (
-                      inventoryProducts.map((p) => (
-                        <MenuItem key={p.id} value={p.id}>
-                          {renderInvOption(p)}
-                        </MenuItem>
-                      ))
-                    )}
+                    ))}
                   </Select>
                 </FormControl>
 
-                <TextField
-                  label="Deduct Qty"
-                  size="small"
-                  value={f.inventoryDeductQty || "1"}
-                  onChange={(e) => {
-                    const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                    setF((s) => ({ ...s, inventoryDeductQty: v }));
-                  }}
-                  inputMode="decimal"
-                  helperText="How much inventory to deduct per 1 item sold"
-                  sx={{ minWidth: { sm: 220 } }}
-                />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  {/* Inventory Product */}
+                  <FormControl
+                    fullWidth
+                    size="small"
+                    required
+                    error={createShowErrors && !f.inventoryIngredientId}
+                  >
+                    <InputLabel id="create-direct-product-label">Inventory Product</InputLabel>
+                    <Select
+                      labelId="create-direct-product-label"
+                      label="Inventory Product"
+                      value={f.inventoryIngredientId || ""}
+                      onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                      MenuProps={dropdownMenuProps}
+                      renderValue={(val) => {
+                        if (!val) return <em>Select Inventory Product</em>;
+                        const picked = inventoryProducts.find(p => String(p.id) === String(val));
+                        return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
+                      }}
+                    >
+                      {inventoryProducts.length === 0 ? (
+                        <MenuItem value="" disabled>
+                          <em>No products found</em>
+                        </MenuItem>
+                      ) : (
+                        inventoryProducts.map((p) => (
+                          <MenuItem key={p.id} value={p.id}>
+                            {renderInvOption(p)}
+                          </MenuItem>
+                        ))
+                      )}
+                    </Select>
+                  </FormControl>
+
+                  {/* Deduct Qty */}
+                  <TextField
+                    label="Deduct Qty"
+                    size="small"
+                    value={f.inventoryDeductQty || "1"}
+                    onChange={(e) => {
+                      const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
+                      setF((s) => ({ ...s, inventoryDeductQty: v }));
+                    }}
+                    inputMode="decimal"
+                    helperText="How much inventory to deduct per 1 item sold"
+                    sx={{ minWidth: { sm: 220 } }}
+                  />
+                </Stack>
               </Stack>
             )}
           </Stack>
@@ -1460,9 +1557,9 @@ export default function ItemlistPage() {
                                   <MenuItem value="">
                                     <em>Select category</em>
                                   </MenuItem>
-                                  {inventoryCategories.map((c) => (
-                                    <MenuItem key={c} value={c}>
-                                      {c}
+                                  {ingredientInvCategories.map((c) => (
+                                    <MenuItem key={c.id} value={c.name}>
+                                      {c.name}
                                     </MenuItem>
                                   ))}
                                 </Select>
@@ -1713,7 +1810,11 @@ export default function ItemlistPage() {
                     ...s,
                     stockMode: mode,
                     ...(mode !== "direct"
-                      ? { inventoryIngredientId: "", inventoryDeductQty: "1" }
+                      ? {
+                          inventoryIngredientId: "",
+                          inventoryDeductQty: "1",
+                          inventoryProductCategory: "",
+                        }
                       : {}),
                   }));
                 }}
@@ -1725,52 +1826,84 @@ export default function ItemlistPage() {
             </FormControl>
 
             {String(f.stockMode || "ingredients") === "direct" && (
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                <FormControl
-                  fullWidth
-                  size="small"
-                  required
-                  error={editShowErrors && !f.inventoryIngredientId}
-                >
-                  <InputLabel id="edit-direct-product-label">Inventory Product</InputLabel>
+              <Stack spacing={2}>
+                {/* ✅ Product Category filter */}
+                <FormControl fullWidth size="small">
+                  <InputLabel id="edit-direct-cat-label">Product Category</InputLabel>
                   <Select
-                    labelId="edit-direct-product-label"
-                    label="Inventory Product"
-                    value={f.inventoryIngredientId || ""}
-                    onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                    labelId="edit-direct-cat-label"
+                    label="Product Category"
+                    value={f.inventoryProductCategory || ""}
+                    onChange={(e) =>
+                      setF((s) => ({
+                        ...s,
+                        inventoryProductCategory: e.target.value,
+                        inventoryIngredientId: "", // reset product when category changes
+                      }))
+                    }
                     MenuProps={dropdownMenuProps}
-                    renderValue={(val) => {
-                      if (!val) return <em>Select Inventory Product</em>;
-                      const picked = inventoryProducts.find(p => String(p.id) === String(val));
-                      return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                    }}
                   >
-                    {inventoryProducts.length === 0 ? (
-                      <MenuItem value="" disabled>
-                        <em>No products (kind=product) found</em>
+                    <MenuItem value="">
+                      <em>All categories</em>
+                    </MenuItem>
+
+                    {productInvCategories.map((c) => (
+                      <MenuItem key={c.id} value={c.name}>
+                        {c.name}
                       </MenuItem>
-                    ) : (
-                      inventoryProducts.map((p) => (
-                        <MenuItem key={p.id} value={p.id}>
-                          {renderInvOption(p)}
-                        </MenuItem>
-                      ))
-                    )}
+                    ))}
                   </Select>
                 </FormControl>
 
-                <TextField
-                  label="Deduct Qty"
-                  size="small"
-                  value={f.inventoryDeductQty || "1"}
-                  onChange={(e) => {
-                    const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                    setF((s) => ({ ...s, inventoryDeductQty: v }));
-                  }}
-                  inputMode="decimal"
-                  helperText="How much inventory to deduct per 1 item sold"
-                  sx={{ minWidth: { sm: 220 } }}
-                />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  {/* Inventory Product */}
+                  <FormControl
+                    fullWidth
+                    size="small"
+                    required
+                    error={editShowErrors && !f.inventoryIngredientId}
+                  >
+                    <InputLabel id="edit-direct-product-label">Inventory Product</InputLabel>
+                    <Select
+                      labelId="edit-direct-product-label"
+                      label="Inventory Product"
+                      value={f.inventoryIngredientId || ""}
+                      onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                      MenuProps={dropdownMenuProps}
+                      renderValue={(val) => {
+                        if (!val) return <em>Select Inventory Product</em>;
+                        const picked = inventoryProducts.find((p) => String(p.id) === String(val));
+                        return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
+                      }}
+                    >
+                      {inventoryProducts.length === 0 ? (
+                        <MenuItem value="" disabled>
+                          <em>No products found</em>
+                        </MenuItem>
+                      ) : (
+                        inventoryProducts.map((p) => (
+                          <MenuItem key={p.id} value={p.id}>
+                            {renderInvOption(p)}
+                          </MenuItem>
+                        ))
+                      )}
+                    </Select>
+                  </FormControl>
+
+                  {/* Deduct Qty */}
+                  <TextField
+                    label="Deduct Qty"
+                    size="small"
+                    value={f.inventoryDeductQty || "1"}
+                    onChange={(e) => {
+                      const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
+                      setF((s) => ({ ...s, inventoryDeductQty: v }));
+                    }}
+                    inputMode="decimal"
+                    helperText="How much inventory to deduct per 1 item sold"
+                    sx={{ minWidth: { sm: 220 } }}
+                  />
+                </Stack>
               </Stack>
             )}
           </Stack>
@@ -1846,9 +1979,9 @@ export default function ItemlistPage() {
                                   <MenuItem value="">
                                     <em>Select category</em>
                                   </MenuItem>
-                                  {inventoryCategories.map((c) => (
-                                    <MenuItem key={c} value={c}>
-                                      {c}
+                                  {ingredientInvCategories.map((c) => (
+                                    <MenuItem key={c.id} value={c.name}>
+                                      {c.name}
                                     </MenuItem>
                                   ))}
                                 </Select>

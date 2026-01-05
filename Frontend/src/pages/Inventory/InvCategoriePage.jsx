@@ -22,6 +22,7 @@ import {
   Typography,
   IconButton,
   Tooltip,
+  MenuItem,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -55,9 +56,14 @@ export default function InvCategoriePage() {
   const [editingId, setEditingId] = useState(null);
   const isEdit = Boolean(editingId);
   const [name, setName] = useState("");
+  const [inventoryTypeId, setInventoryTypeId] = useState(1);
+
+  // lock type change when category is in use (has linked ingredients/activity)
+  const [typeLocked, setTypeLocked] = useState(false);
+  const [typeLockReason, setTypeLockReason] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
-
   // Rename feedback
   const [renameInfo, setRenameInfo] = useState({ open: false, name: "", count: 0, sample: [] })
 
@@ -71,6 +77,8 @@ export default function InvCategoriePage() {
     setUsageList(list);
     setUsageOpen(true);
   }
+
+  const typeLabel = (typeId) => (Number(typeId) === 2 ? "Product" : "Ingredient");
 
   const nameIsInvalid = name.trim().length > 0 && !isValidName(normalizeName(name));
 
@@ -173,6 +181,11 @@ export default function InvCategoriePage() {
   const resetForm = () => {
     setEditingId(null);
     setName("");
+    setInventoryTypeId(1);
+
+    setTypeLocked(false);
+    setTypeLockReason("");
+
     setSaving(false);
     setSaveErr("");
   };
@@ -181,11 +194,40 @@ export default function InvCategoriePage() {
     resetForm();
     setEditorOpen(true);
   };
-  const openEdit = (row) => {
+
+  const openEdit = async (row) => {
     setEditingId(row.id);
     setName(row.name ?? "");
+    setInventoryTypeId(Number(row.inventoryTypeId || 1));
+
+    // Default: allow changing type until proven "in use"
+    setTypeLocked(false);
+    setTypeLockReason("");
+
+    // If editing an existing category, lock type if it has linked ingredients/activity
+    try {
+      const res = await fetch(`${API_BASE}/${encodeURIComponent(row.id)}/usage`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.ok && data?.usage) {
+        const ing = Number(data.usage.ingredientCount || 0);
+        const act = Number(data.usage.activityCount || 0);
+
+        if (ing > 0 || act > 0) {
+          setTypeLocked(true);
+          setTypeLockReason(
+            `Type can’t be changed because this category is in use (ingredients: ${ing}, activity logs: ${act}).`
+          );
+        }
+      }
+    } catch {
+      // If usage check fails, we keep it editable (non-blocking)
+      setTypeLocked(false);
+      setTypeLockReason("");
+    }
+
     setEditorOpen(true);
   };
+
   const handleClose = () => setEditorOpen(false);
 
   // comparator: newest-first
@@ -245,7 +287,7 @@ export default function InvCategoriePage() {
     setSaveErr("");
 
     try {
-      const body = JSON.stringify({ name: clean });
+      const body = JSON.stringify({ name: clean, inventoryTypeId });
       const headers = { "Content-Type": "application/json" };
 
       const res = await fetch(
@@ -382,10 +424,11 @@ export default function InvCategoriePage() {
             className="scroll-x"
             sx={{ mx: "auto", width: { xs: "100%", sm: "auto" }, maxWidth: 720 }}
           >
-            <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 520 }}>
+            <Table stickyHeader sx={{ tableLayout: "fixed", minWidth: 620 }}>
               <colgroup>
                 <col style={{ width: 56 }} />
-                <col style={{ minWidth: 280 }} />
+                <col style={{ minWidth: 260 }} />
+                <col style={{ width: 140 }} />
                 <col style={{ width: 100 }} />
               </colgroup>
 
@@ -395,6 +438,7 @@ export default function InvCategoriePage() {
                     <Checkbox checked={allChecked} indeterminate={someChecked} onChange={toggleAll} />
                   </TableCell>
                   <TableCell><Typography fontWeight={600}>Name</Typography></TableCell>
+                  <TableCell><Typography fontWeight={600}>Type</Typography></TableCell>
                   <TableCell align="center"><Typography fontWeight={600}>Actions</Typography></TableCell>
                 </TableRow>
               </TableHead>
@@ -402,7 +446,7 @@ export default function InvCategoriePage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={3}>
+                    <TableCell colSpan={4}>
                       <Box py={6} textAlign="center">Loading…</Box>
                     </TableCell>
                   </TableRow>
@@ -444,6 +488,13 @@ export default function InvCategoriePage() {
                       <TableCell sx={{ overflow: "hidden" }}>
                         <Typography noWrap title={r.name}>{r.name}</Typography>
                       </TableCell>
+
+                      <TableCell sx={{ overflow: "hidden" }}>
+                        <Typography noWrap title={typeLabel(r.inventoryTypeId)}>
+                          {typeLabel(r.inventoryTypeId)}
+                        </Typography>
+                      </TableCell>
+
                       <TableCell align="center" onClick={(e) => e.stopPropagation()}>
                         <Tooltip title="Delete">
                           <span>
@@ -503,6 +554,20 @@ export default function InvCategoriePage() {
 
         <DialogContent>
           <Stack spacing={2} mt={1}>
+            <TextField
+              select
+              label="Inventory Type"
+              value={inventoryTypeId}
+              onChange={(e) => setInventoryTypeId(Number(e.target.value))}
+              fullWidth
+              size="small"
+              disabled={saving || (isEdit && typeLocked)}
+              helperText={isEdit && typeLocked ? typeLockReason : " "}
+            >
+              <MenuItem value={1}>Ingredient</MenuItem>
+              <MenuItem value={2}>Product</MenuItem>
+            </TextField>
+
             <TextField
               label="Name"
               value={name}

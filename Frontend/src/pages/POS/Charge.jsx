@@ -211,7 +211,7 @@ function Row({ label, value, bold }) {
   );
 }
 
-const LS_ORDER_TYPE = "pos_orderType";
+const LS_ORDER_TYPE = "orderType";
 const LS_CHARGE_CUSTOMER = "bo_draft_charge_customer";
 
 export default function Charge() {

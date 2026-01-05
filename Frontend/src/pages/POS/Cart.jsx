@@ -133,13 +133,19 @@ const { user } = useAuth();
 const { shiftId, hasShift, refreshLatestShift, openShift } = useShift();
 const terminalId = "TERMINAL-1";
 
-  const employeeId = useMemo(
-    () =>
-      (user && (user.sub || user.employeeId)) ||
-      localStorage.getItem("employee_id") ||
-      null,
-    [user]
-  );
+const employeeId = useMemo(
+  () =>
+    (user && (
+      user.employeeId ||
+      user.employee_id ||
+      user.userId ||     // <-- matches your screenshot meta.userId
+      user.id ||
+      user.sub           // keep last as fallback
+    )) ||
+    localStorage.getItem("employee_id") ||
+    null,
+  [user]
+);
 
   // 🔹 NEW: track Open Shift modal + "what to do after opening"
   const [shiftDialogOpen, setShiftDialogOpen] = useState(false);

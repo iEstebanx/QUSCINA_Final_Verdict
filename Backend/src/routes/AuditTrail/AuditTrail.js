@@ -75,32 +75,44 @@ module.exports = ({ db }) => {
   // POST /api/audit-trail/add  (insert new log)
   // Used by BACKUP + RESTORE
   // ---------------------------------------------------------
-  r.post("/add", async (req, res) => {
-    try {
-      const { employee, role, action, detail } = req.body;
+ r.post("/add", async (req, res) => {
+  try {
+    const { employee, role, action, detail } = req.body;
 
-      if (!employee || !action || !detail) {
-        return res.status(400).json({ ok: false, error: "Missing fields." });
-      }
-
-      const q = `
-        INSERT INTO audit_trail (employee, role, action, detail)
-        VALUES (?, ?, ?, ?)
-      `;
-
-      await db.query(q, [
-        employee,
-        role || "—",
-        action,
-        JSON.stringify(detail),
-      ]);
-
-      res.json({ ok: true });
-    } catch (err) {
-      console.error("AuditTrail ADD failed:", err);
-      res.status(500).json({ ok: false, error: err.message });
+    if (!action || !detail) {
+      return res.status(400).json({ ok: false, error: "Missing fields." });
     }
-  });
+
+    // ✅ allow client/server callers to omit employee/role
+    const employeeFinal =
+      employee ||
+      req.user?.username ||
+      req.user?.name ||
+      "—";
+
+    const roleFinal =
+      role ||
+      req.user?.role ||
+      "—";
+
+    const q = `
+      INSERT INTO audit_trail (employee, role, action, detail)
+      VALUES (?, ?, ?, ?)
+    `;
+
+    await db.query(q, [
+      employeeFinal,
+      roleFinal,
+      action,
+      JSON.stringify(detail),
+    ]);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("AuditTrail ADD failed:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
   return r;
 };

@@ -97,7 +97,7 @@ function normalizeStockMode(v) {
 
 async function getInventoryRow(db, id) {
   const rows = await db.query(
-    `SELECT id, name, kind, currentStock
+    `SELECT id, name, inventory_type_id, currentStock
        FROM inventory_ingredients
       WHERE id = ?
       LIMIT 1`,
@@ -171,9 +171,9 @@ async function validateAndNormalizeStockFields(db, input) {
 
     // ✅ Recommended: force direct-mode to use only inventory.kind='product'
     // If you want to allow ingredients too, remove this block.
-    if (String(inv.kind || "ingredient") !== "product") {
+    if (Number(inv.inventory_type_id || 1) !== 2) {
       throw new Error(
-        "Direct stock mode can only link to inventory items marked as kind='product'."
+        "Direct stock mode can only link to inventory items marked as Product."
       );
     }
 

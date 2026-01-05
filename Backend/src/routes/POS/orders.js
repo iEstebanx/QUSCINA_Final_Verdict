@@ -2,16 +2,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 
-let logOrderAudit = async () => {};
-try {
-  const audit = require("../shared/audit/orderAudit");
-  if (typeof audit.logOrderAudit === "function") {
-    logOrderAudit = audit.logOrderAudit;
-  }
-} catch {
-  // ok
-}
-
 // Normalize any db.query result into an array of rows
 function asArray(result) {
   if (!result) return [];
@@ -32,6 +22,113 @@ module.exports = function backofficePosOrdersRouterFactory({ db }) {
 
   const router = express.Router();
   const APP = "Backoffice POS"; // stored in pos_orders.source
+
+  async function logPosAuditTrail(req, {
+    actionType,
+    employeeId,
+    role,
+    affectedItems = [],
+    actionDetails = {},
+    statusMessage = "",
+  }) {
+    const employeeLabel =
+      employeeId != null && employeeId !== ""
+        ? String(employeeId)
+        : req.user?.username || req.user?.name || "—";
+
+    // ✅ replace const roleLabel ... with this:
+    let roleLabel = role || req.user?.role || null;
+
+    if (!roleLabel) {
+      roleLabel = await resolveRoleFromEmployeeId(employeeId);
+    }
+
+    if (!roleLabel) roleLabel = "—";
+
+    const ip =
+      (req.headers["x-forwarded-for"] && String(req.headers["x-forwarded-for"]).split(",")[0].trim()) ||
+      req.ip ||
+      null;
+
+    const detail = {
+      statusMessage: statusMessage || undefined,
+      meta: { app: APP, ip, userAgent: req.headers["user-agent"] || null },
+      actionDetails: { app: APP, module: "pos_orders", actionType, ...actionDetails },
+      affectedData: { statusChange: "NONE", items: affectedItems },
+    };
+
+    try {
+      await db.query(
+        `INSERT INTO audit_trail (employee, role, action, detail) VALUES (?, ?, ?, ?)`,
+        [employeeLabel, roleLabel, `POS - ${actionType}`, JSON.stringify(detail)]
+      );
+    } catch (err) {
+      console.error("[AUDIT INSERT FAILED]", {
+        actionType,
+        employeeLabel,
+        roleLabel,
+        message: err?.message,
+        sqlMessage: err?.sqlMessage,
+        code: err?.code,
+      });
+      throw err; // IMPORTANT: so safeLogOrderAudit prints it
+    }
+  }
+
+  async function resolveRoleFromEmployeeId(employeeId) {
+    const id = employeeId != null ? String(employeeId).trim() : "";
+    if (!id) return null;
+
+    const rows = asArray(
+      await db.query(
+        `SELECT role FROM employees WHERE employee_id = ? LIMIT 1`,
+        [id]
+      )
+    );
+    const role = rows[0]?.role ? String(rows[0].role).trim() : null;
+    return role || null;
+  }
+
+  async function logOrderAudit(payload = {}) {
+    const p = payload || {};
+    const req = p.req;
+    if (!req) return;
+
+    const actionType = String(p.action || p.actionType || "Unknown").trim() || "Unknown";
+    const shiftId = p.shiftId ?? p.shift_id ?? undefined;
+    const orderId = p.orderId ?? p.order_id ?? undefined;
+
+    const extra = (p.extra && typeof p.extra === "object") ? p.extra : {};
+
+    const statusMessage =
+      p.success === false
+        ? `FAILED: ${String(p.reason || extra.reason || "unknown")}`
+        : String(p.reason || extra.reason || "ok");
+
+    const affectedItems = Array.isArray(p.affectedItems)
+      ? p.affectedItems
+      : Array.isArray(p.items)
+        ? p.items
+        : [];
+
+    await logPosAuditTrail(req, {
+      actionType,
+      employeeId: p.employeeId ?? p.employee_id ?? undefined,
+      role: p.role ?? undefined,
+      affectedItems,
+      actionDetails: { shiftId, orderId, ...extra },
+      statusMessage,
+    });
+  }
+
+  async function safeLogOrderAudit(payload = {}) {
+    try {
+      await logOrderAudit(payload);
+    } catch (e) {
+      // IMPORTANT: don't stay silent while debugging
+      console.warn("[POS AUDIT] FAILED:", e?.message || e);
+    }
+  }
 
   async function ensureOpenShift(shiftId) {
     const rows = asArray(
@@ -297,7 +394,7 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
   const invRows = asArray(
     await conn.query(
       `
-      SELECT id, name, kind, currentStock
+      SELECT id, name, inventory_type_id, currentStock
       FROM inventory_ingredients
       WHERE id IN (${placeholders})
       `,
@@ -309,8 +406,8 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
     invRows.map((r) => [
       Number(r.id),
       {
-        invName: String(r.name || "").trim(),      // ✅ ADD THIS
-        kind: String(r.kind || "ingredient"),
+        invName: String(r.name || "").trim(),
+        inventoryTypeId: Number(r.inventory_type_id || 1), // 1=ingredient, 2=product
         currentStock: safeNumber(r.currentStock, 0),
       },
     ])
@@ -336,13 +433,13 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
     // "direct must link to product" rule: we can only know which invIds are direct
     // by looking at details. We'll be strict: if ANY detail indicates direct invId, enforce kind.
     const usedAsDirect = details.some((d) => d?.stockMode === "direct" && Number(d?.invId) === invId);
-    if (usedAsDirect && inv.kind !== "product") {
+    if (usedAsDirect && Number(inv.inventoryTypeId || 1) !== 2) {
       problems.push({
         invId,
-        invName: inv.invName || "",     // ✅ ADD THIS
+        invName: inv.invName || "",
         required,
         reason: "direct_not_product",
-        kind: inv.kind,
+        inventoryTypeId: inv.inventoryTypeId,
       });
       continue;
     }
@@ -382,7 +479,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
     await conn.query(
       `
       UPDATE inventory_ingredients
-      SET currentStock = currentStock + ?
+      SET currentStock = GREATEST(0, currentStock + ?)
       WHERE id = ?
       `,
       [delta, invId]
@@ -398,14 +495,46 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       const { items = [] } = req.body || {};
 
       if (!Array.isArray(items) || !items.length) {
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Check Inventory",
+          success: true,
+          reason: "no_items",
+          extra: { itemCount: 0 },
+          req,
+        });
+
         return res.json({ ok: true }); // nothing to check
       }
 
       await assertEnoughInventoryForCart(db, items);
 
+      await safeLogOrderAudit({
+        app: APP,
+        action: "Check Inventory",
+        success: true,
+        reason: "ok",
+        extra: { itemCount: items.length },
+        req,
+      });
+
       return res.json({ ok: true });
     } catch (e) {
       if (e?.code === "INSUFFICIENT_INVENTORY") {
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Check Inventory",
+          success: false,
+          reason: "insufficient_inventory",
+          items: items.map(it => ({
+            name: it.name,
+            qty: safeNumber(it.qty ?? it.quantity, 1),
+            price: safeNumber(it.price, 0),
+          })),
+          extra: { problems: e.problems || [] },
+          req,
+        });
+
         return res.status(409).json({
           ok: false,
           code: "INSUFFICIENT_INVENTORY",
@@ -414,6 +543,16 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       }
 
       console.error("[check-inventory] failed:", e);
+
+      await safeLogOrderAudit({
+        app: APP,
+        action: "Check Inventory",
+        success: false,
+        reason: "server_error",
+        extra: { errorMessage: e.message || String(e) },
+        req,
+      });
+
       return res.status(500).json({
         ok: false,
         error: e.message || "Inventory check failed",
@@ -585,7 +724,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       const { pin } = req.body || {};
 
       if (!pin || !/^\d{6}$/.test(String(pin))) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund PIN Verification",
           success: false,
@@ -612,7 +751,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       );
 
       if (!rows.length) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund PIN Verification",
           success: false,
@@ -627,7 +766,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       const match = await bcrypt.compare(String(pin), rows[0].pin_hash);
       if (!match) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund PIN Verification",
           success: false,
@@ -640,7 +779,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
           .json({ ok: false, error: "Invalid PIN" });
       }
 
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app: APP,
         action: "Refund PIN Verification",
         success: true,
@@ -653,7 +792,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       console.error("[Backoffice POS] verify-refund-pin failed:", e);
 
       try {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund PIN Verification",
           success: false,
@@ -690,17 +829,30 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       } = req.body || {};
 
       if (!shiftId || !terminalId || !employeeId) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app,
           action: "Save Pending Order",
-          success: false,
-          reason: "validation_error",
+          success: true,
+          reason: "ok",
           employeeId,
           shiftId,
-          extra: { terminalId },
+          orderId,
+          role: req.user?.role, // optional (resolveRoleFromEmployeeId will cover too)
+          items: items.map(it => ({
+            name: it.name,
+            qty: safeNumber(it.qty ?? it.quantity, 1),
+            price: safeNumber(it.price, 0),
+            discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
+          })),
+          extra: {
+            terminalId,
+            orderType,
+            netAmount: totals.net_amount,
+            discountAmount: totals.discount_amount,
+          },
           req,
         });
-
+        
         return res.status(400).json({
           ok: false,
           error: "Missing shiftId / terminalId / employeeId",
@@ -708,7 +860,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       }
 
       if (!Array.isArray(items) || items.length === 0) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app,
           action: "Save Pending Order",
           success: false,
@@ -825,7 +977,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         return { orderId: newOrderId, orderNo: allocated };
       });
 
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Save Pending Order",
         success: true,
@@ -860,7 +1012,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       const { shiftId, terminalId, employeeId } = req.body || {};
 
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app: APP,
         action: "Save Pending Order",
         success: false,
@@ -909,7 +1061,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       }
 
       if (!shiftId || !terminalId || !employeeId) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app,
           action: "Update Pending Order",
           success: false,
@@ -928,7 +1080,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       }
 
       if (!Array.isArray(items) || items.length === 0) {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app,
           action: "Update Pending Order",
           success: false,
@@ -1072,7 +1224,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         );
       }
 
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Update Pending Order",
         success: true,
@@ -1080,6 +1232,12 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         employeeId,
         shiftId,
         orderId,
+        items: items.map(it => ({
+          name: it.name,
+          qty: safeNumber(it.qty ?? it.quantity, 1),
+          price: safeNumber(it.price, 0),
+          discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
+        })),
         extra: {
           terminalId,
           orderType,
@@ -1109,7 +1267,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       const { shiftId, terminalId, employeeId } = req.body || {};
 
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app: APP,
         action: "Update Pending Order",
         success: false,
@@ -1672,7 +1830,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
     if (!orderId || rawAmt <= 0) {
       try {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund Order",
           success: false,
@@ -1709,7 +1867,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       if (!rows.length) {
         try {
-          await logOrderAudit({
+          await safeLogOrderAudit({
             app: APP,
             action: "Refund Order",
             success: false,
@@ -1730,7 +1888,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       if (o.status !== "paid" && o.status !== "refunded") {
         try {
-          await logOrderAudit({
+          await safeLogOrderAudit({
             app: APP,
             action: "Refund Order",
             success: false,
@@ -1755,7 +1913,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       const currentNet = Number(o.net_amount) || 0;
       if (currentNet <= 0) {
         try {
-          await logOrderAudit({
+          await safeLogOrderAudit({
             app: APP,
             action: "Refund Order",
             success: false,
@@ -1832,13 +1990,18 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       );
 
       try {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund Order",
           success: true,
           reason: "ok",
           orderId,
           shiftId: o.shift_id,
+          items: [{
+            name: itemName || "Refund",
+            qty: safeNumber(qty, 1),
+            price: refundAmount,
+          }],
           extra: {
             refundAmount,
             remainingNet: newNet,
@@ -1866,12 +2029,18 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       console.error("[Backoffice POS] POST /pos/orders/:id/refund failed:", e);
 
       try {
-        await logOrderAudit({
+        await safeLogOrderAudit({
           app: APP,
           action: "Refund Order",
           success: false,
           reason: "server_error",
           orderId,
+          items: items.map(it => ({
+            name: it.name,
+            qty: safeNumber(it.qty ?? it.quantity, 1),
+            price: safeNumber(it.price, 0),
+            discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
+          })),
           extra: {
             amount: rawAmt,
             methodName: methodName || null,
@@ -1900,6 +2069,22 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
     const reqQty = Number(qty || 0);
 
     if (!orderId || !itemId || reqQty <= 0) {
+      await safeLogOrderAudit({
+        app: APP,
+        action: "Void Item Qty",
+        success: false,
+        reason: "validation_error",
+        orderId,
+        employeeId,
+        items: [{
+          name: it.item_name,
+          qty: reqQty,
+          price: safeNumber(it.item_price, 0),
+        }],
+        extra: { itemId, qty: reqQty, reasonText: reason || "" },
+        req,
+      });
+
       return res.status(400).json({
         ok: false,
         error: "orderId, itemId and positive qty required",
@@ -1930,6 +2115,23 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
       // Only these statuses are allowed to have item voids
       if (!["paid", "open", "pending"].includes(order.status)) {
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Void Item Qty",
+          success: false,
+          reason: "invalid_status",
+          orderId,
+          shiftId: order.shift_id,
+          employeeId,
+          extra: {
+            currentStatus: order.status,
+            itemId,
+            qty: reqQty,
+            reasonText: reason || "",
+          },
+          req,
+        });
+
         return res.status(400).json({
           ok: false,
           error: "Only pending/open/paid orders can have item voids",
@@ -1950,6 +2152,18 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       );
 
       if (!itemRows.length) {
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Void Item Qty",
+          success: false,
+          reason: "item_not_found_in_order",
+          orderId,
+          shiftId: order.shift_id,
+          employeeId,
+          extra: { itemId, qty: reqQty, reasonText: reason || "" },
+          req,
+        });
+
         return res
           .status(404)
           .json({ ok: false, error: "Item not found in order" });
@@ -1960,6 +2174,18 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       const remaining = Number(it.qty) - Number(it.voided_qty || 0);
 
       if (reqQty > remaining) {
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Void Item Qty",
+          success: false,
+          reason: "qty_exceeds_remaining",
+          orderId,
+          shiftId: order.shift_id,
+          employeeId,
+          extra: { itemId, qty: reqQty, remaining, reasonText: reason || "" },
+          req,
+        });
+
         return res.status(400).json({
           ok: false,
           error: `Only ${remaining} qty remaining to void`,
@@ -2040,7 +2266,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       );
 
       // 5) Audit log (no order-level void)
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app: APP,
         action: "Void Item Qty",
         success: true,
@@ -2066,6 +2292,18 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
       });
     } catch (e) {
       console.error("[Void Item] failed:", e);
+
+      await safeLogOrderAudit({
+        app: APP,
+        action: "Void Item Qty",
+        success: false,
+        reason: "server_error",
+        orderId,
+        employeeId,
+        extra: { itemId, qty: reqQty, errorMessage: e.message || String(e) },
+        req,
+      });
+
       return res
         .status(500)
         .json({ ok: false, error: "Server error" });
@@ -2100,7 +2338,7 @@ router.post("/charge", async (req, res) => {
     const isSplit = mode === "split";
 
     if (!shiftId || !terminalId || !employeeId) {
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Charge Order",
         success: false,
@@ -2108,6 +2346,12 @@ router.post("/charge", async (req, res) => {
         employeeId,
         shiftId,
         orderId,
+        items: items.map(it => ({
+          name: it.name,
+          qty: safeNumber(it.qty ?? it.quantity, 1),
+          price: safeNumber(it.price, 0),
+          discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
+        })),
         extra: { terminalId, mode },
         req,
       });
@@ -2119,7 +2363,7 @@ router.post("/charge", async (req, res) => {
     }
 
     if (!Array.isArray(items) || items.length === 0) {
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Charge Order",
         success: false,
@@ -2137,7 +2381,7 @@ router.post("/charge", async (req, res) => {
     }
 
     if (!Array.isArray(payments) || payments.length === 0) {
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Charge Order",
         success: false,
@@ -2191,7 +2435,7 @@ router.post("/charge", async (req, res) => {
     const mustCoverNet = !isSplit || isFinalPayment;
 
     if (mustCoverNet && combinedPaid + 0.0001 < totals.net_amount) {
-      await logOrderAudit({
+      await safeLogOrderAudit({
         app,
         action: "Charge Order",
         success: false,
@@ -2461,7 +2705,7 @@ router.post("/charge", async (req, res) => {
       }
     }
 
-    await logOrderAudit({
+    await safeLogOrderAudit({
       app,
       action: "Charge Order",
       success: true,
@@ -2526,7 +2770,7 @@ router.post("/charge", async (req, res) => {
       orderId,
     } = req.body || {};
 
-    await logOrderAudit({
+    await safeLogOrderAudit({
       app: APP,
       action: "Charge Order",
       success: false,
@@ -2591,9 +2835,16 @@ router.post("/charge", async (req, res) => {
       );
 
       if (!orderRows.length) {
-        return res
-          .status(404)
-          .json({ ok: false, error: "Order not found" });
+        await safeLogOrderAudit({
+          app: APP,
+          action: "Get Order Detail",
+          success: false,
+          reason: "order_not_found",
+          orderId,
+          req,
+        });
+
+        return res.status(404).json({ ok: false, error: "Order not found" });
       }
 
       const o = orderRows[0];

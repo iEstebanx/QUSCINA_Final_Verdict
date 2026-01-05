@@ -403,54 +403,103 @@ END$$
 DELIMITER ;
 
 -- ============================================================
--- INVENTORY CATEGORIES
+-- INVENTORY TYPES (2 rows only: Ingredient, Product)
 -- ============================================================
-CREATE TABLE IF NOT EXISTS `inventory_categories` (
-  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name` VARCHAR(60) NOT NULL,
-  `name_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+CREATE TABLE IF NOT EXISTS `inventory_types` (
+  `id` TINYINT UNSIGNED NOT NULL,
+  `code` VARCHAR(30) NOT NULL,     -- 'ingredient' | 'product'
+  `name` VARCHAR(60) NOT NULL,     -- 'Ingredient' | 'Product'
+  `name_lower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`name`)) STORED,
   `active` TINYINT(1) NOT NULL DEFAULT 1,
-  `created_at` DATETIME NOT NULL,
-  `updated_at` DATETIME NOT NULL,
+
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
 
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_inventory_categories_name_lower` (`name_lower`)
+  UNIQUE KEY `uq_inventory_types_code` (`code`),
+  UNIQUE KEY `uq_inventory_types_name_lower` (`name_lower`)
 ) ENGINE=InnoDB
 DEFAULT CHARSET=utf8mb4
 COLLATE=utf8mb4_unicode_ci;
 
--- ------------------------------------------------------------
--- INVENTORY INGREDIENTS
--- ------------------------------------------------------------
+-- Seed exactly 2 types
+INSERT INTO `inventory_types` (`id`, `code`, `name`)
+VALUES
+  (1, 'ingredient', 'Ingredient'),
+  (2, 'product',    'Product')
+ON DUPLICATE KEY UPDATE
+  `code` = VALUES(`code`),
+  `name` = VALUES(`name`);
+
+-- ============================================================
+-- INVENTORY CATEGORIES (linked to Inventory Type)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `inventory_categories` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(60) NOT NULL,
+  `name_lower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+
+  -- ✅ NEW: which type this category belongs to
+  `inventory_type_id` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+
+  `active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_inventory_categories_name_lower` (`name_lower`),
+
+  KEY `idx_inventory_categories_type` (`inventory_type_id`),
+
+  CONSTRAINT `fk_inventory_categories_type`
+    FOREIGN KEY (`inventory_type_id`)
+    REFERENCES `inventory_types` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT
+) ENGINE=InnoDB
+DEFAULT CHARSET=utf8mb4
+COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- INVENTORY INGREDIENTS (Inventory Items) linked to Type (+ optionally Category FK)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(60) NOT NULL,
-  `name_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`name`)) STORED,
+  `name_lower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`name`)) STORED,
 
-  -- 🔥 NEW: ingredient vs product
-  `kind` ENUM('ingredient','product')
-    NOT NULL DEFAULT 'ingredient',
+  -- ✅ NEW: Ingredient vs Product
+  `inventory_type_id` TINYINT UNSIGNED NOT NULL DEFAULT 1,
 
+  -- You currently store category by name.
+  -- (Optional improvement: store category_id as FK; leaving as-is to match your current API/UI)
   `category` VARCHAR(60) NOT NULL,
-  `category_lower` VARCHAR(60)
-    GENERATED ALWAYS AS (LOWER(`category`)) STORED,
+  `category_lower` VARCHAR(60) GENERATED ALWAYS AS (LOWER(`category`)) STORED,
 
-  `type` VARCHAR(30) NOT NULL DEFAULT 'pack',
+  `type` VARCHAR(30) NOT NULL DEFAULT 'pack',      -- pack | pcs (your rule)
   `currentStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
   `lowStock` DECIMAL(12,3) NOT NULL DEFAULT 0,
 
-  `createdAt` DATETIME NOT NULL,
-  `updatedAt` DATETIME NOT NULL,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
 
   PRIMARY KEY (`id`),
 
   UNIQUE KEY `uq_inventory_ingredients_name_lower` (`name_lower`),
+
+  KEY `idx_inventory_ingredients_type` (`inventory_type_id`),
   KEY `idx_inventory_ingredients_category` (`category`),
   KEY `idx_inventory_ingredients_category_lower` (`category_lower`),
   KEY `idx_inventory_ingredients_updatedAt` (`updatedAt`),
-  KEY `idx_inventory_ingredients_kind` (`kind`),
+
+  CONSTRAINT `fk_inventory_ingredients_type`
+    FOREIGN KEY (`inventory_type_id`)
+    REFERENCES `inventory_types` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT,
 
   CONSTRAINT `chk_category_nonempty`
     CHECK (CHAR_LENGTH(TRIM(`category`)) > 0),
@@ -461,9 +510,9 @@ CREATE TABLE IF NOT EXISTS `inventory_ingredients` (
 DEFAULT CHARSET=utf8mb4
 COLLATE=utf8mb4_unicode_ci;
 
--- ------------------------------------------------------------
+-- ============================================================
 -- INVENTORY ACTIVITY LOG
--- ------------------------------------------------------------
+-- ============================================================
 CREATE TABLE IF NOT EXISTS `inventory_activity` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `ts` DATETIME NULL,
@@ -475,8 +524,9 @@ CREATE TABLE IF NOT EXISTS `inventory_activity` (
   `ingredientId` INT UNSIGNED NULL,
   `ingredientName` VARCHAR(60) NULL,
 
-  `createdAt` DATETIME NOT NULL,
-  `updatedAt` DATETIME NOT NULL,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ON UPDATE CURRENT_TIMESTAMP,
 
   PRIMARY KEY (`id`),
 
