@@ -144,6 +144,63 @@ router.get("/available-weeks", async (req, res) => {
   }
 });
 
+/* =========================================================================
+ * 0d) DATE BOUNDS (first and last order date)
+ * ========================================================================= */
+router.get("/date-bounds", async (req, res) => {
+  try {
+    const rows = await db.query(
+      `
+      SELECT 
+        MIN(DATE(o.closed_at)) AS minDate,
+        MAX(DATE(o.closed_at)) AS maxDate
+      FROM pos_orders o
+      WHERE o.status IN ('paid','refunded')
+        AND o.closed_at IS NOT NULL
+      `
+    );
+
+    const row = rows[0] || {};
+    return res.json({
+      ok: true,
+      minDate: row.minDate || null,
+      maxDate: row.maxDate || null,
+    });
+  } catch (e) {
+    console.error("[dashboard/date-bounds]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * 0e) ACTIVE DAYS (days that have transactions)
+ * ========================================================================= */
+router.get("/active-days", async (req, res) => {
+  try {
+    const rows = await db.query(
+      `
+      SELECT DISTINCT DATE(o.closed_at) AS day
+      FROM pos_orders o
+      WHERE o.status IN ('paid','refunded')
+        AND o.closed_at IS NOT NULL
+      ORDER BY day
+      `
+    );
+
+    const days = (rows || [])
+      .map((r) => r.day)
+      .filter(Boolean)
+      .map((d) =>
+        d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10)
+      );
+
+    return res.json({ ok: true, days });
+  } catch (e) {
+    console.error("[dashboard/active-days]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
   /* =========================================================================
    * 1) TOTAL METRICS (sales, orders, avg order)
    * ========================================================================= */

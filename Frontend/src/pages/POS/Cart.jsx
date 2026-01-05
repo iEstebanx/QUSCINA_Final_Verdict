@@ -2584,13 +2584,13 @@ const terminalId = "TERMINAL-1";
                               bgcolor: alpha(t.palette.text.primary, 0.03),
                             }}
                           >
-                            <Typography sx={{ fontWeight: 900 }}>
-                              #{x.tableNo}{" "}
+                            <Typography sx={{ fontWeight: 700 }}>
+                              Table #{x.tableNo}{" "}
                               <Box component="span" sx={{ fontWeight: 700, opacity: 0.8, ml: 0.5 }}>
                                 {x.customer}
                               </Box>
                             </Typography>
-                            <Typography variant="caption" sx={{ opacity: 0.75 }}>
+                            <Typography variant="caption" sx={{ fontWeight: 700, opacity: 2 }}>
                               {x.time}
                             </Typography>
                           </Box>

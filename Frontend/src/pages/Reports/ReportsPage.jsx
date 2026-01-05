@@ -87,10 +87,10 @@ const DEFAULT_EXPORT = {
 
 const RANGE_LABELS = {
   days: "Today",
-  weeks: "This Week",
-  monthly: "This Month",
-  quarterly: "This Quarter",
-  yearly: "This Year",
+  weeks: "Week",
+  monthly: "Month",
+  quarterly: "Quarter",
+  yearly: "Year",
   custom: "Custom",
 };
 
@@ -98,9 +98,9 @@ const DEFAULT_RANGE = "days"; // Day
 
 const preventDateFieldWheelAndArrows = {
   onWheel: (e) => {
-    // Prevent wheel from changing focused date section
-    e.preventDefault();
+    // ✅ Don't call preventDefault() on wheel (passive listener warning)
     e.stopPropagation();
+    e.currentTarget?.blur?.(); // drop focus so wheel can't "nudge" sections
   },
   onKeyDown: (e) => {
     // Prevent ↑/↓ from incrementing day/month/year sections
@@ -235,6 +235,54 @@ const formatSeriesLabel = (range, x) => {
   return String(x);
 };
 
+// ---- Chart label formatting (no timezone) ----
+const hasTimePart = (v) => {
+  const s = String(v ?? "");
+  return /[T ]\d{2}:\d{2}/.test(s) || v instanceof Date;
+};
+
+const formatDateTimeNoTZ = (v) => {
+  const d = dayjs(v);
+  if (!d.isValid()) return String(v ?? "");
+  return hasTimePart(v)
+    ? d.format("MMM DD, YYYY h:mm A")     // Jan 06, 2026 8:00 AM
+    : d.format("MMM DD, YYYY");          // Jan 06, 2026
+};
+
+const formatXAxisLabel = (range, v) => {
+  // keep axis labels shorter than tooltip
+  if (range === "weeks" || range === "monthly" || range === "quarterly" || range === "yearly") {
+    // you already have this helper; it formats weeks/months nicely
+    return formatSeriesLabel(range, v);
+  }
+  const d = dayjs(v);
+  if (!d.isValid()) return String(v ?? "");
+  return d.format("MMM DD"); // Jan 06 (short for axis)
+};
+
+const formatTooltipLabel = (range, v) => {
+  if (range === "weeks" || range === "monthly" || range === "quarterly" || range === "yearly") {
+    return formatSeriesLabel(range, v);
+  }
+  return formatDateTimeNoTZ(v);
+};
+
+const pdfXLabel = (range, v) => {
+  // week/month/quarter/year already handled as labels
+  if (range === "weeks" || range === "monthly" || range === "quarterly" || range === "yearly") {
+    return formatSeriesLabel(range, v);
+  }
+  const dt = toLocalDateOnly(v);
+  if (dt) return dayjs(dt).format("MMM DD, YYYY");
+  return formatDateTimeNoTZ(v);
+};
+
+const toLocalDateOnly = (s) => {
+  if (!s) return null;
+  const str = String(s).slice(0, 10);
+  const d = new Date(`${str}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
 /* --------------------------------- Page --------------------------------- */
 export default function ReportsPage() {
   const { user } = useAuth();
@@ -255,6 +303,8 @@ export default function ReportsPage() {
 const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
 const [bestItemLimit, setBestItemLimit] = useState("10"); // "all" | "5" | "10" | "20"
 const [bestSellerItems, setBestSellerItems] = useState([]);
+
+const [bestItemSort, setBestItemSort] = useState("orders_desc");
 
 // dropdown options
 const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
@@ -282,6 +332,7 @@ useEffect(() => {
 
     setBestItemCategory("all");
     setBestItemLimit("10");
+    setBestItemSort("orders_desc");
     setBestSellerItems([]);
 
     // reset pagination
@@ -549,6 +600,50 @@ const [weekYear, setWeekYear] = useState(now.year());
 const [weekMonth, setWeekMonth] = useState(now.month());
 const [weekKey, setWeekKey] = useState(startOfWeekMon(now).format("YYYY-MM-DD"));
 
+// --- "This Week / This Month / This Year" label helpers (same idea as Dashboard) ---
+const isCurrentWeek = (range, weekKey) => {
+  if (range !== "weeks") return false;
+  const mondayKey = startOfWeekMon(dayjs()).format("YYYY-MM-DD");
+  return String(weekKey) === String(mondayKey);
+};
+
+const isCurrentMonthByRange = (customFrom, customTo) => {
+  const { from, to } = getMonthRange(dayjs().year(), dayjs().month());
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const isCurrentYearByRange = (customFrom, customTo) => {
+  const from = dayjs().month(0).date(1).startOf("day");
+  const to = dayjs().month(11).endOf("month").endOf("day");
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const rangeLabel = useMemo(() => {
+  if (range === "days") return "Today";
+
+  if (range === "weeks") {
+    return isCurrentWeek(range, weekKey) ? "This Week" : "Week";
+  }
+
+  if (range === "monthly") {
+    return isCurrentMonthByRange(customFrom, customTo) ? "This Month" : "Month";
+  }
+
+  if (range === "quarterly") return "Quarter";
+
+  if (range === "yearly") {
+    return isCurrentYearByRange(customFrom, customTo) ? "This Year" : "Year";
+  }
+
+  return "Custom";
+}, [range, weekKey, customFrom, customTo]);
+
 // 🔹 Month picker
 const [monthYear, setMonthYear] = useState(now.year());
 const [monthIndex, setMonthIndex] = useState(now.month());
@@ -709,6 +804,34 @@ useEffect(() => {
   return () => { alive = false; };
 }, [range, customFrom, customTo, reloadTick, bestItemCategory, bestItemLimit]);
 
+const sortedBestSellerItems = useMemo(() => {
+  const arr = [...bestSellerItems];
+  const num = (v) => Number(v || 0);
+
+  // stable tie-breakers (keeps list consistent when values match)
+  const tieBreak = (a, b) => {
+    const o = num(b.orders) - num(a.orders);
+    if (o !== 0) return o;
+
+    const s = num(b.sales) - num(a.sales);
+    if (s !== 0) return s;
+
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  };
+
+  const cmpMap = {
+    orders_desc: (a, b) => (num(b.orders) - num(a.orders)) || tieBreak(a, b),
+    orders_asc: (a, b) => (num(a.orders) - num(b.orders)) || tieBreak(a, b),
+
+    sales_desc: (a, b) => (num(b.sales) - num(a.sales)) || tieBreak(a, b),
+    sales_asc: (a, b) => (num(a.sales) - num(b.sales)) || tieBreak(a, b),
+  };
+
+  const cmp = cmpMap[bestItemSort] || cmpMap.orders_desc;
+  arr.sort(cmp);
+  return arr;
+}, [bestSellerItems, bestItemSort]);
+
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
   dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s;
@@ -725,13 +848,13 @@ useEffect(() => {
       case "days":
         return "Today";
       case "weeks":
-        return "This Week";
+        return "Week";
       case "monthly":
-        return "This Month";
+        return "Month";
       case "quarterly":
-        return "This Quarter";
+        return "Quarter";
       case "yearly":
-        return "This Year";
+        return "Year";
       default:
         return "All";
     }
@@ -765,7 +888,15 @@ useEffect(() => {
         if (!alive) return;
 
         setCategoryTop5(c1?.ok ? c1.data || [] : []);
-        setCategorySeries(c2?.ok ? c2.data || [] : []);
+        setCategorySeries(
+          c2?.ok
+            ? (c2.data || []).map((row) => ({
+                ...row,
+                // ⛔ never pass Date objects to Recharts
+                x: row?.x ? dayjs(row.x).format("YYYY-MM-DD") : row.x,
+              }))
+            : []
+        );
         setPayments(p?.ok ? p.data || [] : []);
         setBestSeller(b?.ok ? b.data || [] : []);
         setOrders(o?.ok ? o.data || [] : []);
@@ -1061,7 +1192,7 @@ useEffect(() => {
 
     if ((staffPerformanceData || []).length) {
       (staffPerformanceData || []).forEach((s) => {
-        const dt = s.date ? new Date(s.date) : null;
+        const dt = toLocalDateOnly(s.date);
         writeShiftRow(r++, [
           s.shiftNo,
           s.staffName,
@@ -1253,7 +1384,7 @@ useEffect(() => {
           "Total Profit",
         ]],
         body: dailyRows.map((r) => [
-          formatSeriesLabel(range, r.date),
+          pdfXLabel(range, r.date),
           r.totalOrders,
           r.discountedOrders,
           formatNumberMoney(r.totalRevenue),
@@ -1393,10 +1524,8 @@ useEffect(() => {
           "Remarks",
         ]],
         body: staffPerformanceData.map((s) => {
-          const dt = s.date ? new Date(s.date) : null;
-          const dateText = dt
-            ? dt.toLocaleString("en-PH", { month: "short", day: "2-digit", year: "numeric" })
-            : s.date;
+          const dt = toLocalDateOnly(s.date);
+          const dateText = dt ? dayjs(dt).format("MMM DD, YYYY") : pdfSafeText(s.date);
 
           return [
             s.shiftNo,
@@ -1501,7 +1630,7 @@ useEffect(() => {
                   labelId="range-label"
                   label="Range"
                   value={range}
-                  renderValue={(v) => RANGE_LABELS[v] || "Range"}
+                  renderValue={() => rangeLabel}
                   onChange={(e) => applyPresetRange(e.target.value)}
                 >
                   {/* hidden display-only option so MUI never renders blank */}
@@ -1510,10 +1639,10 @@ useEffect(() => {
                   </MenuItem>
 
                   <MenuItem value="days">Today</MenuItem>
-                  <MenuItem value="weeks">This Week</MenuItem>
-                  <MenuItem value="monthly">This Month</MenuItem>
-                  <MenuItem value="quarterly">This Quarter</MenuItem>
-                  <MenuItem value="yearly">This Year</MenuItem>
+                  <MenuItem value="weeks">Week</MenuItem>
+                  <MenuItem value="monthly">Month</MenuItem>
+                  <MenuItem value="quarterly">Quarter</MenuItem>
+                  <MenuItem value="yearly">Year</MenuItem>
                 </Select>
               </FormControl>
 
@@ -1760,9 +1889,13 @@ useEffect(() => {
                     stickyHeader
                     size="small"
                     sx={{
-                      minWidth: 408,
-                      tableLayout: "fixed",
+                      width: "100%",
+                      minWidth: 0,          // ✅ don’t force horizontal scroll
+                      tableLayout: "fixed", // ✅ respect col widths
                       ...comfyCells,
+
+                      // tighter padding just for this table
+                      "& .MuiTableCell-root": { py: 1, px: 1.25 },
                     }}
                   >
                     <colgroup>
@@ -1833,6 +1966,7 @@ useEffect(() => {
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
                           dataKey="x"
+                          tickFormatter={(v) => formatXAxisLabel(range, v)}
                           tick={{ fill: "#666", fontSize: 12 }}
                           axisLine={{ stroke: "#ccc" }}
                         />
@@ -1846,17 +1980,18 @@ useEffect(() => {
                           axisLine={{ stroke: "#ccc" }}
                         />
                         <Tooltip
+                          labelFormatter={(label) => formatTooltipLabel(range, label)}
                           formatter={(value) =>
                             `₱${Number(value).toLocaleString(undefined, {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
                             })}`
                           }
-                          labelStyle={{ fontWeight: 600 }}
+                          labelStyle={{ fontWeight: 700 }}
                           contentStyle={{
                             background: "#fff",
                             border: "1px solid #ddd",
-                            borderRadius: 8,
+                            borderRadius: 10,
                           }}
                         />
                         <Line
@@ -1913,9 +2048,15 @@ useEffect(() => {
             >
               <Table
                 stickyHeader
+                size="small"
                 sx={{
-                  minWidth: { xs: 720, sm: 900, md: 1080 },
+                  width: "100%",
+                  minWidth: 0,          // ✅ stop forcing horizontal scroll
+                  tableLayout: "fixed", // ✅ makes col widths respected
                   ...comfyCells,
+
+                  // tighten spacing just for this table
+                  "& .MuiTableCell-root": { py: 1, px: 1.25 },
                 }}
               >
                 <TableHead>
@@ -1984,7 +2125,13 @@ useEffect(() => {
               </Typography>
 
               <Stack direction="row" spacing={1}>
-                <FormControl size="small" sx={{ minWidth: 140 }}>
+                {/* CATEGORY */}
+                <FormControl
+                  size="small"
+                  sx={{
+                    minWidth: { xs: 180, sm: 240 },  // ✅ wider Category field
+                  }}
+                >
                   <InputLabel>Category</InputLabel>
                   <Select
                     label="Category"
@@ -1999,7 +2146,8 @@ useEffect(() => {
                     ))}
                   </Select>
                 </FormControl>
-
+                
+                {/* TOP */}
                 <FormControl size="small" sx={{ minWidth: 90 }}>
                   <InputLabel>Top</InputLabel>
                   <Select
@@ -2011,6 +2159,22 @@ useEffect(() => {
                     <MenuItem value="5">5</MenuItem>
                     <MenuItem value="10">10</MenuItem>
                     <MenuItem value="20">20</MenuItem>
+                  </Select>
+                </FormControl>
+
+                {/* SORT */}
+                <FormControl size="small" sx={{ minWidth: 160 }}>
+                  <InputLabel>Sort</InputLabel>
+                  <Select
+                    label="Sort"
+                    value={bestItemSort}
+                    onChange={(e) => setBestItemSort(e.target.value)}
+                  >
+                    <MenuItem value="orders_desc">Orders (High → Low)</MenuItem>
+                    <MenuItem value="orders_asc">Orders (Low → High)</MenuItem>
+
+                    <MenuItem value="sales_desc">Sales (High → Low)</MenuItem>
+                    <MenuItem value="sales_asc">Sales (Low → High)</MenuItem>
                   </Select>
                 </FormControl>
               </Stack>
@@ -2049,7 +2213,7 @@ useEffect(() => {
                   </TableHead>
 
                   <TableBody>
-                    {bestSellerItems.map((item, i) => (
+                    {sortedBestSellerItems.map((item, i) => (
                       <TableRow key={`${item.itemId}-${i}`} hover>
                         {/* Rank */}
                         <TableCell>
@@ -2092,7 +2256,7 @@ useEffect(() => {
                     ))}
 
                     {/* Empty state */}
-                    {bestSellerItems.length === 0 && (
+                    {sortedBestSellerItems.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={4}>
                           <Box

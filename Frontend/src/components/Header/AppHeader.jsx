@@ -247,7 +247,7 @@ export default function AppHeader({
 
         {/* CENTER (SPLIT) */}
         <Box sx={{ display: "flex", justifyContent: "center" }}>
-          {isPosChargePage && !splitOn && !splitLocked && (
+          {isPosChargePage && !splitLocked && !backLocked && (
             <Button
               onClick={toggleSplit}
               variant="outlined"
@@ -259,7 +259,7 @@ export default function AppHeader({
                 borderRadius: 1.5,
               }}
             >
-              SPLIT
+              {splitOn ? "SINGLE" : "SPLIT"}
             </Button>
           )}
         </Box>

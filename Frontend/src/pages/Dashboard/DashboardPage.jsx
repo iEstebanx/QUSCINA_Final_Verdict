@@ -18,7 +18,7 @@ import {
   useTheme,
   FormControl,
   InputLabel,
-  TextField,
+  useMediaQuery,
   Stack,
   Button,
   Chip,
@@ -75,16 +75,19 @@ const formatDateTime = (iso) => {
   }
 };
 
-const RANGE_LABELS = {
-  days: "Today",
-  weeks: "This Week",
-  monthly: "This Month",
-  quarterly: "This Quarter",
-  yearly: "This Year",
-  custom: "Custom",
+const SORT_LABELS = {
+  orders_desc: "Orders (High → Low)",
+  orders_asc: "Orders (Low → High)",
+  sales_desc: "Sales (High → Low)",
+  sales_asc: "Sales (Low → High)",
 };
 
-const DEFAULT_RANGE = "days";
+const SORT_SHORT = {
+  orders_desc: "Orders ↓",
+  orders_asc: "Orders ↑",
+  sales_desc: "Sales ↓",
+  sales_asc: "Sales ↑",
+};
 
 const startOfWeekMon = (d) => {
   const dow = d.day(); // 0..6 (Sun..Sat)
@@ -242,6 +245,8 @@ export default function DashboardPage() {
   const theme = useTheme();
   const navigate = useNavigate();
 
+  const isXs = useMediaQuery(theme.breakpoints.down("sm"));
+
   const [employees, setEmployees] = useState([]);
   const [lowStockItems, setLowStockItems] = useState([]);
   const [lowStockErr, setLowStockErr] = useState("");
@@ -256,6 +261,8 @@ export default function DashboardPage() {
 
   const [availableYears, setAvailableYears] = useState([]);
 const [availableMonthsByYear, setAvailableMonthsByYear] = useState({});
+
+const [bestItemSort, setBestItemSort] = useState("orders_desc"); 
 
 const now = dayjs();
 
@@ -275,6 +282,61 @@ const [bestSellerItems, setBestSellerItems] = useState([]);
 const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
 const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
 const [bestItemLimit, setBestItemLimit] = useState("5"); // "all" | "5" | "10" | "20"
+
+const [activePieIndex, setActivePieIndex] = useState(-1);
+
+const [txnMinDate, setTxnMinDate] = useState(null);
+const [txnMaxDate, setTxnMaxDate] = useState(null);
+const [activeDaysSet, setActiveDaysSet] = useState(() => new Set());
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    try {
+      const [bRes, dRes] = await Promise.all([
+        fetch(joinApi("api/dashboard/date-bounds"), { cache: "no-store" }),
+        fetch(joinApi("api/dashboard/active-days"), { cache: "no-store" }),
+      ]);
+
+      const bData = await bRes.json().catch(() => ({}));
+      const dData = await dRes.json().catch(() => ({}));
+
+      if (!alive) return;
+
+      if (bRes.ok && bData?.ok) {
+        setTxnMinDate(bData.minDate ? dayjs(bData.minDate) : null);
+        setTxnMaxDate(bData.maxDate ? dayjs(bData.maxDate) : null);
+      }
+
+      if (dRes.ok && dData?.ok) {
+        const s = new Set((dData.days || []).map(String));
+        setActiveDaysSet(s);
+      }
+    } catch (e) {
+      console.error("[dashboard] active-days/date-bounds:", e);
+      if (!alive) return;
+      setTxnMinDate(null);
+      setTxnMaxDate(null);
+      setActiveDaysSet(new Set());
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, []);
+
+const shouldDisableTxnDate = (date) => {
+  // Only enforce disabling when user is using CUSTOM picking
+  if (range !== "custom") return false;
+
+  if (!date || !dayjs(date).isValid()) return false;
+  if (!activeDaysSet || activeDaysSet.size === 0) return false;
+
+  const key = dayjs(date).format("YYYY-MM-DD");
+  return !activeDaysSet.has(key);
+};
 
 const weekMonthOptions = availableMonthsByYear[weekYear] || [];
 const monthOptions = availableMonthsByYear[monthYear] || [];
@@ -510,18 +572,18 @@ const applySelectedMonth = (y, m) => {
   setCustomTo(to.format("YYYY-MM-DD"));
 };
 
-  const preventDateFieldWheelAndArrows = {
-    onWheel: (e) => {
+const preventDateFieldWheelAndArrows = {
+  onWheel: (e) => {
+    // do NOT call preventDefault (wheel is passive in many cases)
+    e.currentTarget.blur?.(); // optional: stop scroll-wheel "value change" style behavior
+  },
+  onKeyDown: (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
       e.stopPropagation();
-    },
-    onKeyDown: (e) => {
-      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    },
-  };
+    }
+  },
+};
 
   const hardNoTypeDateField = {
     onBeforeInput: (e) => e.preventDefault(),
@@ -708,15 +770,87 @@ const cardContentSx = {
     md: 360,
   };
 
+const tableCellSx = {
+  py: 1.15,              // ✅ vertical padding
+  px: 2,                 // ✅ horizontal padding
+  borderBottom: `1px solid ${theme.palette.divider}`,
+};
+
+const tableCellFirstSx = {
+  ...tableCellSx,
+  pl: 2.5,               // ✅ extra left padding near rounded edge
+};
+
+const tableCellLastSx = {
+  ...tableCellSx,
+  pr: 2.5,               // ✅ extra right padding near rounded edge
+};
+
 const sortedBestSellerItems = useMemo(() => {
-  return [...bestSellerItems].sort((a, b) => {
-    const o = (b.orders || 0) - (a.orders || 0);
+  const arr = [...bestSellerItems];
+  const num = (v) => Number(v || 0);
+
+  // stable tie-breakers (keep list consistent when values match)
+  const tieBreak = (a, b) => {
+    const o = num(b.orders) - num(a.orders);
     if (o !== 0) return o;
-    const q = (b.qty || 0) - (a.qty || 0);
-    if (q !== 0) return q;
-    return (b.sales || 0) - (a.sales || 0); // tie-breaker
-  });
-}, [bestSellerItems]);
+
+    const s = num(b.sales) - num(a.sales);
+    if (s !== 0) return s;
+
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  };
+
+  const cmpMap = {
+    orders_desc: (a, b) => (num(b.orders) - num(a.orders)) || tieBreak(a, b),
+    orders_asc: (a, b) => (num(a.orders) - num(b.orders)) || tieBreak(a, b),
+
+    sales_desc: (a, b) => (num(b.sales) - num(a.sales)) || tieBreak(a, b),
+    sales_asc: (a, b) => (num(a.sales) - num(b.sales)) || tieBreak(a, b),
+  };
+
+  const cmp = cmpMap[bestItemSort] || cmpMap.orders_desc;
+  arr.sort(cmp);
+  return arr;
+}, [bestSellerItems, bestItemSort]);
+
+const isCurrentWeek = () => {
+  if (range !== "weeks") return false;
+  const mondayKey = startOfWeekMon(dayjs()).format("YYYY-MM-DD");
+  return String(weekKey) === String(mondayKey);
+};
+
+const isCurrentMonth = () => {
+  const { from, to } = getMonthRange(dayjs().year(), dayjs().month());
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const isCurrentYear = () => {
+  const from = dayjs().month(0).date(1).startOf("day");
+  const to = dayjs().month(11).endOf("month").endOf("day");
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const rangeLabel = useMemo(() => {
+  if (range === "days") return "Today";
+
+  if (range === "weeks") {
+    const mondayKey = startOfWeekMon(dayjs()).format("YYYY-MM-DD");
+    return String(weekKey) === String(mondayKey) ? "This Week" : "Week";
+  }
+
+  if (range === "monthly") return isCurrentMonth() ? "This Month" : "Month";
+  if (range === "quarterly") return "Quarter";
+  if (range === "yearly") return isCurrentYear() ? "This Year" : "Year";
+
+  return "Custom";
+}, [range, weekKey, customFrom, customTo]);
 
   const selectedCatName =
   String(bestItemCategory) === "all"
@@ -756,19 +890,57 @@ const sortedBestSellerItems = useMemo(() => {
     </Box>
   );
 
+const PaymentTooltip = ({ active, payload }) => {
+  if (!active || !payload || !payload.length) return null;
+
+  const p = payload[0]?.payload || {};
+  const name = p.name ?? "-";
+  const value = p.value ?? 0;
+  const amount = p.amount ?? null;
+  const txns = p.transactions ?? null;
+
+  return (
+    <Box
+      sx={{
+        bgcolor: theme.palette.background.paper,
+        border: `1px solid ${theme.palette.divider}`,
+        borderRadius: 1.5,
+        px: 1.25,
+        py: 0.9,
+        boxShadow: 6,
+        color: theme.palette.text.primary,
+        minWidth: 160,
+        pointerEvents: "none",
+      }}
+    >
+      <Typography variant="subtitle2" fontWeight={800} noWrap>
+        {name}
+      </Typography>
+
+      <Typography variant="body2" sx={{ mt: 0.25 }}>
+        Share: <b>{Number(value).toFixed(0)}%</b>
+      </Typography>
+
+      {amount !== null && (
+        <Typography variant="body2">
+          Amount: <b>{peso(amount)}</b>
+        </Typography>
+      )}
+
+      {txns !== null && (
+        <Typography variant="body2">
+          {Number(txns) === 1 ? "Transaction" : "Transactions"}: <b>{txns}</b>
+        </Typography>
+      )}
+    </Box>
+  );
+};
+
   return (
     <Box p={2}>
-      {/* Top row: Date controls (left) + quick stats (right on large screens) */}
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "1fr", lg: "minmax(0, 1fr) auto" },
-          gap: 2,
-          alignItems: "stretch",
-          mb: 2,
-        }}
-      >
-        {/* Date Range Controls (left) */}
+      {/* Top row: Date controls + quick stats BELOW it */}
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 2 }}>
+        {/* Date Range Controls */}
         <Paper sx={{ p: 2 }}>
           <Stack
             direction="row"
@@ -784,7 +956,7 @@ const sortedBestSellerItems = useMemo(() => {
                 labelId="range-label"
                 label="Range"
                 value={range}
-                renderValue={(v) => RANGE_LABELS[v] || "Range"}
+                renderValue={() => rangeLabel}
                 onChange={(e) => applyPresetRange(e.target.value)}
               >
                 {/* hidden display-only option so MUI never renders blank */}
@@ -793,10 +965,10 @@ const sortedBestSellerItems = useMemo(() => {
                 </MenuItem>
 
                 <MenuItem value="days">Today</MenuItem>
-                <MenuItem value="weeks">This Week</MenuItem>
-                <MenuItem value="monthly">This Month</MenuItem>
-                <MenuItem value="quarterly">This Quarter</MenuItem>
-                <MenuItem value="yearly">This Year</MenuItem>
+                <MenuItem value="weeks">Week</MenuItem>
+                <MenuItem value="monthly">Month</MenuItem>
+                <MenuItem value="quarterly">Quarter</MenuItem>
+                <MenuItem value="yearly">Year</MenuItem>
               </Select>
             </FormControl>
 
@@ -850,7 +1022,9 @@ const sortedBestSellerItems = useMemo(() => {
                   <Select
                     label="Week"
                     value={weekKey}
-                    onChange={(e) => applySelectedWeek(weekYear, weekMonth, e.target.value)}
+                    onChange={(e) =>
+                      applySelectedWeek(weekYear, weekMonth, e.target.value)
+                    }
                   >
                     {weekOptions.length === 0 ? (
                       <MenuItem value="" disabled>
@@ -891,27 +1065,27 @@ const sortedBestSellerItems = useMemo(() => {
 
                 <FormControl size="small" sx={{ minWidth: 160 }}>
                   <InputLabel>Month</InputLabel>
-                    <Select
-                      label="Month"
-                      value={monthIndex}
-                      onChange={(e) => {
-                        const m = Number(e.target.value);
-                        setMonthIndex(m);
-                        applySelectedMonth(monthYear, m);
-                      }}
-                    >
-                      {monthOptions.length === 0 ? (
-                        <MenuItem value={monthIndex} disabled>
-                          No months with transactions
+                  <Select
+                    label="Month"
+                    value={monthIndex}
+                    onChange={(e) => {
+                      const m = Number(e.target.value);
+                      setMonthIndex(m);
+                      applySelectedMonth(monthYear, m);
+                    }}
+                  >
+                    {monthOptions.length === 0 ? (
+                      <MenuItem value={monthIndex} disabled>
+                        No months with transactions
+                      </MenuItem>
+                    ) : (
+                      monthOptions.map((m) => (
+                        <MenuItem key={m} value={m}>
+                          {dayjs().month(m).format("MMMM")}
                         </MenuItem>
-                      ) : (
-                        monthOptions.map((m) => (
-                          <MenuItem key={m} value={m}>
-                            {dayjs().month(m).format("MMMM")}
-                          </MenuItem>
-                        ))
-                      )}
-                    </Select>
+                      ))
+                    )}
+                  </Select>
                 </FormControl>
               </Stack>
             )}
@@ -921,6 +1095,9 @@ const sortedBestSellerItems = useMemo(() => {
                 label="From"
                 views={["year", "month", "day"]}
                 format="MM/DD/YYYY"
+                minDate={txnMinDate}
+                maxDate={txnMaxDate}
+                shouldDisableDate={shouldDisableTxnDate}
                 value={customFrom ? dayjs(customFrom) : null}
                 open={fromOpen}
                 onOpen={() => setFromOpen(true)}
@@ -963,6 +1140,9 @@ const sortedBestSellerItems = useMemo(() => {
                 label="To"
                 views={["year", "month", "day"]}
                 format="MM/DD/YYYY"
+                minDate={txnMinDate}
+                maxDate={txnMaxDate}
+                shouldDisableDate={shouldDisableTxnDate}
                 value={customTo ? dayjs(customTo) : null}
                 open={toOpen}
                 onOpen={() => setToOpen(true)}
@@ -1001,12 +1181,11 @@ const sortedBestSellerItems = useMemo(() => {
                 }}
               />
             </LocalizationProvider>
-
           </Stack>
         </Paper>
 
-        {/* Quick Stats (right on lg+, wraps below on small screens) */}
-        <Box sx={{ display: "flex", alignItems: "stretch" }}>
+        {/* Quick Stats BELOW date controls now */}
+        <Box sx={{ px: 0, mt: 0 }}>
           <QuickStats metrics={metricsWithAccounts} />
         </Box>
       </Box>
@@ -1028,91 +1207,226 @@ const sortedBestSellerItems = useMemo(() => {
           },
         }}
       >
-        {/* ============================ User Accounts ============================ */}
+        {/* ============================ Best Sellers ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", lg: "span 8" } }}>
           <Paper sx={cardSx}>
             <Box sx={cardHeaderSx}>
-              <PeopleIcon color="primary" />
-              <Typography variant="h6" fontWeight={800}>
-                User Accounts
-              </Typography>
+              <TrendingUpIcon color="primary" />
+              <Box sx={{ width: "100%" }}>
+                <Stack
+                  direction={{ xs: "column", sm: "row" }}
+                  alignItems={{ xs: "stretch", sm: "center" }}
+                  justifyContent="space-between"
+                  gap={1}
+                >
+                  {/* Title */}
+                  <Typography
+                    variant="h6"
+                    fontWeight={800}
+                    sx={{ lineHeight: 1.1, whiteSpace: "nowrap" }}
+                  >
+                    Best Seller
+                  </Typography>
+
+                  {/* Filters (Category on top, Sort+Top on bottom) */}
+                  <Stack
+                    direction="column"
+                    spacing={1}
+                    alignItems={{ xs: "stretch", sm: "flex-end" }}
+                    sx={{ minWidth: 0 }}
+                  >
+                    {/* Row 1: CATEGORY */}
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      justifyContent={{ xs: "flex-start", sm: "flex-end" }}
+                      sx={{ width: "100%" }}
+                    >
+                      <FormControl
+                        size="small"
+                        sx={{
+                          flex: "0 0 auto",
+                          width: { xs: "100%", sm: 260 },
+                          minWidth: 0,
+                        }}
+                      >
+                        <InputLabel>Category</InputLabel>
+                        <Select
+                          label="Category"
+                          value={bestItemCategory}
+                          onChange={(e) => setBestItemCategory(e.target.value)}
+                        >
+                          <MenuItem value="all">All</MenuItem>
+                          {bestSellerCategoryOptions.map((c) => (
+                            <MenuItem key={c.categoryId} value={c.categoryId}>
+                              {c.name}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Stack>
+
+                    {/* Row 2: SORT + TOP */}
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      useFlexGap
+                      flexWrap="wrap"
+                      justifyContent={{ xs: "flex-start", sm: "flex-end" }}
+                      sx={{ width: "100%" }}
+                    >
+                      {/* SORT */}
+                      <FormControl
+                        size="small"
+                        sx={{
+                          flex: "0 0 auto",
+                          width: { xs: 190, sm: 200 },
+                          minWidth: 0,
+                        }}
+                      >
+                        <InputLabel>Sort</InputLabel>
+                        <Select
+                          label="Sort"
+                          value={bestItemSort}
+                          onChange={(e) => setBestItemSort(e.target.value)}
+                          renderValue={(v) =>
+                            isXs ? (SORT_SHORT[v] || SORT_LABELS[v] || "Sort") : (SORT_LABELS[v] || "Sort")
+                          }
+                          MenuProps={{
+                            PaperProps: {
+                              sx: { width: { xs: 240, sm: 220 }, maxWidth: "90vw" },
+                            },
+                            MenuListProps: { sx: { p: 0 } },
+                          }}
+                          sx={{
+                            "& .MuiSelect-select": {
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              pr: 4,
+                            },
+                          }}
+                        >
+                          <MenuItem value="orders_desc">Orders (High → Low)</MenuItem>
+                          <MenuItem value="orders_asc">Orders (Low → High)</MenuItem>
+                          <MenuItem value="sales_desc">Sales (High → Low)</MenuItem>
+                          <MenuItem value="sales_asc">Sales (Low → High)</MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      {/* TOP */}
+                      <FormControl size="small" sx={{ minWidth: 90, flex: "0 0 110px" }}>
+                        <InputLabel>Top</InputLabel>
+                        <Select
+                          label="Top"
+                          value={bestItemLimit}
+                          onChange={(e) => setBestItemLimit(e.target.value)}
+                        >
+                          <MenuItem value="all">All</MenuItem>
+                          <MenuItem value="5">5</MenuItem>
+                          <MenuItem value="10">10</MenuItem>
+                          <MenuItem value="20">20</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Stack>
+                  </Stack>
+                </Stack>
+              </Box>
+
             </Box>
-            <Box sx={cardContentSx}>
-              <TableContainer
-                className="scroll-x"
+              <Box
                 sx={{
-                  flex: 1,
-                  // height tuned so ~4 rows are visible before scroll
-                  maxHeight: { xs: 230, sm: 250, md: 270 },
-                  overflowY: "auto",
-                  overflowX: "hidden",
+                  ...cardContentSx,
+                  p: 0,     // ✅ no padding so table touches border
+                  gap: 0,
                 }}
               >
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Name</TableCell>
-                      <TableCell>Role</TableCell>
-                      <TableCell>Status</TableCell>
-                      <TableCell>Last Login</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {employees.slice(0, 5).map((emp) => (
-                      <TableRow key={emp.id} hover>
-                        <TableCell>
-                          <Typography variant="body2" fontWeight={600} noWrap>
-                            {item.category || selectedCatName || "-"}
-                          </Typography>
-                        </TableCell>
-
-                        <TableCell>
-                          <Typography variant="body2">{emp.role}</Typography>
-                        </TableCell>
-
-                        <TableCell>
-                          <Chip
-                            size="small"
-                            label={emp.status || "Unknown"}
-                            color={emp.status === "Active" ? "success" : "default"}
-                            variant={emp.status === "Active" ? "filled" : "outlined"}
-                          />
-                        </TableCell>
-
-                        <TableCell>
-                          <Typography variant="body2" noWrap>
-                            {formatDateTime(emp.lastLoginAt || emp.createdAt)}
-                          </Typography>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-
-                    {employees.length === 0 && (
+                <TableContainer
+                  className="scroll-x"
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    maxHeight: { xs: 230, sm: 250, md: 270 }, // same pattern as User Accounts
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                  }}
+                >
+                  <Table size="small" stickyHeader>
+                    <TableHead>
                       <TableRow>
-                        <TableCell colSpan={4}>
-                          <Box py={4} textAlign="center">
-                            <Typography
-                              variant="body2"
-                              color="text.secondary"
-                            >
-                              No user accounts found.
-                            </Typography>
-                          </Box>
+                        <TableCell sx={{ ...tableCellFirstSx, width: 56 }} />
+                        <TableCell>Item Name</TableCell>
+                        <TableCell align="right" sx={{ ...tableCellSx, width: 90 }}>
+                          Orders
+                        </TableCell>
+                        <TableCell sx={{ ...tableCellLastSx, width: 160 }}>
+                          Category
                         </TableCell>
                       </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                    </TableHead>
 
-              <Button
-                size="small"
-                sx={{ mt: 1, alignSelf: "flex-end" }}
-                onClick={() => navigate("/users")}
-              >
-                View All Accounts
-              </Button>
-            </Box>
+                    <TableBody>
+                      {sortedBestSellerItems.map((item, i) => (
+                        <TableRow key={`${item.itemId}-${i}`} hover>
+                          {/* Rank */}
+                          <TableCell sx={tableCellFirstSx}>
+                            <Avatar
+                              sx={{
+                                width: 28,
+                                height: 28,
+                                bgcolor: theme.palette.primary.main,
+                                fontSize: 13,
+                              }}
+                            >
+                              {i + 1}
+                            </Avatar>
+                          </TableCell>
+
+                          {/* Item Name */}
+                          <TableCell sx={tableCellSx}>
+                            <Typography variant="body2" fontWeight={700} noWrap>
+                              {item.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" noWrap>
+                              ({item.qty} qty • {peso(item.sales)})
+                            </Typography>
+                          </TableCell>
+
+                          {/* Orders */}
+                          <TableCell align="right" sx={tableCellSx}>
+                            <Typography variant="body2" fontWeight={800} noWrap>
+                              {item.orders}
+                            </Typography>
+                          </TableCell>
+
+                          {/* Category */}
+                          <TableCell sx={tableCellLastSx}>
+                            <Typography variant="body2" fontWeight={600} noWrap>
+                              {item.category || selectedCatName || "-"}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+
+                      {/* Empty state (inside table, same structure as other tables) */}
+                      {sortedBestSellerItems.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4} sx={tableCellSx}>
+                            <Box py={4}>
+                              <EmptyState
+                                icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
+                                title="No best sellers yet"
+                                description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
+                                hint="Try switching the range to Week/Month or choose a different date."
+                              />
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
           </Paper>
         </Box>
 
@@ -1179,24 +1493,19 @@ const sortedBestSellerItems = useMemo(() => {
                       />
                       <ListItemText
                         primary={
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "baseline",
-                              gap: 1,
-                              minWidth: 0,
-                            }}
-                          >
-                            <Typography variant="body2" fontWeight="medium" noWrap sx={{ minWidth: 0 }}>
+                          <Box sx={{ minWidth: 0 }}>
+                            {/* Line 1: Inventory name */}
+                            <Typography variant="body2" fontWeight={700} noWrap sx={{ minWidth: 0 }}>
                               {item.name}
                             </Typography>
 
+                            {/* Line 2: Current + Minimum */}
                             <Typography variant="caption" color="text.secondary" noWrap>
-                              Current: {item.currentStock} | Minimum: {item.lowStock}
+                              Current: {item.currentStock} • Minimum: {item.lowStock}
                             </Typography>
                           </Box>
                         }
-                        sx={{ my: 0 }} // remove extra vertical margins
+                        sx={{ my: 0 }}
                       />
                       <Chip
                         label={item.alert === "critical" ? "Critical" : "Warning"}
@@ -1235,136 +1544,96 @@ const sortedBestSellerItems = useMemo(() => {
           </Paper>
         </Box>
 
-        {/* ============================ Best Sellers ============================ */}
+        {/* ============================ User Accounts ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 8" } }}>
           <Paper sx={cardSx}>
             <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
-              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                <Typography variant="h6" fontWeight={800}>
-                  Best Seller
-                </Typography>
-
-                <Stack direction="row" spacing={1}>
-                  <FormControl size="small" sx={{ minWidth: 140 }}>
-                    <InputLabel>Category</InputLabel>
-                    <Select
-                      label="Category"
-                      value={bestItemCategory}
-                      onChange={(e) => setBestItemCategory(e.target.value)}
-                    >
-                      <MenuItem value="all">All</MenuItem>
-                      {bestSellerCategoryOptions.map((c) => (
-                        <MenuItem key={c.categoryId} value={c.categoryId}>
-                          {c.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-
-                  <FormControl size="small" sx={{ minWidth: 90 }}>
-                    <InputLabel>Top</InputLabel>
-                    <Select
-                      label="Top"
-                      value={bestItemLimit}
-                      onChange={(e) => setBestItemLimit(e.target.value)}
-                    >
-                      <MenuItem value="all">All</MenuItem>
-                      <MenuItem value="5">5</MenuItem>
-                      <MenuItem value="10">10</MenuItem>
-                      <MenuItem value="20">20</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Stack>
-              </Box>
+              <PeopleIcon color="primary" />
+              <Typography variant="h6" fontWeight={800}>
+                User Accounts
+              </Typography>
             </Box>
-              <Box sx={cardContentSx}>
-                <TableContainer
-                  className="scroll-x"
-                  sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    maxHeight: { xs: 230, sm: 250, md: 270 }, // same pattern as User Accounts
-                    overflowY: "auto",
-                    overflowX: "hidden",
-                  }}
-                >
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={{ width: 56 }} />
-                        <TableCell>Item Name</TableCell>
-                        <TableCell align="right" sx={{ width: 90 }}>
-                          Orders
+            <Box
+              sx={{
+                ...cardContentSx,
+                p: 0,     // ✅ remove padding for table area
+                gap: 0,
+              }}
+            >
+              <TableContainer
+                className="scroll-x"
+                sx={{
+                  flex: 1,
+                  // height tuned so ~4 rows are visible before scroll
+                  maxHeight: { xs: 230, sm: 250, md: 270 },
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                }}
+              >
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={tableCellFirstSx}>Name</TableCell>
+                      <TableCell sx={tableCellSx}>Role</TableCell>
+                      <TableCell sx={tableCellSx}>Status</TableCell>
+                      <TableCell sx={tableCellLastSx}>Last Login</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {employees.slice(0, 5).map((emp) => (
+                      <TableRow key={emp.id} hover>
+                        <TableCell sx={tableCellFirstSx}>
+                          <Typography variant="body2" fontWeight={600} noWrap>
+                            {emp.name || "-"}
+                          </Typography>
                         </TableCell>
-                        <TableCell sx={{ width: 160 }}>
-                          Category
+
+                        <TableCell sx={tableCellSx}>
+                          <Typography variant="body2">{emp.role}</Typography>
+                        </TableCell>
+
+                        <TableCell sx={tableCellSx}>
+                          <Chip
+                            size="small"
+                            label={emp.status || "Unknown"}
+                            color={emp.status === "Active" ? "success" : "default"}
+                            variant={emp.status === "Active" ? "filled" : "outlined"}
+                          />
+                        </TableCell>
+
+                        <TableCell sx={tableCellLastSx}>
+                          <Typography variant="body2" noWrap>
+                            {formatDateTime(emp.lastLoginAt || emp.createdAt)}
+                          </Typography>
                         </TableCell>
                       </TableRow>
-                    </TableHead>
+                    ))}
 
-                    <TableBody>
-                      {sortedBestSellerItems.map((item, i) => (
-                        <TableRow key={`${item.itemId}-${i}`} hover>
-                          {/* Rank */}
-                          <TableCell>
-                            <Avatar
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: theme.palette.primary.main,
-                                fontSize: 13,
-                              }}
+                    {employees.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Box py={4} textAlign="center">
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
                             >
-                              {i + 1}
-                            </Avatar>
-                          </TableCell>
-
-                          {/* Item Name */}
-                          <TableCell>
-                            <Typography variant="body2" fontWeight={700} noWrap>
-                              {item.name}
+                              No user accounts found.
                             </Typography>
-                            <Typography variant="caption" color="text.secondary" noWrap>
-                              ({item.qty} qty • {peso(item.sales)})
-                            </Typography>
-                          </TableCell>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
 
-                          {/* Orders */}
-                          <TableCell align="right">
-                            <Typography variant="body2" fontWeight={800} noWrap>
-                              {item.orders}
-                            </Typography>
-                          </TableCell>
-
-                          {/* Category */}
-                          <TableCell>
-                            <Typography variant="body2" fontWeight={600} noWrap>
-                              {item.category || selectedCatName || "-"}
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-
-                      {/* Empty state (inside table, same structure as other tables) */}
-                      {sortedBestSellerItems.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={4}>
-                            <Box py={4}>
-                              <EmptyState
-                                icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
-                                title="No best sellers yet"
-                                description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
-                                hint="Try switching the range to Week/Month or choose a different date."
-                              />
-                            </Box>
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+              {/* ✅ keep padding only for footer/button */}
+              <Box sx={{ p: 2, pt: 1, display: "flex", justifyContent: "flex-end" }}>
+                <Button size="small" onClick={() => navigate("/users")}>
+                  View All Accounts
+                </Button>
               </Box>
+            </Box>
           </Paper>
         </Box>
 
@@ -1394,7 +1663,7 @@ const sortedBestSellerItems = useMemo(() => {
                     justifyContent: "center",
                   }}
                 >
-                  <Box sx={{ height: 200 }}>
+                  <Box sx={{ height: 200, pointerEvents: "auto" }}>
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
@@ -1402,22 +1671,27 @@ const sortedBestSellerItems = useMemo(() => {
                           dataKey="value"
                           nameKey="name"
                           outerRadius="80%"
-                          label={({ name, value }) => `${name} ${value}%`}
+                          activeIndex={activePieIndex}
+                          onMouseEnter={(_, index) => setActivePieIndex(index)}
+                          onMouseLeave={() => setActivePieIndex(-1)}
                         >
                           {paymentData.map((_, i) => (
                             <Cell
                               key={i}
-                              fill={
-                                [
-                                  theme.palette.primary.main,
-                                  theme.palette.secondary.main,
-                                  theme.palette.success.main,
-                                ][i % 3]
-                              }
+                              fill={[
+                                theme.palette.primary.main,
+                                theme.palette.secondary.main,
+                                theme.palette.success.main,
+                              ][i % 3]}
                             />
                           ))}
                         </Pie>
-                        <Tooltip formatter={(v) => [`${v}%`, "Percentage"]} />
+
+                        <Tooltip
+                          content={<PaymentTooltip />}
+                          cursor={false}
+                          wrapperStyle={{ outline: "none", zIndex: 9999 }}
+                        />
                       </PieChart>
                     </ResponsiveContainer>
                   </Box>
@@ -1452,7 +1726,7 @@ const sortedBestSellerItems = useMemo(() => {
                           {d.name}
                         </Typography>
                         <Typography variant="body2" fontWeight="bold">
-                          {peso(d.amount)} ({d.transactions} txn)
+                          {peso(d.amount)} ({d.transactions} {Number(d.transactions) === 1 ? "Transaction" : "Transactions"})
                         </Typography>
                       </Box>
                     ))}
