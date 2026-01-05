@@ -23,6 +23,8 @@ import {
   Avatar,
   Chip,
   useMediaQuery,
+  List,
+  ListItem,
 } from "@mui/material";
 import {
   LineChart,
@@ -250,6 +252,20 @@ export default function ReportsPage() {
   const [fromOpen, setFromOpen] = useState(false);
   const [toOpen, setToOpen] = useState(false);
 
+const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
+const [bestItemLimit, setBestItemLimit] = useState("10"); // "all" | "5" | "10" | "20"
+const [bestSellerItems, setBestSellerItems] = useState([]);
+
+// dropdown options
+const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
+
+useEffect(() => {
+  fetch("/api/reports/best-seller-categories")
+    .then((r) => r.json())
+    .then((j) => setBestSellerCategoryOptions(j?.ok ? (j.data || []) : []))
+    .catch(() => setBestSellerCategoryOptions([]));
+}, []);
+
   const blurOnFocus = (e) => {
     // kills the section highlight (MM/DD/YYYY) when MUI focuses the field on open/close
     e.target.blur?.();
@@ -263,6 +279,10 @@ export default function ReportsPage() {
     setBestCatSelected(null);
     setBestCatTopItems([]);
     setBestCatLoading(false);
+
+    setBestItemCategory("all");
+    setBestItemLimit("10");
+    setBestSellerItems([]);
 
     // reset pagination
     setPage1(0);
@@ -442,13 +462,6 @@ export default function ReportsPage() {
     if (min && out < min) out = min;
     if (max && out > max) out = max;
     return out;
-  };
-
-  const getIsoWeekRange = (base = dayjs()) => {
-    const dow = base.day(); // 0..6 (Sun..Sat)
-    const monday = base.subtract((dow + 6) % 7, "day").startOf("day");
-    const sunday = monday.add(6, "day").endOf("day");
-    return { from: monday, to: sunday };
   };
 
 function applyPresetRange(nextRange) {
@@ -663,6 +676,38 @@ const bestSellerQS = useMemo(() => {
   const base = buildReportsQS();
   return `${base}&_=${reloadTick}`; // ✅ cache-buster
 }, [range, customFrom, customTo, reloadTick]);
+
+useEffect(() => {
+  let alive = true;
+
+  async function loadBestItems() {
+    try {
+      const baseQs = buildReportsQS();
+      const qs = `${baseQs}&_=${reloadTick}`;
+
+      const cat = bestItemCategory; // "all" | number
+      const top = bestItemLimit;    // "all" | 5/10/20
+
+      const url =
+        `/api/reports/best-seller-items?${qs}` +
+        `&categoryId=${encodeURIComponent(cat)}` +
+        `&limit=${encodeURIComponent(top)}`;
+
+      const resp = await fetch(url);
+      const json = await resp.json();
+      if (!alive) return;
+
+      setBestSellerItems(json?.ok ? (json.data || []) : []);
+    } catch (e) {
+      console.error("[best seller items] failed", e);
+      if (!alive) return;
+      setBestSellerItems([]);
+    }
+  }
+
+  loadBestItems();
+  return () => { alive = false; };
+}, [range, customFrom, customTo, reloadTick, bestItemCategory, bestItemLimit]);
 
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
@@ -1480,8 +1525,6 @@ const bestSellerQS = useMemo(() => {
                       onChange={(e) => {
                         const y = +e.target.value;
                         setWeekYear(y);
-                        const firstKey = buildWeeksForMonth(y, weekMonth)[0]?.key || "";
-                        if (firstKey) applySelectedWeek(y, weekMonth, firstKey);
                       }}
                     >
                       {yearOptions.map((y) => (
@@ -1918,66 +1961,164 @@ const bestSellerQS = useMemo(() => {
             />
           </Paper>
 
-          {/* ================= Best Seller per Category================= */}
-          <Paper sx={{ p: 2, overflow: "hidden" }}>
-            <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1} gap={2}>
-              <Typography fontWeight={700}>Best Seller per Category</Typography>
-              <Chip size="small" label={`Range: ${currentRangeLabel}`} variant="outlined" />
+          {/* ================= Best Seller ================= */}
+          <Paper
+            sx={{
+              p: 2,
+              display: "flex",
+              flexDirection: "column",
+              height: 420,     // same idea: fixed card height
+              minHeight: 0,    // IMPORTANT
+              overflow: "hidden",
+            }}
+          >
+            {/* Header (Category + Top on the RIGHT, same as Dashboard) */}
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ mb: 1 }}
+            >
+              <Typography variant="h6" fontWeight={800}>
+                Best Seller
+              </Typography>
+
+              <Stack direction="row" spacing={1}>
+                <FormControl size="small" sx={{ minWidth: 140 }}>
+                  <InputLabel>Category</InputLabel>
+                  <Select
+                    label="Category"
+                    value={bestItemCategory}
+                    onChange={(e) => setBestItemCategory(e.target.value)}
+                  >
+                    <MenuItem value="all">All</MenuItem>
+                    {bestSellerCategoryOptions.map((c) => (
+                      <MenuItem key={c.categoryId} value={c.categoryId}>
+                        {c.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <FormControl size="small" sx={{ minWidth: 90 }}>
+                  <InputLabel>Top</InputLabel>
+                  <Select
+                    label="Top"
+                    value={bestItemLimit}
+                    onChange={(e) => setBestItemLimit(e.target.value)}
+                  >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="5">5</MenuItem>
+                    <MenuItem value="10">10</MenuItem>
+                    <MenuItem value="20">20</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
             </Stack>
 
-            <TableContainer
-              component={Paper}
-              elevation={0}
-              className="scroll-x"
-              sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
+            {/* Content */}
+            <Box
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+              }}
             >
-              <Table stickyHeader sx={{ minWidth: { xs: 720, sm: 900, md: 1080 }, ...comfyCells }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Rank</TableCell>
-                    <TableCell>Category</TableCell>
-                    <TableCell>Total Orders</TableCell>
-                    <TableCell>Total Sales</TableCell>
-                  </TableRow>
-                </TableHead>
-
-                <TableBody>
-                  {bestSeller.map((r) => (
-                    <TableRow
-                      key={r.rank}
-                      hover
-                      onClick={() => {
-                        if (!r.categoryId) return;
-                        openBestCategory(r);
-                      }}
-                      sx={{ cursor: "pointer" }}
-                    >
-                      <TableCell>{r.rank}</TableCell>
-
-                      <TableCell>
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <Avatar variant="rounded" sx={{ width: 28, height: 28, fontSize: 12 }}>
-                            {(r.name || "?").slice(0, 1).toUpperCase()}
-                          </Avatar>
-                          <Typography>{r.name}</Typography>
-                        </Stack>
-                      </TableCell>
-
-                      <TableCell>{r.orders}</TableCell>
-                      <TableCell>{peso(r.sales)}</TableCell>
-                    </TableRow>
-                  ))}
-
-                  {bestSeller.length === 0 && (
+              <TableContainer
+                className="scroll-x"
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                }}
+              >
+                <Table size="small" stickyHeader>
+                  <TableHead>
                     <TableRow>
-                      <TableCell colSpan={4} align="center">
-                        No data for this range
+                      <TableCell sx={{ width: 56 }} />
+                      <TableCell>Item Name</TableCell>
+                      <TableCell align="right" sx={{ width: 90 }}>
+                        Orders
+                      </TableCell>
+                      <TableCell sx={{ width: 160 }}>
+                        Category
                       </TableCell>
                     </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  </TableHead>
+
+                  <TableBody>
+                    {bestSellerItems.map((item, i) => (
+                      <TableRow key={`${item.itemId}-${i}`} hover>
+                        {/* Rank */}
+                        <TableCell>
+                          <Avatar
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: theme.palette.primary.main,
+                              fontSize: 13,
+                            }}
+                          >
+                            {i + 1}
+                          </Avatar>
+                        </TableCell>
+
+                        {/* Item Name */}
+                        <TableCell>
+                          <Typography variant="body2" fontWeight={600} noWrap>
+                            {item.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            ({item.qty} qty • {peso(item.sales)})
+                          </Typography>
+                        </TableCell>
+
+                        {/* Orders */}
+                        <TableCell align="right">
+                          <Typography variant="body2" fontWeight={800} noWrap>
+                            {item.orders}
+                          </Typography>
+                        </TableCell>
+
+                        {/* Category */}
+                        <TableCell>
+                          <Typography variant="body2" fontWeight={600} noWrap>
+                            {item.category || "-"}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+
+                    {/* Empty state */}
+                    {bestSellerItems.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Box
+                            sx={{
+                              py: 4,
+                              textAlign: "center",
+                              color: "text.secondary",
+                            }}
+                          >
+                            <Typography fontWeight={800}>
+                              No best sellers yet
+                            </Typography>
+                            <Typography variant="body2">
+                              There were no sales recorded in the selected period, so there’s no best-selling data to display.
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Try switching the range to Week/Month or choose a different date.
+                            </Typography>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
           </Paper>
 
           {/* ================= Latest Order ================= */}

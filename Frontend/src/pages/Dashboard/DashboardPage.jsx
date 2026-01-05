@@ -270,6 +270,12 @@ const [monthIndex, setMonthIndex] = useState(now.month()); // 0..11
 
 const [availableWeekKeys, setAvailableWeekKeys] = useState([]); // ["YYYY-MM-DD", ...]
 
+// ✅ Best Seller (items)
+const [bestSellerItems, setBestSellerItems] = useState([]);
+const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
+const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
+const [bestItemLimit, setBestItemLimit] = useState("5"); // "all" | "5" | "10" | "20"
+
 const weekMonthOptions = availableMonthsByYear[weekYear] || [];
 const monthOptions = availableMonthsByYear[monthYear] || [];
 
@@ -287,6 +293,13 @@ const weekOptions = useMemo(() => {
 }, [availableWeekKeys]);
 
 const yearOptions = availableYears.length ? availableYears : [dayjs().year()];
+
+useEffect(() => {
+  fetch(joinApi("api/dashboard/best-seller-categories"), { cache: "no-store" })
+    .then((r) => r.json())
+    .then((j) => setBestSellerCategoryOptions(j?.ok ? (j.data || []) : []))
+    .catch(() => setBestSellerCategoryOptions([]));
+}, []);
 
 useEffect(() => {
   let alive = true;
@@ -596,7 +609,6 @@ const applySelectedMonth = (y, m) => {
 
   // ------------------------ LIVE DASHBOARD DATA (REAL) ------------------------
   const [salesSeries, setSalesSeries] = useState([]); // currently unused, reserved for future chart
-  const [bestSellers, setBestSellers] = useState([]);
   const [paymentData, setPaymentData] = useState([]);
   const [metrics, setMetrics] = useState({
     totalSales: 0,
@@ -630,10 +642,10 @@ const applySelectedMonth = (y, m) => {
 
         // best sellers
         const bRes = await fetch(
-          joinApi(`api/dashboard/best-sellers?${qs}`) // ✅ use joinApi
+          joinApi(`api/dashboard/best-seller-items?${qs}&categoryId=${bestItemCategory}&limit=${bestItemLimit}`)
         );
         const bData = await bRes.json();
-        if (alive && bData.ok) setBestSellers(bData.bestSellers);
+        if (alive && bData.ok) setBestSellerItems(bData.data || []);
 
         // payments
         const pRes = await fetch(
@@ -650,7 +662,7 @@ const applySelectedMonth = (y, m) => {
     return () => {
       alive = false;
     };
-  }, [range, customFrom, customTo]);
+  }, [range, customFrom, customTo, bestItemCategory, bestItemLimit]);
 
   const metricsWithAccounts = {
     ...metrics,
@@ -680,13 +692,14 @@ const applySelectedMonth = (y, m) => {
     gap: 1,
   };
 
-  const cardContentSx = {
-    p: 2,
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    gap: 1,
-  };
+const cardContentSx = {
+  p: 2,
+  flex: 1,
+  minHeight: 0, // ✅ IMPORTANT for scroll containers inside
+  display: "flex",
+  flexDirection: "column",
+  gap: 1,
+};
 
   // Reduced card heights for better content density
   const cardHeights = {
@@ -695,9 +708,22 @@ const applySelectedMonth = (y, m) => {
     md: 360,
   };
 
-  const sortedBestSellers = [...bestSellers].sort(
-    (a, b) => (b.orders || 0) - (a.orders || 0)
-  );
+const sortedBestSellerItems = useMemo(() => {
+  return [...bestSellerItems].sort((a, b) => {
+    const o = (b.orders || 0) - (a.orders || 0);
+    if (o !== 0) return o;
+    const q = (b.qty || 0) - (a.qty || 0);
+    if (q !== 0) return q;
+    return (b.sales || 0) - (a.sales || 0); // tie-breaker
+  });
+}, [bestSellerItems]);
+
+  const selectedCatName =
+  String(bestItemCategory) === "all"
+    ? ""
+    : (bestSellerCategoryOptions.find(
+        (c) => String(c.categoryId) === String(bestItemCategory)
+      )?.name || "");
 
   const EmptyState = ({ icon, title, description, hint }) => (
     <Box
@@ -991,13 +1017,14 @@ const applySelectedMonth = (y, m) => {
           gap: 2,
           alignItems: "stretch",
           gridTemplateColumns: "repeat(12, 1fr)",
-          gridAutoRows: `minmax(${cardHeights.xs}px, auto)`,
+
+          gridAutoRows: `${cardHeights.xs}px`,
 
           [theme.breakpoints.up("sm")]: {
-            gridAutoRows: `minmax(${cardHeights.sm}px, auto)`,
+            gridAutoRows: `${cardHeights.sm}px`,
           },
           [theme.breakpoints.up("md")]: {
-            gridAutoRows: `minmax(${cardHeights.md}px, auto)`,
+            gridAutoRows: `${cardHeights.md}px`,
           },
         }}
       >
@@ -1035,7 +1062,7 @@ const applySelectedMonth = (y, m) => {
                       <TableRow key={emp.id} hover>
                         <TableCell>
                           <Typography variant="body2" fontWeight={600} noWrap>
-                            {emp.name || "(No name)"}
+                            {item.category || selectedCatName || "-"}
                           </Typography>
                         </TableCell>
 
@@ -1089,75 +1116,8 @@ const applySelectedMonth = (y, m) => {
           </Paper>
         </Box>
 
-        {/* ============================ Best Sellers ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
-          <Paper sx={cardSx}>
-            <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
-              <Typography variant="h6" fontWeight={800}>
-                Best Seller per Category
-              </Typography>
-            </Box>
-              <Box sx={cardContentSx}>
-                {sortedBestSellers.length === 0 ? (
-                  <EmptyState
-                    icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
-                    title="No best sellers yet"
-                    description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
-                    hint="Try switching the range to Week/Month or choose a different date."
-                  />
-                ) : (
-                  <List dense sx={{ flex: 1 }}>
-                    {sortedBestSellers.slice(0, 5).map((item, i) => (
-                      <ListItem key={i} disableGutters sx={{ py: 1 }}>
-                        <Avatar
-                          sx={{
-                            width: 32,
-                            height: 32,
-                            mr: 2,
-                            bgcolor: theme.palette.primary.main,
-                            fontSize: 14,
-                          }}
-                        >
-                          {i + 1}
-                        </Avatar>
-
-                        <ListItemText
-                          primary={
-                            <Typography variant="body2" fontWeight="medium">
-                              {item.name}
-                            </Typography>
-                          }
-                        />
-
-                        <Box
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 1,
-                            minWidth: 90,
-                          }}
-                        >
-                          <Typography variant="body2" fontWeight="bold">
-                            {item.orders} orders
-                          </Typography>
-
-                          {item.trend === "up" ? (
-                            <TrendingUpIcon color="success" sx={{ fontSize: 20 }} />
-                          ) : (
-                            <TrendingDownIcon color="error" sx={{ fontSize: 20 }} />
-                          )}
-                        </Box>
-                      </ListItem>
-                    ))}
-                  </List>
-                )}
-              </Box>
-          </Paper>
-        </Box>
-
         {/* ============================ Low Stock ============================ */}
-        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 8" } }}>
+        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 4" } }}>
           <Paper sx={cardSx}>
             <Box sx={{ ...cardHeaderSx, justifyContent: "space-between" }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -1272,6 +1232,139 @@ const applySelectedMonth = (y, m) => {
                 View Low Stock
               </Button>
             </Box>
+          </Paper>
+        </Box>
+
+        {/* ============================ Best Sellers ============================ */}
+        <Box sx={{ gridColumn: { xs: "span 12", sm: "span 6", lg: "span 8" } }}>
+          <Paper sx={cardSx}>
+            <Box sx={cardHeaderSx}>
+              <TrendingUpIcon color="primary" />
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                <Typography variant="h6" fontWeight={800}>
+                  Best Seller
+                </Typography>
+
+                <Stack direction="row" spacing={1}>
+                  <FormControl size="small" sx={{ minWidth: 140 }}>
+                    <InputLabel>Category</InputLabel>
+                    <Select
+                      label="Category"
+                      value={bestItemCategory}
+                      onChange={(e) => setBestItemCategory(e.target.value)}
+                    >
+                      <MenuItem value="all">All</MenuItem>
+                      {bestSellerCategoryOptions.map((c) => (
+                        <MenuItem key={c.categoryId} value={c.categoryId}>
+                          {c.name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  <FormControl size="small" sx={{ minWidth: 90 }}>
+                    <InputLabel>Top</InputLabel>
+                    <Select
+                      label="Top"
+                      value={bestItemLimit}
+                      onChange={(e) => setBestItemLimit(e.target.value)}
+                    >
+                      <MenuItem value="all">All</MenuItem>
+                      <MenuItem value="5">5</MenuItem>
+                      <MenuItem value="10">10</MenuItem>
+                      <MenuItem value="20">20</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Stack>
+              </Box>
+            </Box>
+              <Box sx={cardContentSx}>
+                <TableContainer
+                  className="scroll-x"
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    maxHeight: { xs: 230, sm: 250, md: 270 }, // same pattern as User Accounts
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                  }}
+                >
+                  <Table size="small" stickyHeader>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={{ width: 56 }} />
+                        <TableCell>Item Name</TableCell>
+                        <TableCell align="right" sx={{ width: 90 }}>
+                          Orders
+                        </TableCell>
+                        <TableCell sx={{ width: 160 }}>
+                          Category
+                        </TableCell>
+                      </TableRow>
+                    </TableHead>
+
+                    <TableBody>
+                      {sortedBestSellerItems.map((item, i) => (
+                        <TableRow key={`${item.itemId}-${i}`} hover>
+                          {/* Rank */}
+                          <TableCell>
+                            <Avatar
+                              sx={{
+                                width: 28,
+                                height: 28,
+                                bgcolor: theme.palette.primary.main,
+                                fontSize: 13,
+                              }}
+                            >
+                              {i + 1}
+                            </Avatar>
+                          </TableCell>
+
+                          {/* Item Name */}
+                          <TableCell>
+                            <Typography variant="body2" fontWeight={700} noWrap>
+                              {item.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" noWrap>
+                              ({item.qty} qty • {peso(item.sales)})
+                            </Typography>
+                          </TableCell>
+
+                          {/* Orders */}
+                          <TableCell align="right">
+                            <Typography variant="body2" fontWeight={800} noWrap>
+                              {item.orders}
+                            </Typography>
+                          </TableCell>
+
+                          {/* Category */}
+                          <TableCell>
+                            <Typography variant="body2" fontWeight={600} noWrap>
+                              {item.category || selectedCatName || "-"}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+
+                      {/* Empty state (inside table, same structure as other tables) */}
+                      {sortedBestSellerItems.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4}>
+                            <Box py={4}>
+                              <EmptyState
+                                icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
+                                title="No best sellers yet"
+                                description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
+                                hint="Try switching the range to Week/Month or choose a different date."
+                              />
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
           </Paper>
         </Box>
 

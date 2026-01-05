@@ -305,7 +305,7 @@ router.get("/available-weeks", async (req, res) => {
         WHERE o.status IN ('paid','refunded')
         AND ${where}
         GROUP BY COALESCE(c.id, 0), COALESCE(c.name, 'Uncategorized')
-        ORDER BY sales DESC
+        ORDER BY orders DESC, sales DESC
         LIMIT 10
         `
       );
@@ -323,6 +323,115 @@ router.get("/available-weeks", async (req, res) => {
       return res.status(500).json({ ok: false, error: e.message });
     }
   });
+
+/* =========================================================================
+ * 3A) BEST SELLER CATEGORY OPTIONS (for dropdown)
+ * ========================================================================= */
+router.get("/best-seller-categories", async (req, res) => {
+  try {
+    const rows = await db.query(`
+      SELECT id, name
+      FROM categories
+      ORDER BY name ASC
+    `);
+
+    const list = [
+      { categoryId: 0, name: "Uncategorized" },
+      ...rows.map((r) => ({ categoryId: Number(r.id), name: r.name })),
+    ];
+
+    return res.json({ ok: true, data: list });
+  } catch (e) {
+    console.error("[dashboard/best-seller-categories]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * 3B) BEST SELLER ITEMS (All categories OR per category)
+ *    Query:
+ *      - categoryId: "all" | 0 | number
+ *      - limit: "all" | 5 | 10 | 20
+ * ========================================================================= */
+router.get("/best-seller-items", async (req, res) => {
+  try {
+    const { range = "days", from, to, categoryId = "all", limit = "10" } = req.query;
+    const where = buildRangeSQL(range, from, to);
+
+    await resolveItemsColumns(db);
+
+    if (_itemsTableMissing) {
+      return res.json({ ok: true, data: [] });
+    }
+
+    // limit sanitize (cap "all" to prevent huge list)
+    let limSql = "10";
+    if (String(limit).toLowerCase() === "all") limSql = "200";
+    else {
+      const n = Number(limit);
+      limSql = [5, 10, 20].includes(n) ? String(n) : "10";
+    }
+
+    // category filter
+    const cat = String(categoryId).toLowerCase();
+    let catFilter = "";
+    const params = [];
+
+    if (cat !== "all") {
+      const catIdNum = Number(categoryId);
+      if (Number.isNaN(catIdNum) || catIdNum < 0) {
+        return res.status(400).json({ ok: false, error: "Invalid categoryId" });
+      }
+
+      if (catIdNum === 0) {
+        catFilter = `AND (it.${ITEMS_CATEGORY_COL} IS NULL OR it.${ITEMS_CATEGORY_COL} = 0)`;
+      } else {
+        catFilter = `AND it.${ITEMS_CATEGORY_COL} = ?`;
+        params.push(catIdNum);
+      }
+    }
+
+    const rows = await db.query(
+      `
+      SELECT
+        oi.item_id,
+        oi.item_name AS name,
+        COALESCE(c.name, 'Uncategorized') AS category,
+        SUM(oi.qty) AS qty,
+        COUNT(DISTINCT o.order_id) AS orders,
+        SUM(oi.line_total) AS sales
+      FROM pos_order_items oi
+      JOIN pos_orders o ON oi.order_id = o.order_id
+      LEFT JOIN items it ON it.${ITEMS_PK_COL} = oi.item_id
+      LEFT JOIN categories c ON c.id = it.${ITEMS_CATEGORY_COL}
+      WHERE o.status IN ('paid','refunded')
+        AND ${where}
+        ${catFilter}
+      GROUP BY oi.item_id, oi.item_name, COALESCE(c.name, 'Uncategorized')
+      ORDER BY orders DESC, qty DESC, sales DESC
+      LIMIT ${limSql}
+      `,
+      params
+    );
+
+
+    const list = (rows || []).map((r, idx) => ({
+      rank: idx + 1,
+      itemId: Number(r.item_id),
+      name: r.name,
+      category: r.category,
+      orders: Number(r.orders || 0),
+      qty: Number(r.qty || 0),
+      sales: Number(r.sales || 0),
+      trend: "up",
+    }));
+
+    return res.json({ ok: true, data: list });
+  } catch (e) {
+    console.error("[dashboard/best-seller-items]", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
   
   /* =========================================================================
    * 4) PAYMENT METHOD BREAKDOWN

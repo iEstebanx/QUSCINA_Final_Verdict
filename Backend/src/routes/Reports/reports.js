@@ -329,7 +329,7 @@ module.exports = ({ db }) => {
           AND ${categoryFilterSql}
           AND ${where}
         GROUP BY oi.item_id, oi.item_name
-        ORDER BY sales DESC
+        ORDER BY orders DESC, sales DESC
         LIMIT 5
         `,
         params
@@ -375,7 +375,7 @@ module.exports = ({ db }) => {
         WHERE o.status IN ('paid','refunded')
           AND ${where}
         GROUP BY COALESCE(c.id, 0), COALESCE(c.name, 'Uncategorized')
-        ORDER BY sales DESC
+        ORDER BY orders DESC, sales DESC
         LIMIT 20
         `
       );
@@ -395,6 +395,109 @@ module.exports = ({ db }) => {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
+
+  /* =========================================================================
+ * 4C) BEST SELLER CATEGORY OPTIONS (for dropdown)
+ * ========================================================================= */
+router.get("/best-seller-categories", async (req, res) => {
+  try {
+    const rows = await db.query(`
+      SELECT id, name
+      FROM categories
+      ORDER BY name ASC
+    `);
+
+    // include Uncategorized option
+    const list = [
+      { categoryId: 0, name: "Uncategorized" },
+      ...rows.map((r) => ({ categoryId: Number(r.id), name: r.name })),
+    ];
+
+    return res.json({ ok: true, data: list });
+  } catch (e) {
+    console.error("BEST SELLER CATEGORIES OPTIONS ERROR", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * 4D) BEST SELLER ITEMS (All categories OR per category)
+ *    Query:
+ *      - categoryId: "all" | 0 | number
+ *      - limit: "all" | 5 | 10 | 20
+ * ========================================================================= */
+router.get("/best-seller-items", async (req, res) => {
+  try {
+    const { range = "days", from, to, categoryId = "all", limit = "20" } = req.query;
+    const where = buildRangeSQL(range, from, to);
+
+    // sanitize limit
+    let limSql = "20";
+    if (String(limit).toLowerCase() === "all") limSql = "200"; // cap so it doesn't explode
+    else {
+      const n = Number(limit);
+      limSql = [5, 10, 20].includes(n) ? String(n) : "20";
+    }
+
+    const cat = String(categoryId).toLowerCase();
+
+    // category filter
+    let catFilter = "";
+    const params = [];
+
+    if (cat !== "all") {
+      const catIdNum = Number(categoryId);
+      if (Number.isNaN(catIdNum) || catIdNum < 0) {
+        return res.status(400).json({ ok: false, error: "Invalid categoryId" });
+      }
+
+      if (catIdNum === 0) {
+        catFilter = "AND (it.categoryId IS NULL OR it.categoryId = 0)";
+      } else {
+        catFilter = "AND it.categoryId = ?";
+        params.push(catIdNum);
+      }
+    }
+
+    const rows = await db.query(
+      `
+      SELECT
+        oi.item_id,
+        oi.item_name AS name,
+        COALESCE(c.name, 'Uncategorized') AS category,
+        SUM(oi.qty) AS qty,
+        COUNT(*) AS orders,
+        SUM(oi.line_total) AS sales
+      FROM pos_order_items oi
+      JOIN pos_orders o ON o.order_id = oi.order_id
+      JOIN items it ON it.id = oi.item_id
+      LEFT JOIN categories c ON c.id = it.categoryId
+      WHERE o.status IN ('paid','refunded')
+        AND ${where}
+        ${catFilter}
+      GROUP BY oi.item_id, oi.item_name, COALESCE(c.name, 'Uncategorized')
+      ORDER BY orders DESC, sales DESC
+      LIMIT ${limSql}
+      `,
+      params
+    );
+
+    const list = rows.map((r, idx) => ({
+      rank: idx + 1,
+      itemId: Number(r.item_id),
+      name: r.name,
+      category: r.category,
+      orders: Number(r.orders || 0),
+      qty: Number(r.qty || 0),
+      sales: Number(r.sales || 0),
+    }));
+
+    return res.json({ ok: true, data: list });
+  } catch (e) {
+    console.error("BEST SELLER ITEMS ERROR", e);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
   /* =========================================================================
    * 5) LATEST ORDERS (REAL)
