@@ -23,17 +23,15 @@ import {
   Avatar,
   Chip,
   useMediaQuery,
-  List,
-  ListItem,
 } from "@mui/material";
 import {
-  LineChart,
-  Line,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
 } from "recharts";
 import { useTheme } from "@mui/material/styles";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
@@ -78,11 +76,9 @@ const comfyCells = {
 
 const DEFAULT_EXPORT = {
   dailySales: true,
-  top5Items: true,
   paymentTypes: true,
-  bestSellerCats: true,
-  bestSellerItemsPerCat: true,
   shiftHistory: true,
+  bestSellerItems: true,
 };
 
 const RANGE_LABELS = {
@@ -302,12 +298,40 @@ export default function ReportsPage() {
 
 const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
 const [bestItemLimit, setBestItemLimit] = useState("10"); // "all" | "5" | "10" | "20"
-const [bestSellerItems, setBestSellerItems] = useState([]);
-
 const [bestItemSort, setBestItemSort] = useState("orders_desc");
+const [bestSellerItems, setBestSellerItems] = useState([]);
 
 // dropdown options
 const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
+
+// --- Best Seller export label helpers (for PDF + Excel titles) ---
+const bestSortLabelMap = useMemo(() => ({
+  orders_desc: "Orders (High to Low)",
+  orders_asc: "Orders (Low to High)",
+  sales_desc: "Sales (High to Low)",
+  sales_asc: "Sales (Low to High)",
+}), []);
+
+const bestCategoryLabel = useMemo(() => {
+  if (String(bestItemCategory) === "all") return "All Categories";
+  const found = (bestSellerCategoryOptions || []).find(
+    (c) => String(c.categoryId) === String(bestItemCategory)
+  );
+  return found?.name || "Selected Category";
+}, [bestItemCategory, bestSellerCategoryOptions]);
+
+const bestTopLabel = useMemo(() => {
+  return String(bestItemLimit) === "all" ? "All" : `Top ${bestItemLimit}`;
+}, [bestItemLimit]);
+
+const bestSortLabel = useMemo(() => {
+  return bestSortLabelMap[bestItemSort] || "Orders (High → Low)";
+}, [bestItemSort, bestSortLabelMap]);
+
+// This is the final title you will use in BOTH exports
+const bestSellerExportTitle = useMemo(() => {
+  return `BEST SELLER ITEMS • ${bestCategoryLabel} • ${bestTopLabel} • ${bestSortLabel}`;
+}, [bestCategoryLabel, bestTopLabel, bestSortLabel]);
 
 useEffect(() => {
   fetch("/api/reports/best-seller-categories")
@@ -358,25 +382,17 @@ useEffect(() => {
 
     const pick = exportAll ? DEFAULT_EXPORT : exportPick;
 
-    let bestSellerTop5 = [];
-    let bestSellerDetails = [];
-
-    if (pick.bestSellerCats || pick.bestSellerItemsPerCat) {
-      bestSellerTop5 = (bestSeller || []).slice(0, 5);
-    }
-
-    if (pick.bestSellerItemsPerCat) {
-      bestSellerDetails = await fetchBestSellerExportDetails(bestSellerTop5);
-    }
+    const exportBestSellerItems = pick.bestSellerItems
+      ? sortedBestSellerItems
+      : [];
 
     if (exportKind === "excel") {
       await buildSalesExcelXlsx({
         rangeText: currentRangeLabel,
-        categoryTop5Data: pick.top5Items ? categoryTop5 : [],
         categorySeriesData: pick.dailySales ? categorySeries : [],
         paymentsData: pick.paymentTypes ? payments : [],
-        bestSellerData: pick.bestSellerCats ? bestSellerTop5 : [],
-        bestSellerDetails: pick.bestSellerItemsPerCat ? bestSellerDetails : [],
+        bestSellerItems: exportBestSellerItems,
+        bestSellerTitle: bestSellerExportTitle,
         staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
         preparedBy,
       });
@@ -385,11 +401,11 @@ useEffect(() => {
     if (exportKind === "pdf") {
       await buildSalesPdf({
         rangeText: currentRangeLabel,
-        categoryTop5Data: pick.top5Items ? categoryTop5 : [],
+        categoryTop5Data: pick.dailySales ? categoryTop5 : [],
         categorySeriesData: pick.dailySales ? categorySeries : [],
         paymentsData: pick.paymentTypes ? payments : [],
-        bestSellerData: pick.bestSellerCats ? bestSellerTop5 : [],
-        bestSellerDetails: pick.bestSellerItemsPerCat ? bestSellerDetails : [],
+        bestSellerItems: exportBestSellerItems,
+        bestSellerTitle: bestSellerExportTitle,
         staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
         preparedBy,
       });
@@ -410,11 +426,12 @@ useEffect(() => {
 
     return [
       { key: "dailySales", label: seriesLabel },
-      { key: "top5Items", label: "Top 5 Items" },
       { key: "paymentTypes", label: "Sales by Payment Type" },
-      { key: "bestSellerCats", label: "Best Seller Categories (Top 5)" },
-      { key: "bestSellerItemsPerCat", label: "Best Seller Items per Category (Top 5 each)" },
       { key: "shiftHistory", label: "Shift History" },
+      {
+        key: "bestSellerItems",
+        label: "Best Seller Items (current filters)",
+      },
     ];
   }, [range, customFrom, customTo]);
 
@@ -832,6 +849,26 @@ const sortedBestSellerItems = useMemo(() => {
   return arr;
 }, [bestSellerItems, bestItemSort]);
 
+// ================= BEST SELLER BOARD HEIGHT =================
+const BEST_SELLER_MAX_H = 400;
+const BEST_SELLER_ROW_H = 56;      // approx row height
+const BEST_SELLER_HEADER_H = 64;   // title + controls
+const BEST_SELLER_TABLE_HEAD_H = 48;
+const BEST_SELLER_PADDING = 32;    // Paper padding + gaps
+
+const bestSellerCount = sortedBestSellerItems.length;
+
+// minimum rows so it doesn't look tiny
+const bestSellerMinRows = 3;
+
+const bestSellerBoardHeight = Math.min(
+  BEST_SELLER_MAX_H,
+  BEST_SELLER_HEADER_H +
+    BEST_SELLER_TABLE_HEAD_H +
+    Math.max(bestSellerCount, bestSellerMinRows) * BEST_SELLER_ROW_H +
+    BEST_SELLER_PADDING
+);
+
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
   dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s;
@@ -962,11 +999,10 @@ const sortedBestSellerItems = useMemo(() => {
 
   const buildSalesExcelXlsx = async ({
     rangeText,
-    categoryTop5Data,
     categorySeriesData,
     paymentsData,
-    bestSellerData,
-    bestSellerDetails,
+    bestSellerItems,
+    bestSellerTitle,
     staffPerformanceData,
     preparedBy,
   }) => {
@@ -1087,20 +1123,6 @@ const sortedBestSellerItems = useMemo(() => {
     ws.getRow(r).height = 6; r++; // spacer
 
     // --------------------------
-    // TOP 5 ITEMS
-    // --------------------------
-    sectionTitle(r++, "Top 5 Items");
-    tableHeader(r++, ["Rank", "Item", "Net Sales"]);
-    if ((categoryTop5Data || []).length) {
-      categoryTop5Data.forEach((it, idx) => {
-        tableRow(r++, [idx + 1, it.name, Number(it.net || 0)], { moneyCols: [3], rightCols: [1] });
-      });
-    } else {
-      tableRow(r++, ["", "No data for this range", ""], {});
-    }
-    ws.getRow(r).height = 6; r++;
-
-    // --------------------------
     // SALES BY PAYMENT TYPE
     // --------------------------
     sectionTitle(r++, "SALES BY PAYMENT TYPE");
@@ -1119,57 +1141,33 @@ const sortedBestSellerItems = useMemo(() => {
     ws.getRow(r).height = 6; r++;
 
     // --------------------------
-    // BEST SELLER CATEGORIES
+    // BEST SELLER ITEMS (CUSTOM)
     // --------------------------
-    sectionTitle(r++, "BEST SELLER CATEGORIES (TOP 5)");
-    tableHeader(r++, ["Rank", "Category", "Total Orders", "Total Sales"]);
-    if ((bestSellerData || []).length) {
-      (bestSellerData || []).slice(0, 5).forEach((c) => {
+    sectionTitle(r++, bestSellerTitle || "BEST SELLER ITEMS");
+
+    tableHeader(r++, ["Rank", "Item", "Category", "Orders", "Qty", "Sales"]);
+
+    if (bestSellerItems.length) {
+      bestSellerItems.forEach((it, idx) => {
         tableRow(
           r++,
-          [Number(c.rank || 0), c.name, Number(c.orders || 0), Number(c.sales || 0)],
-          { moneyCols: [4], rightCols: [1, 3] }
+          [
+            idx + 1,
+            it.name,
+            it.category,
+            it.orders,
+            it.qty,
+            it.sales,
+          ],
+          { moneyCols: [6], rightCols: [1, 4, 5] }
         );
       });
     } else {
-      tableRow(r++, ["", "No data for this range", "", ""], {});
+      tableRow(r++, ["", "No data", "", "", "", ""], {});
     }
-    ws.getRow(r).height = 6; r++;
 
-    // --------------------------
-    // BEST SELLER ITEMS PER CATEGORY
-    // --------------------------
-    sectionTitle(r++, "BEST SELLER ITEMS PER CATEGORY (TOP 5 EACH)");
-    if ((bestSellerDetails || []).length) {
-      (bestSellerDetails || []).slice(0, 5).forEach((cat) => {
-        // mini header row for each category (merged)
-        ws.mergeCells(`A${r}:F${r}`);
-        const cell = ws.getCell(`A${r}`);
-        cell.value = `${cat.rank}. ${cat.name}  •  Orders: ${cat.orders}  •  Sales: ₱${Number(cat.sales || 0).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`;
-        cell.font = { bold: true };
-        cell.alignment = { vertical: "middle", horizontal: "left" };
-        r++;
-
-        tableHeader(r++, ["#", "Item", "Orders", "Qty", "Sales"]);
-        const items = cat.topItems || [];
-        if (items.length) {
-          items.forEach((it) => {
-            tableRow(
-              r++,
-              [Number(it.rank || 0), it.name, Number(it.orders || 0), Number(it.qty || 0), Number(it.sales || 0)],
-              { moneyCols: [5], rightCols: [1, 3, 4] }
-            );
-          });
-        } else {
-          tableRow(r++, ["", "No data", "", "", ""], {});
-        }
-        ws.getRow(r).height = 6; r++;
-      });
-    } else {
-      ws.mergeCells(`A${r}:F${r}`);
-      ws.getCell(`A${r}`).value = "No data for this range";
-      r += 2;
-    }
+    ws.getRow(r).height = 6;
+    r++;
 
     // --------------------------
     // SHIFT HISTORY
@@ -1254,8 +1252,8 @@ const sortedBestSellerItems = useMemo(() => {
     categoryTop5Data,
     categorySeriesData,
     paymentsData,
-    bestSellerData,
-    bestSellerDetails,
+    bestSellerItems,
+    bestSellerTitle,
     staffPerformanceData,
     preparedBy,
   }) => {
@@ -1351,17 +1349,6 @@ const sortedBestSellerItems = useMemo(() => {
     doc.text(`Total Orders: ${totalOrders} Orders`, 72, cursorY);
     cursorY += 14;
 
-    const bestItem = (categoryTop5Data || [])[0];
-
-    if (bestItem) {
-      doc.text(
-        `Best Selling Item: ${bestItem.name} (${pdfMoney(bestItem.net)})`,
-        72,
-        cursorY
-      );
-      cursorY += 14;
-    }
-
     doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
     cursorY += 26;
 
@@ -1422,22 +1409,31 @@ const sortedBestSellerItems = useMemo(() => {
       cursorY = doc.lastAutoTable.finalY + 24;
     }
 
-    /* ===================== INSERT START: BEST SELLERS ===================== */
-
-    // Best Seller Categories (Top 5)
-    if (bestSellerData?.length) {
+    // Best Seller Items (CUSTOM)
+    if (bestSellerItems?.length) {
       doc.setFont("helvetica", "bold");
-      doc.text("Best Seller Categories (Top 5)", 72, cursorY);
-      cursorY += 8;
+      doc.setFontSize(11);
+
+      // ✅ wrap + sanitize (avoid arrows/unicode issues)
+      const titleRaw = bestSellerTitle || "BEST SELLER ITEMS";
+      const title = pdfSafeText(titleRaw);
+
+      const maxW = pageWidth - 72 - 40; // left=72, right margin=40
+      const lines = doc.splitTextToSize(title, maxW);
+
+      doc.text(lines, 72, cursorY);
+      cursorY += lines.length * 14 + 8; // line height
 
       autoTable(doc, {
-        startY: cursorY + 8,
-        head: [["Rank", "Category", "Total Orders", "Total Sales"]],
-        body: (bestSellerData || []).slice(0, 5).map((c) => [
-          c.rank,
-          c.name,
-          c.orders,
-          pdfMoney(c.sales),
+        startY: cursorY,
+        head: [["#", "Item", "Category", "Orders", "Qty", "Sales"]],
+        body: bestSellerItems.map((it, idx) => [
+          idx + 1,
+          pdfSafeText(it.name),
+          pdfSafeText(it.category),
+          Number(it.orders || 0),
+          Number(it.qty || 0),
+          pdfMoney(it.sales),
         ]),
         theme: "grid",
         styles: { fontSize: 9, cellPadding: 4 },
@@ -1445,45 +1441,7 @@ const sortedBestSellerItems = useMemo(() => {
         margin: { left: 72, right: 40 },
       });
 
-      cursorY = doc.lastAutoTable.finalY + 18;
-    }
-
-    // Best Seller Items per Category (Top 5 each)
-    if (bestSellerDetails?.length) {
-      const bestDetails = (bestSellerDetails || []).slice(0, 5);
-
-      bestDetails.forEach((cat) => {
-        ensureSpace(110);
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(12);
-        doc.text(`${cat.rank}. ${cat.name}`, 72, cursorY);
-        cursorY += 14;
-
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(10);
-        doc.text(`Orders: ${cat.orders}   •   Sales: ${pdfMoney(cat.sales)}`, 72, cursorY);
-        cursorY += 10;
-
-        autoTable(doc, {
-          startY: cursorY,
-          head: [["#", "Item", "Orders", "Qty", "Sales"]],
-          body: (cat.topItems || []).map((it) => [
-            it.rank,
-            it.name,
-            it.orders,
-            it.qty,
-            pdfMoney(it.sales),
-          ]),
-          theme: "grid",
-          styles: { fontSize: 9, cellPadding: 4 },
-          headStyles: pdfHeadStyles,
-          margin: { left: 72, right: 40 },
-          pageBreak: "auto",
-        });
-
-        cursorY = doc.lastAutoTable.finalY + 22;
-      });
+      cursorY = doc.lastAutoTable.finalY + 22;
     }
 
     // Payments
@@ -1861,245 +1819,136 @@ const sortedBestSellerItems = useMemo(() => {
             </Stack>
           </Paper>
 
-          {/* ================= Sales by Category ================= */}
+          {/* ================= CHART ================= */}
           <Paper sx={{ p: 2, overflow: "hidden" }}>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-              {/* Left panel */}
-              <Box
-                sx={{
-                  flex: { xs: "1 1 100%", md: "0 0 40%" },
-                  minWidth: { xs: 260, md: 360 },
-                }}
+            <Stack spacing={1.25}>
+              <Stack
+                direction="row"
+                alignItems="center"
+                justifyContent="space-between"
+                gap={2}
+                flexWrap="wrap"
               >
-                <Typography fontWeight={700} mb={1}>
-                  Top 5 Items
-                </Typography>
-
-                <TableContainer
-                  component={Paper}
-                  elevation={0}
-                  className="scroll-x"
+                <Box
                   sx={{
-                    width: "100%",
-                    borderRadius: 1,
-                    overflowX: "auto",
+                    minWidth: 0,
+                    display: "flex",
+                    alignItems: "baseline",
+                    flexWrap: "wrap",
+                    gap: 1,
                   }}
                 >
-                  <Table
-                    stickyHeader
-                    size="small"
-                    sx={{
-                      width: "100%",
-                      minWidth: 0,          // ✅ don’t force horizontal scroll
-                      tableLayout: "fixed", // ✅ respect col widths
-                      ...comfyCells,
+                  <Typography fontWeight={900}>
+                    Sales Overview
+                  </Typography>
 
-                      // tighter padding just for this table
-                      "& .MuiTableCell-root": { py: 1, px: 1.25 },
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: "text.secondary",
+                      fontWeight: 600,
+                      whiteSpace: "nowrap",
                     }}
                   >
-                    <colgroup>
-                      <col style={{ width: 48 }} />
-                      <col />
-                      <col style={{ width: 140 }} />
-                    </colgroup>
+                    | {getSeriesSectionLabel(range, customFrom, customTo)}
+                  </Typography>
+                </Box>
+              </Stack>
 
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={{ width: 48 }}>#</TableCell>
-                        <TableCell>Name</TableCell>
-                        <TableCell align="right">Net Sales</TableCell>
-                      </TableRow>
-                    </TableHead>
-
-                    <TableBody>
-                      {categoryTop5.map((r, i) => (
-                        <TableRow key={i}>
-                          <TableCell>{i + 1}</TableCell>
-                          <TableCell
-                            sx={{
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {r.name}
-                          </TableCell>
-                          <TableCell align="right">{peso(r.net)}</TableCell>
-                        </TableRow>
-                      ))}
-                      {categoryTop5.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={3} align="center">
-                            No data for this range
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </Box>
-
-              <Divider
-                orientation="vertical"
-                flexItem
-                sx={{ display: { xs: "none", md: "block" } }}
-              />
-
-              {/* Right panel: chart */}
-              <Box
-                sx={{
-                  flex: { xs: "1 1 100%", md: "0 0 60%" },
-                  minWidth: 300,
-                }}
-              >
-                <Typography fontWeight={700} mb={1}>
-                  Sales by Item Chart
-                </Typography>
-                <Paper variant="outlined" sx={{ p: 2, overflow: "hidden" }}>
-                  <Box sx={{ width: "100%", height: 260 }}>
-                    <ResponsiveContainer>
-                      <LineChart
+              <Paper variant="outlined" sx={{ p: 1.5, overflow: "hidden", borderRadius: 2 }}>
+                <Box sx={{ width: "100%", height: 300 }}>
+                  {(!categorySeries || categorySeries.length === 0) ? (
+                    <Box
+                      sx={{
+                        height: "100%",
+                        display: "grid",
+                        placeItems: "center",
+                        color: "text.secondary",
+                      }}
+                    >
+                      <Box sx={{ textAlign: "center" }}>
+                        <Typography fontWeight={800}>No data</Typography>
+                        <Typography variant="body2">
+                          No sales recorded in this range.
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
                         data={categorySeries}
-                        margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+                        margin={{ top: 12, right: 16, left: 8, bottom: 12 }}
+                        barCategoryGap="28%"
                       >
-                        <CartesianGrid strokeDasharray="3 3" />
+                        <CartesianGrid
+                          vertical={false}
+                          stroke={theme.palette.text.primary}
+                          strokeOpacity={0.18}
+                          strokeWidth={1.2}
+                          strokeDasharray="4 4"
+                        />
+
                         <XAxis
                           dataKey="x"
                           tickFormatter={(v) => formatXAxisLabel(range, v)}
-                          tick={{ fill: "#666", fontSize: 12 }}
-                          axisLine={{ stroke: "#ccc" }}
+                          tickMargin={12}
+                          minTickGap={18}
+                          axisLine={{ stroke: theme.palette.text.primary, strokeOpacity: 0.25, strokeWidth: 1.2 }}
+                          tickLine={{ stroke: theme.palette.text.primary, strokeOpacity: 0.25, strokeWidth: 1.2 }}
+                          tick={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            fill: theme.palette.text.primary,
+                          }}
                         />
+
                         <YAxis
+                          width={92}
                           tickFormatter={(v) =>
-                            `₱${v.toLocaleString(undefined, {
-                              maximumFractionDigits: 0,
-                            })}`
+                            `₱${Number(v || 0).toLocaleString("en-PH", { maximumFractionDigits: 0 })}`
                           }
-                          tick={{ fill: "#666", fontSize: 12 }}
-                          axisLine={{ stroke: "#ccc" }}
+                          axisLine={{ stroke: theme.palette.text.primary, strokeOpacity: 0.25, strokeWidth: 1.2 }}
+                          tickLine={{ stroke: theme.palette.text.primary, strokeOpacity: 0.25, strokeWidth: 1.2 }}
+                          tick={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            fill: theme.palette.text.primary,
+                          }}
                         />
+
                         <Tooltip
                           labelFormatter={(label) => formatTooltipLabel(range, label)}
                           formatter={(value) =>
-                            `₱${Number(value).toLocaleString(undefined, {
+                            `₱${Number(value || 0).toLocaleString("en-PH", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
                             })}`
                           }
-                          labelStyle={{ fontWeight: 700 }}
                           contentStyle={{
                             background: "#fff",
-                            border: "1px solid #ddd",
-                            borderRadius: 10,
+                            border: "1px solid rgba(0,0,0,0.12)",
+                            borderRadius: 12,
+                            boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
+                            padding: "10px 12px",
+                            fontSize: 13,
                           }}
+                          labelStyle={{ fontWeight: 900, fontSize: 13 }}
+                          itemStyle={{ fontWeight: 800, fontSize: 13 }}
                         />
-                        <Line
-                          type="monotone"
+
+                        <Bar
                           dataKey="y"
-                          stroke={theme.palette.primary.main}
-                          strokeWidth={2.5}
-                          dot={{ r: 4 }}
-                          activeDot={{ r: 6 }}
+                          name="Sales"
+                          fill={theme.palette.primary.main}
+                          radius={[10, 10, 0, 0]}
+                          maxBarSize={64}
                         />
-                      </LineChart>
+                      </BarChart>
                     </ResponsiveContainer>
-                  </Box>
-                </Paper>
-              </Box>
-            </Stack>
-          </Paper>
-
-          {/* ================= Sales by Payment Type ================= */}
-          <Paper sx={{ p: 2, overflow: "hidden" }}>
-            <Stack
-              direction="row"
-              alignItems="center"
-              justifyContent="space-between"
-              mb={1}
-              gap={2}
-              flexWrap="wrap"
-            >
-              <Typography fontWeight={700}>Sales by Payment Type</Typography>
-              <TextField
-                size="small"
-                placeholder="Search"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage1(0);
-                }}
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <SearchIcon />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{ width: { xs: "100%", sm: 300 } }}
-              />
-            </Stack>
-
-            <TableContainer
-              component={Paper}
-              elevation={0}
-              className="scroll-x"
-              sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
-            >
-              <Table
-                stickyHeader
-                size="small"
-                sx={{
-                  width: "100%",
-                  minWidth: 0,          // ✅ stop forcing horizontal scroll
-                  tableLayout: "fixed", // ✅ makes col widths respected
-                  ...comfyCells,
-
-                  // tighten spacing just for this table
-                  "& .MuiTableCell-root": { py: 1, px: 1.25 },
-                }}
-              >
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Payment Type</TableCell>
-                    <TableCell>Payment Transactions</TableCell>
-                    <TableCell>Refund Transactions</TableCell>
-                    <TableCell>Net Amount</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {pagedPayments.map((r) => (
-                    <TableRow key={r.type}>
-                      <TableCell>{r.type}</TableCell>
-                      <TableCell>{r.tx}</TableCell>
-                      <TableCell>{r.refundTx}</TableCell>
-                      <TableCell>{peso(r.net)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {pagedPayments.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={4} align="center">
-                        No results
-                      </TableCell>
-                    </TableRow>
                   )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-
-            <TablePagination
-              component="div"
-              count={filteredPayments.length}
-              page={page1}
-              onPageChange={(_, p) => setPage1(p)}
-              rowsPerPage={rpp1}
-              onRowsPerPageChange={(e) => {
-                setRpp1(parseInt(e.target.value, 10));
-                setPage1(0);
-              }}
-              rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
-              labelRowsPerPage="Rows per page:"
-            />
+                </Box>
+              </Paper>
+            </Stack>
           </Paper>
 
           {/* ================= Best Seller ================= */}
@@ -2108,8 +1957,9 @@ const sortedBestSellerItems = useMemo(() => {
               p: 2,
               display: "flex",
               flexDirection: "column",
-              height: 420,     // same idea: fixed card height
-              minHeight: 0,    // IMPORTANT
+              height: bestSellerBoardHeight,
+              maxHeight: 400,
+              minHeight: 240,
               overflow: "hidden",
             }}
           >
@@ -2283,6 +2133,98 @@ const sortedBestSellerItems = useMemo(() => {
                 </Table>
               </TableContainer>
             </Box>
+          </Paper>
+
+          {/* ================= Sales by Payment Type ================= */}
+          <Paper sx={{ p: 2, overflow: "hidden" }}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              mb={1}
+              gap={2}
+              flexWrap="wrap"
+            >
+              <Typography fontWeight={700}>Sales by Payment Type</Typography>
+              <TextField
+                size="small"
+                placeholder="Search"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage1(0);
+                }}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <SearchIcon />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{ width: { xs: "100%", sm: 300 } }}
+              />
+            </Stack>
+
+            <TableContainer
+              component={Paper}
+              elevation={0}
+              className="scroll-x"
+              sx={{ width: "100%", borderRadius: 1, overflowX: "auto" }}
+            >
+              <Table
+                stickyHeader
+                size="small"
+                sx={{
+                  width: "100%",
+                  minWidth: 0,          // ✅ stop forcing horizontal scroll
+                  tableLayout: "fixed", // ✅ makes col widths respected
+                  ...comfyCells,
+
+                  // tighten spacing just for this table
+                  "& .MuiTableCell-root": { py: 1, px: 1.25 },
+                }}
+              >
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Payment Type</TableCell>
+                    <TableCell>Payment Transactions</TableCell>
+                    <TableCell>Refund Transactions</TableCell>
+                    <TableCell>Net Amount</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {pagedPayments.map((r) => (
+                    <TableRow key={r.type}>
+                      <TableCell>{r.type}</TableCell>
+                      <TableCell>{r.tx}</TableCell>
+                      <TableCell>{r.refundTx}</TableCell>
+                      <TableCell>{peso(r.net)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {pagedPayments.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} align="center">
+                        No results
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            <TablePagination
+              component="div"
+              count={filteredPayments.length}
+              page={page1}
+              onPageChange={(_, p) => setPage1(p)}
+              rowsPerPage={rpp1}
+              onRowsPerPageChange={(e) => {
+                setRpp1(parseInt(e.target.value, 10));
+                setPage1(0);
+              }}
+              rowsPerPageOptions={[5, 10, 25, { label: "All", value: -1 }]}
+              labelRowsPerPage="Rows per page:"
+            />
           </Paper>
 
           {/* ================= Latest Order ================= */}
