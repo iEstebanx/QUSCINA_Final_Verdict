@@ -49,6 +49,9 @@ dayjs.extend(quarterOfYear);
 
 const ING_API = "/api/inventory/ingredients";
 const ACT_API = "/api/inventory/inv-activity";
+const AV_DAYS_API = "/api/inventory/inv-activity/available-days";
+const AV_MONTHS_API = "/api/inventory/inv-activity/available-months";
+const AV_WEEKS_API = "/api/inventory/inv-activity/available-weeks";
 
 const RANGE_LABELS = {
   days: "Today",
@@ -109,8 +112,9 @@ const pdfHeadStyles = {
 
 const preventDateFieldWheelAndArrows = {
   onWheel: (e) => {
-    e.preventDefault();
+    // ✅ don't preventDefault (passive listener)
     e.stopPropagation();
+    e.currentTarget?.blur?.(); // drop focus so wheel can't nudge sections
   },
   onKeyDown: (e) => {
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
@@ -118,6 +122,102 @@ const preventDateFieldWheelAndArrows = {
       e.stopPropagation();
     }
   },
+};
+
+const startOfWeekMon = (d) => {
+  const dow = d.day();
+  return d.subtract((dow + 6) % 7, "day").startOf("day");
+};
+
+const getWeekRangeMonSun = (base = dayjs()) => {
+  const monday = startOfWeekMon(base);
+  const sunday = monday.add(6, "day").endOf("day");
+  return { from: monday, to: sunday };
+};
+
+const getMonthRange = (year, monthIndex) => {
+  const from = dayjs().year(year).month(monthIndex).date(1).startOf("day");
+  const to = from.endOf("month").endOf("day");
+  return { from, to };
+};
+
+const getQuarterRange = (year, monthIndex) => {
+  const qStart = Math.floor(monthIndex / 3) * 3; // 0,3,6,9
+  const from = dayjs().year(year).month(qStart).date(1).startOf("day");
+  const to = from.add(2, "month").endOf("month").endOf("day");
+  return { from, to };
+};
+
+const getAnchor = (dateBounds) => (dateBounds?.max ? dayjs(dateBounds.max) : dayjs());
+
+const isThisMonth = (range, yearSel, monthSel, dateBounds) => {
+  if (range !== "monthly") return false;
+  const a = getAnchor(dateBounds);
+  return Number(yearSel) === a.year() && Number(monthSel) === (a.month() + 1);
+};
+
+const isThisQuarter = (range, yearSel, monthSel, dateBounds) => {
+  if (range !== "quarterly") return false;
+  const a = getAnchor(dateBounds);
+  const selQ = Math.floor((Number(monthSel) - 1) / 3);
+  const aQ = Math.floor(a.month() / 3);
+  return Number(yearSel) === a.year() && selQ === aQ;
+};
+
+const isThisYear = (range, yearSel, dateBounds) => {
+  if (range !== "yearly") return false;
+  const a = getAnchor(dateBounds);
+  return Number(yearSel) === a.year();
+};
+
+const isCurrentDayByRange = (customFrom, customTo, dateBounds) => {
+  const anchor = dateBounds?.max ? dayjs(dateBounds.max) : dayjs();
+  const from = anchor.startOf("day").format("YYYY-MM-DD");
+  const to = anchor.endOf("day").format("YYYY-MM-DD");
+  return customFrom === from && customTo === to;
+};
+
+const isCurrentQuarterByRange = (customFrom, customTo, dateBounds) => {
+  const anchor = dateBounds?.max ? dayjs(dateBounds.max) : dayjs();
+  const { from, to } = getQuarterRange(anchor.year(), anchor.month());
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const isCurrentWeek = (range, weekSel, availableWeeks, dateBounds) => {
+  if (range !== "weeks" || !weekSel) return false;
+
+  const anchor = dateBounds?.max ? dayjs(dateBounds.max) : dayjs();
+  const { from, to } = getWeekRangeMonSun(anchor);
+
+  const currentFrom = from.format("YYYY-MM-DD");
+  const currentTo = to.format("YYYY-MM-DD");
+
+  const selected = availableWeeks.find((w) => w.key === weekSel);
+  if (!selected) return false;
+
+  return selected.from === currentFrom && selected.to === currentTo;
+};
+
+const isCurrentMonthByRange = (customFrom, customTo, dateBounds) => {
+  const anchor = dateBounds?.max ? dayjs(dateBounds.max) : dayjs();
+  const { from, to } = getMonthRange(anchor.year(), anchor.month());
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
+};
+
+const isCurrentYearByRange = (customFrom, customTo, dateBounds) => {
+  const anchor = dateBounds?.max ? dayjs(dateBounds.max) : dayjs();
+  const from = anchor.month(0).date(1).startOf("day");
+  const to = anchor.month(11).endOf("month").endOf("day");
+  return (
+    customFrom === from.format("YYYY-MM-DD") &&
+    customTo === to.format("YYYY-MM-DD")
+  );
 };
 
 const hardNoTypeDateField = {
@@ -184,6 +284,99 @@ const authFetch = (url, opts = {}) => {
 
   const [fromOpen, setFromOpen] = useState(false);
   const [toOpen, setToOpen] = useState(false);
+
+const [availableDays, setAvailableDays] = useState([]);     // ["YYYY-MM-DD", ...]
+const [availableMonths, setAvailableMonths] = useState([]); // ["YYYY-MM", ...]
+const [availableWeeks, setAvailableWeeks] = useState([]);   // [{key,from,to,label}, ...]
+
+const [yearSel, setYearSel] = useState(dayjs().year());
+const [monthSel, setMonthSel] = useState(dayjs().month() + 1); // 1..12
+const [weekSel, setWeekSel] = useState(""); // week.key
+
+const availableYears = useMemo(() => {
+  const ys = Array.from(
+    new Set((availableMonths || []).map((m) => Number(m.split("-")[0])))
+  ).filter(Number.isFinite);
+
+  ys.sort((a, b) => b - a);
+
+  // fallback so the select never looks empty during load
+  if (!ys.length) return [yearSel];
+  return ys;
+}, [availableMonths, yearSel]);
+
+const monthOptionsForYear = useMemo(() => {
+  const list = (availableMonths || [])
+    .filter((ym) => String(ym).startsWith(`${yearSel}-`))
+    .map((ym) => Number(String(ym).split("-")[1])) // 1..12
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 12);
+
+  return Array.from(new Set(list)).sort((a, b) => a - b);
+}, [availableMonths, yearSel]);
+
+useEffect(() => {
+  if (!(range === "weeks" || range === "monthly" || range === "quarterly")) return;
+
+  if (!monthOptionsForYear.length) {
+    // keep something valid to avoid uncontrolled select
+    setMonthSel(1);
+    return;
+  }
+
+  if (!monthOptionsForYear.includes(monthSel)) {
+    setMonthSel(monthOptionsForYear[0]);
+  }
+}, [range, monthOptionsForYear, monthSel]);
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    try {
+      const r1 = await authFetch(`${AV_DAYS_API}?limit=5000`);
+      const j1 = await r1.json();
+      if (alive && j1?.ok) setAvailableDays(j1.days || []);
+
+      const r2 = await authFetch(`${AV_MONTHS_API}?limit=5000`);
+      const j2 = await r2.json();
+      if (alive && j2?.ok) setAvailableMonths(j2.months || []);
+    } catch (e) {
+      console.error("load available ranges failed:", e);
+    }
+  })();
+
+  return () => { alive = false; };
+}, [reloadTick]);
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    if (range !== "weeks") return;
+
+    try {
+      const res = await authFetch(`${AV_WEEKS_API}?year=${yearSel}&month=${monthSel}`);
+      const j = await res.json();
+      if (!alive) return;
+      if (!j?.ok) return;
+
+      const weeks = j.weeks || [];
+      setAvailableWeeks(weeks);
+
+      if (!weeks.length) {
+        setWeekSel("");
+        return;
+      }
+
+      const exists = weeks.some((w) => w.key === weekSel);
+      if (!weekSel || !exists) setWeekSel(weeks[0].key);
+    } catch (e) {
+      console.error("load available weeks failed:", e);
+    }
+  })();
+
+  return () => { alive = false; };
+}, [range, yearSel, monthSel, reloadTick]); // eslint-disable-line
 
   const blurOnFocus = (e) => {
     // kill focus so MUI can't highlight MM/DD/YYYY sections
@@ -301,19 +494,19 @@ useEffect(() => {
       });
 
     const result = newestFirst.map((r) => {
-      const qtyRaw = r.qty;
-      const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
+    const qtyRaw = r.qty;
+    const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
 
-      const io = String(r.io || "In") === "Out" ? "Out" : "In";
+    const io = String(r.io || "In") === "Out" ? "Out" : "In";
 
-      // ✅ treat meta events as non-movement when qty is 0 (Created/Deleted/Edited Meta)
-      const isMetaEvent =
-        qty === null ||
-        qty === 0 ||
-        String(r.reason || "").toLowerCase().includes("created inventory item") ||
-        String(r.reason || "").toLowerCase().includes("deleted inventory item");
+    // ✅ treat meta events as non-movement when qty is 0 (Created/Deleted/Edited Meta)
+    const isMetaEvent =
+      qty === null ||
+      qty === 0 ||
+      String(r.reason || "").toLowerCase().includes("created inventory item") ||
+      String(r.reason || "").toLowerCase().includes("deleted inventory item");
 
-      const adjust = isMetaEvent ? null : (io === "In" ? qty : -qty);
+    const adjust = isMetaEvent ? null : (io === "In" ? qty : -qty);
 
 
       // ✅ DO NOT force null → 0 (that creates fake data)
@@ -339,29 +532,15 @@ useEffect(() => {
     return result;
   }, [activity]);
 
-  const dateBounds = useMemo(() => {
-    if (!computedRows.length) return { min: "", max: "" };
-    let minTs = computedRows[0].ts;
-    let maxTs = computedRows[0].ts;
-    for (const r of computedRows) {
-      if (new Date(r.ts) < new Date(minTs)) minTs = r.ts;
-      if (new Date(r.ts) > new Date(maxTs)) maxTs = r.ts;
-    }
-    return {
-      min: dayjs(minTs).format("YYYY-MM-DD"),
-      max: dayjs(maxTs).format("YYYY-MM-DD"),
-    };
-  }, [computedRows]);
+const dateBounds = useMemo(() => {
+  if (!availableDays.length) return { min: "", max: "" };
+  const min = availableDays[0];
+  const max = availableDays[availableDays.length - 1];
+  return { min, max };
+}, [availableDays]);
 
     // Build “active days” set (used to disable dates in DatePicker like ReportsPage)
-  const activeDaySet = useMemo(() => {
-    const s = new Set();
-    for (const r of computedRows) {
-      const key = dayjs(r.ts).format("YYYY-MM-DD");
-      s.add(key);
-    }
-    return s;
-  }, [computedRows]);
+const activeDaySet = useMemo(() => new Set(availableDays), [availableDays]);
 
 
   const clampToBounds = (s) => {
@@ -372,49 +551,58 @@ useEffect(() => {
     return out;
   };
 
-  function applyPresetRange(preset) {
-    const now = dayjs();
-    let from = null;
-    let to = null;
+function applyPresetRange(nextRange) {
+  setRange(nextRange);
 
-    if (preset === "custom") {
-      setRange("custom");
-      return;
-    }
-
-    if (preset === "days") {
-      from = now.startOf("day");
-      to = now.endOf("day");
-    } else if (preset === "weeks") {
-      // ISO week (Mon-Sun) then clip to current month (same as ReportsPage)
-      const w = getIsoWeekRange(now);
-
-      const monthStart = now.startOf("month").startOf("day");
-      const monthEnd = now.endOf("month").endOf("day");
-
-      from = w.from.isBefore(monthStart) ? monthStart : w.from;
-      to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
-    } else if (preset === "monthly") {
-      from = now.startOf("month");
-      to = now.endOf("month");
-    } else if (preset === "quarterly") {
-      from = now.startOf("quarter");
-      to = now.endOf("quarter");
-    } else if (preset === "yearly") {
-      from = now.startOf("year");
-      to = now.endOf("year");
-    }
-
-    if (!from || !to) return;
-
+  const setFromTo = (from, to) => {
     const f = clampToBounds(from.format("YYYY-MM-DD"));
     const t = clampToBounds(to.format("YYYY-MM-DD"));
-
-    setRange(preset);
     setCustomFrom(f);
     setCustomTo(t);
     setPageState((s) => ({ ...s, page: 0 }));
+  };
+
+  // Anchor = latest available day (ReportsPage uses available data bounds)
+  const anchor = dateBounds.max ? dayjs(dateBounds.max) : dayjs();
+
+  // Keep year/month selectors aligned to anchor
+  setYearSel(anchor.year());
+  setMonthSel(anchor.month() + 1);
+
+  if (nextRange === "custom") return;
+
+  if (nextRange === "days") {
+    setFromTo(anchor.startOf("day"), anchor.endOf("day"));
+    return;
   }
+
+  if (nextRange === "weeks") {
+    const { from, to } = getWeekRangeMonSun(anchor);
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "monthly") {
+    const { from, to } = getMonthRange(anchor.year(), anchor.month());
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "quarterly") {
+    const q = Math.floor(anchor.month() / 3) * 3;
+    const from = anchor.month(q).date(1).startOf("day");
+    const to = from.add(2, "month").endOf("month").endOf("day");
+    setFromTo(from, to);
+    return;
+  }
+
+  if (nextRange === "yearly") {
+    setFromTo(
+      anchor.month(0).date(1).startOf("day"),
+      anchor.month(11).endOf("month").endOf("day")
+    );
+  }
+}
 
   useEffect(() => {
     // initialize once after bounds are known so clamping works
@@ -434,6 +622,32 @@ useEffect(() => {
   };
 
   const displayDate = (s) => (dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s);
+
+const rangeLabel = useMemo(() => {
+  if (range === "days") {
+    return isCurrentDayByRange(customFrom, customTo, dateBounds) ? "Today" : "Day";
+  }
+
+  if (range === "weeks") {
+    return isCurrentWeek(range, weekSel, availableWeeks, dateBounds)
+      ? "This Week"
+      : "Week";
+  }
+
+  if (range === "monthly") {
+    return isThisMonth(range, yearSel, monthSel, dateBounds) ? "This Month" : "Month";
+  }
+
+  if (range === "quarterly") {
+    return isThisQuarter(range, yearSel, monthSel, dateBounds) ? "This Quarter" : "Quarter";
+  }
+
+  if (range === "yearly") {
+    return isThisYear(range, yearSel, dateBounds) ? "This Year" : "Year";
+  }
+
+  return "Custom";
+}, [range, weekSel, availableWeeks, customFrom, customTo, dateBounds, yearSel, monthSel]);
 
   const currentRangeLabel = useMemo(() => {
     if (range === "custom") {
@@ -468,40 +682,25 @@ useEffect(() => {
 const rangeFilteredRows = useMemo(() => {
   if (!computedRows.length) return [];
 
-  const anchor = dateBounds.max ? dayjs(dateBounds.max) : dayjs();
+  // ✅ Source of truth is customFrom/customTo
   let from = null;
   let to = null;
 
-  if (range === "custom") {
-    if (!customFrom || !customTo) return computedRows;
-    from = dayjs(customFrom).startOf("day");
-    to = dayjs(customTo).endOf("day");
-  } else if (range === "days") {
+  if (range === "days") {
+    const anchor = dateBounds.max ? dayjs(dateBounds.max) : dayjs();
     from = anchor.startOf("day");
     to = anchor.endOf("day");
-  } else if (range === "weeks") {
-    const w = getIsoWeekRange(anchor);
-    from = w.from;
-    to = w.to;
-  } else if (range === "monthly") {
-    from = anchor.startOf("month");
-    to = anchor.endOf("month");
-  } else if (range === "quarterly") {
-    from = anchor.startOf("quarter");
-    to = anchor.endOf("quarter");
-  } else if (range === "yearly") {
-    from = anchor.startOf("year");
-    to = anchor.endOf("year");
+  } else {
+    if (!customFrom || !customTo) return [];
+    from = dayjs(customFrom).startOf("day");
+    to = dayjs(customTo).endOf("day");
   }
-
-  if (!from || !to) return computedRows;
 
   return computedRows.filter((r) => {
     const dt = dayjs(r.ts);
     return dt.isAfter(from.subtract(1, "millisecond")) && dt.isBefore(to.add(1, "millisecond"));
   });
 }, [computedRows, range, customFrom, customTo, dateBounds.max]);
-
 
   /* SEARCH (applies after range filter) */
   const filtered = useMemo(() => {
@@ -521,6 +720,47 @@ const rangeFilteredRows = useMemo(() => {
   useEffect(() => {
     setPageState((p) => ({ ...p, page: 0 }));
   }, [search, range, customFrom, customTo]);
+
+  // When month/year changes in MONTHLY mode → set From/To to that month
+useEffect(() => {
+  if (range !== "monthly") return;
+  const { from, to } = getMonthRange(yearSel, monthSel - 1);
+  setCustomFrom(clampToBounds(from.format("YYYY-MM-DD")));
+  setCustomTo(clampToBounds(to.format("YYYY-MM-DD")));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [range, yearSel, monthSel]);
+
+// When weekSel changes in WEEKS mode → set From/To to that week range
+useEffect(() => {
+  if (range !== "weeks") return;
+  const w = availableWeeks.find((x) => x.key === weekSel);
+  if (!w) return;
+  setCustomFrom(clampToBounds(w.from));
+  setCustomTo(clampToBounds(w.to));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [range, weekSel, availableWeeks]);
+
+// Quarterly: use yearSel + monthSel to determine quarter (based on selected month)
+useEffect(() => {
+  if (range !== "quarterly") return;
+  const mIdx = monthSel - 1;
+  const qStart = Math.floor(mIdx / 3) * 3;
+  const from = dayjs().year(yearSel).month(qStart).date(1).startOf("day");
+  const to = from.add(2, "month").endOf("month").endOf("day");
+  setCustomFrom(clampToBounds(from.format("YYYY-MM-DD")));
+  setCustomTo(clampToBounds(to.format("YYYY-MM-DD")));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [range, yearSel, monthSel]);
+
+// Yearly: use yearSel
+useEffect(() => {
+  if (range !== "yearly") return;
+  const from = dayjs().year(yearSel).month(0).date(1).startOf("day");
+  const to = dayjs().year(yearSel).month(11).endOf("month").endOf("day");
+  setCustomFrom(clampToBounds(from.format("YYYY-MM-DD")));
+  setCustomTo(clampToBounds(to.format("YYYY-MM-DD")));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [range, yearSel]);
 
   const customIncomplete = range === "custom" && (!customFrom || !customTo);
 
@@ -670,7 +910,7 @@ const rangeFilteredRows = useMemo(() => {
                 labelId="range-label"
                 label="Range"
                 value={range}
-                renderValue={(v) => RANGE_LABELS[v] || "Range"}
+                renderValue={() => rangeLabel}
                 onChange={(e) => applyPresetRange(e.target.value)}
               >
                 {/* hidden display-only option so MUI never renders blank */}
@@ -679,12 +919,84 @@ const rangeFilteredRows = useMemo(() => {
                 </MenuItem>
 
                 <MenuItem value="days">Today</MenuItem>
-                <MenuItem value="weeks">This Week</MenuItem>
-                <MenuItem value="monthly">This Month</MenuItem>
-                <MenuItem value="quarterly">This Quarter</MenuItem>
-                <MenuItem value="yearly">This Year</MenuItem>
+                <MenuItem value="weeks">Week</MenuItem>
+                <MenuItem value="monthly">Month</MenuItem>
+                <MenuItem value="quarterly">Quarter</MenuItem>
+                <MenuItem value="yearly">Year</MenuItem>
               </Select>
             </FormControl>
+
+            {/* Year selector (shown for weeks/monthly/quarterly/yearly) */}
+            {range !== "days" && (
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel id="yr-label">Year</InputLabel>
+                <Select
+                  labelId="yr-label"
+                  label="Year"
+                  value={yearSel}
+                  onChange={(e) => setYearSel(Number(e.target.value))}
+                >
+                  {availableYears.map((y) => (
+                    <MenuItem key={y} value={y}>
+                      {y}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+
+            {/* Month selector (shown for weeks/monthly/quarterly) */}
+            {(range === "weeks" || range === "monthly" || range === "quarterly") && (
+              <FormControl size="small" sx={{ minWidth: 140 }}>
+                <InputLabel id="mo-label">Month</InputLabel>
+                <Select
+                  labelId="mo-label"
+                  label="Month"
+                  value={monthSel}
+                  onChange={(e) => setMonthSel(Number(e.target.value))}
+                >
+                  {monthOptionsForYear.length === 0 && (
+                    <MenuItem disabled value={monthSel}>
+                      No months available
+                    </MenuItem>
+                  )}
+
+                  {monthOptionsForYear.map((m) => (
+                    <MenuItem key={m} value={m}>
+                      {dayjs().month(m - 1).format("MMMM")}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+
+            {/* Week selector (only for weeks) */}
+            {range === "weeks" && (
+              <FormControl size="small" sx={{ minWidth: 220 }}>
+                <InputLabel id="wk-label">Week</InputLabel>
+                <Select
+                  labelId="wk-label"
+                  label="Week"
+                  value={weekSel}
+                  onChange={(e) => setWeekSel(String(e.target.value))}
+                  renderValue={(v) => {
+                    const w = availableWeeks.find((x) => x.key === v);
+                    return w ? w.label : "Select week";
+                  }}
+                >
+                  {availableWeeks.length === 0 && (
+                    <MenuItem disabled value="">
+                      No weeks available
+                    </MenuItem>
+                  )}
+                  {availableWeeks.map((w) => (
+                    <MenuItem key={w.key} value={w.key}>
+                      {w.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
 
             <DatePicker
               label="From"
@@ -693,7 +1005,10 @@ const rangeFilteredRows = useMemo(() => {
               value={customFrom ? dayjs(customFrom) : null}
               open={fromOpen}
               onOpen={() => setFromOpen(true)}
-              onClose={() => setFromOpen(false)}
+              onClose={() => {
+                setFromOpen(false);
+                requestAnimationFrame(() => document.activeElement?.blur?.());
+              }}
               onChange={(value) => {
                 if (value === null) {
                   setCustomFrom("");

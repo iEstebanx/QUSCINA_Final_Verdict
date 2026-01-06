@@ -811,7 +811,7 @@ module.exports = ({ db } = {}) => {
         INSERT INTO inventory_activity
           (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
         VALUES
-          (NOW(), ?, 'Deleted Inventory Item', NULL, NULL ?, ?, NOW(), NOW())
+          (NOW(), ?, 'Deleted Inventory Item', NULL, NULL, ?, ?, NOW(), NOW())
         `,
         [getEmployeeNameFromReq(req), id, ingredientRow?.name || ""]
       );

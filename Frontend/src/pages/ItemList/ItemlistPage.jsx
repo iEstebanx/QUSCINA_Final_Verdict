@@ -58,34 +58,38 @@ function renderInvOption(inv) {
       sx={{
         width: "100%",
         display: "flex",
-        alignItems: "center",   // NOT baseline
-        minWidth: 0,
-        py: 0.5,
+        alignItems: "center",
+        gap: 1,
+        minWidth: 0,          // ✅ critical
       }}
     >
-      {/* LEFT — Product name */}
       <Typography
         noWrap
         sx={{
-          fontSize: "1rem",     // ⬆ noticeable
+          fontSize: "1rem",
           fontWeight: 600,
           lineHeight: 1.3,
-          flex: 1,
+          flex: "1 1 0",      // ✅ can shrink
           minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
         }}
       >
         {name}
       </Typography>
 
-      {/* RIGHT — Meta info */}
       <Typography
         noWrap
         sx={{
-          fontSize: "0.85rem",  // ⬆ BIG FIX (no longer tiny)
+          fontSize: "0.85rem",
           fontWeight: 500,
           lineHeight: 1.3,
           color: "text.secondary",
-          ml: 2,
+          flex: "0 1 auto",   // ✅ can shrink too
+          minWidth: 0,
+          maxWidth: 220,      // ✅ prevents “infinite width”
+          overflow: "hidden",
+          textOverflow: "ellipsis",
           whiteSpace: "nowrap",
         }}
       >
@@ -154,6 +158,50 @@ function getMs(u) {
   return 0;
 }
 
+/* ------------------------------ Money helper ------------------------------ */
+function asMoney(v) {
+  if (v == null) return 0;
+  const n = Number(String(v).replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(n)) return 0;
+  // keep 2 decimals for selling price
+  return Math.round(n * 100) / 100;
+}
+
+/* -------------------------- Payload builders (NEW) -------------------------- */
+function buildRecipePayloadFrom(itemIngredients) {
+  return (itemIngredients || [])
+    .map((r) => ({
+      ingredientId: String(r.ingredientId || "").trim(),
+      name: String(r.name || "").trim(),
+      category: String(r.category || "").trim(),
+      unit: String(r.unit || "").trim(),
+      qty: Number(String(r.qty ?? "").replace(/[^0-9.]/g, "")) || 0,
+    }))
+    .filter((r) => r.ingredientId && r.qty > 0);
+}
+
+function buildDirectProductsPayloadFrom(directProducts, legacy) {
+  // Prefer multi-row directProducts state if you use it
+  const fromRows = (directProducts || [])
+    .map((r) => ({
+      inventoryIngredientId: Number(r.inventoryIngredientId || 0),
+      name: String(r.name || "").trim(),
+      qty: Number(String(r.qty ?? "").replace(/[^0-9.]/g, "")) || 0,
+    }))
+    .filter((x) => Number.isFinite(x.inventoryIngredientId) && x.inventoryIngredientId > 0 && x.qty > 0);
+
+  if (fromRows.length) return fromRows;
+
+  // Backward-compat: single select + deduct qty
+  const invId = Number(legacy?.inventoryIngredientId || 0);
+  const qty = Number(String(legacy?.inventoryDeductQty ?? "").replace(/[^0-9.]/g, "")) || 0;
+
+  if (Number.isFinite(invId) && invId > 0 && qty > 0) {
+    return [{ inventoryIngredientId: invId, name: "", qty }];
+  }
+  return [];
+}
+
 export default function ItemlistPage() {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
@@ -190,6 +238,74 @@ export default function ItemlistPage() {
   // confirm delete selected dialog
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteOne, setDeleteOne] = useState({ open: false, id: null, name: "" });
+
+  const [directProducts, setDirectProducts] = useState([]);
+
+function addDirectProductRow() {
+  setDirectProducts(prev => [
+    ...prev,
+    {
+      id: `dp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      category: "",
+      inventoryIngredientId: "",
+      name: "",
+      unit: "",
+      currentStock: 0,
+      qty: "",
+    },
+  ]);
+}
+
+function removeDirectProductRow(id) {
+  setDirectProducts(prev => prev.filter(r => r.id !== id));
+}
+
+function onSelectDirectCategory(rowId, categoryName) {
+  const nextCat = categoryName || "";
+  if (nextCat) {
+    const valid = productInvCategories.some(c => String(c.name) === String(nextCat));
+    if (!valid) return;
+  }
+
+  setDirectProducts(prev => prev.map(r => {
+    if (r.id !== rowId) return r;
+    return {
+      ...r,
+      category: nextCat,
+      inventoryIngredientId: "",
+      name: "",
+      unit: "",
+      currentStock: 0,
+      qty: "",
+    };
+  }));
+}
+
+function onSelectDirectProduct(rowId, invId) {
+  const picked = inventoryProducts.find(p => String(p.id) === String(invId));
+  setDirectProducts(prev => prev.map(r => {
+    if (r.id !== rowId) return r;
+    if (!picked) {
+      return { ...r, inventoryIngredientId: "", name: "", unit: "", currentStock: 0, qty: "" };
+    }
+    return {
+      ...r,
+      inventoryIngredientId: picked.id,
+      name: picked.name,
+      unit: picked.unit,
+      currentStock: picked.currentStock,
+      qty: r.qty || "1",
+    };
+  }));
+}
+
+function onDirectQtyChange(rowId, rawValue) {
+  setDirectProducts(prev => prev.map(r => {
+    if (r.id !== rowId) return r;
+    const v = String(rawValue ?? "").replace(/[^0-9.]/g, "");
+    return { ...r, qty: v === "" ? "" : String(Number(v)) };
+  }));
+}
 
   const emptyForm = {
     name: "",
@@ -403,6 +519,7 @@ useEffect(() => {
   const resetForm = () => {
     setF({ ...emptyForm });
     setItemIngredients([]);
+    setDirectProducts([]);
     setSaveErr("");
   };
 
@@ -534,6 +651,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
     setCreateShowErrors(true);
     setSaving(true);
     setSaveErr("");
+
     try {
       const cleanName = normalizeName(f.name);
       if (!isValidName(cleanName)) {
@@ -542,66 +660,66 @@ function onSelectIngredientCategory(rowId, categoryName) {
         );
       }
 
-      // Local pre-check (UX only; DB is the final authority)
       if (nameExistsCaseInsensitive(cleanName)) {
         throw new Error(
           "That item name already exists. Names are not case-sensitive. Try a different name."
         );
       }
 
-      // 🔴 Category is required
       if (!f.categoryId) {
         throw new Error("Category is required.");
       }
 
-      // Prefer the canonical name from cats; fall back to f.categoryName
-      const pickedCatName = (cats.find(c => String(c.id) === String(f.categoryId))?.name) || f.categoryName;
+      const pickedCatName =
+        (cats.find((c) => String(c.id) === String(f.categoryId))?.name) ||
+        f.categoryName;
+
       const cleanCatName = normalizeName(pickedCatName);
       if (!cleanCatName || !isValidName(cleanCatName)) {
         throw new Error("Invalid category name.");
       }
 
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
-      const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
+      const itemPrice = asMoney(f.price);
 
-      // build payload first
-      const ingPayload = itemIngredients
-        .filter(r => r.ingredientId && String(r.qty).trim())
-        .map(r => ({
-          ingredientId: r.ingredientId,
-          name: r.name,
-          category: r.category,
-          unit: r.unit,
-          qty: Number(r.qty || 0),
-        }));
+      const ingPayload = buildRecipePayloadFrom(itemIngredients);
+      const directPayload = buildDirectProductsPayloadFrom(directProducts, {
+        inventoryIngredientId: f.inventoryIngredientId,
+        inventoryDeductQty: f.inventoryDeductQty,
+      });
 
       const hasRecipe = ingPayload.length > 0;
-      const hasDirect = !!f.inventoryIngredientId;
+      const hasDirect = directPayload.length > 0;
 
-      if (hasDirect) {
-        const dq = Number(String(f.inventoryDeductQty || "1"));
-        if (!Number.isFinite(dq) || dq <= 0) {
-          throw new Error("Deduct Qty must be greater than 0.");
+      if (!hasRecipe && !hasDirect) {
+        throw new Error("Please add at least 1 ingredient OR add at least 1 direct inventory product.");
+      }
+
+      // Validate direct qtys (frontend UX; backend still validates)
+      for (const dp of directPayload) {
+        const q = Number(dp.qty);
+        if (!Number.isFinite(q) || q <= 0) {
+          throw new Error("Direct product qty must be greater than 0.");
         }
       }
 
-      // Optional rule (recommended): require at least one stock source
-      // If you want to allow items with no deductions, remove this.
-      if (!hasRecipe && !hasDirect) {
-        throw new Error("Please add at least 1 ingredient OR select a direct inventory product.");
-      }
-
-      // ✅ NOW FormData uses the SAME stockMode variable
       const form = new FormData();
       form.append("name", cleanName);
       form.append("description", cleanDesc);
       form.append("price", String(itemPrice));
-      form.append("categoryId", f.categoryId);
+      form.append("categoryId", String(f.categoryId));
       form.append("categoryName", cleanCatName);
+
       if (f.imageFile) form.append("image", f.imageFile);
+
+      // ✅ NEW fields
       form.append("ingredients", JSON.stringify(ingPayload));
-      form.append("inventoryIngredientId", f.inventoryIngredientId ? String(f.inventoryIngredientId) : "");
-      form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
+      form.append("directProducts", JSON.stringify(directPayload));
+
+      // (Optional) Backward-compat: if your backend still expects these sometimes,
+      // keep them empty so the new JSON is the source of truth.
+      // form.append("inventoryIngredientId", "");
+      // form.append("inventoryDeductQty", "1");
 
       const res = await fetch(`/api/items`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
@@ -619,6 +737,8 @@ function onSelectIngredientCategory(rowId, categoryName) {
       await loadItems();
       setOpenCreate(false);
       resetForm();
+      // also reset direct products
+      setDirectProducts([]);
       alert.success("Item added.");
     } catch (e) {
       setSaveErr(e?.message || "Save failed");
@@ -631,9 +751,11 @@ function onSelectIngredientCategory(rowId, categoryName) {
   // ========== EDIT ==========
   async function updateItem() {
     if (!editingId) return;
+
     setEditShowErrors(true);
     setSaving(true);
     setSaveErr("");
+
     try {
       const cleanName = normalizeName(f.name);
       if (!isValidName(cleanName)) {
@@ -653,7 +775,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
       }
 
       const pickedCatName =
-        (cats.find(c => String(c.id) === String(f.categoryId))?.name) ||
+        (cats.find((c) => String(c.id) === String(f.categoryId))?.name) ||
         f.categoryName;
 
       const cleanCatName = normalizeName(pickedCatName);
@@ -662,46 +784,44 @@ function onSelectIngredientCategory(rowId, categoryName) {
       }
 
       const cleanDesc = normalizeDesc(f.description).slice(0, DESC_MAX);
-      const itemPrice = Number(String(f.price || "").replace(/[^0-9.]/g, "")) || 0;
+      const itemPrice = asMoney(f.price);
 
-      const ingPayload = itemIngredients
-        .filter(r => r.ingredientId && String(r.qty).trim())
-        .map(r => ({
-          ingredientId: r.ingredientId,
-          name: r.name,
-          category: r.category,
-          unit: r.unit,
-          qty: Number(r.qty || 0),
-        }));
+      const ingPayload = buildRecipePayloadFrom(itemIngredients);
+      const directPayload = buildDirectProductsPayloadFrom(directProducts, {
+        inventoryIngredientId: f.inventoryIngredientId,
+        inventoryDeductQty: f.inventoryDeductQty,
+      });
 
       const hasRecipe = ingPayload.length > 0;
-      const hasDirect = !!f.inventoryIngredientId;
+      const hasDirect = directPayload.length > 0;
 
-      if (hasDirect) {
-        const dq = Number(String(f.inventoryDeductQty || "1"));
-        if (!Number.isFinite(dq) || dq <= 0) {
-          throw new Error("Deduct Qty must be greater than 0.");
+      if (!hasRecipe && !hasDirect) {
+        throw new Error(
+          "Please add at least 1 ingredient OR add at least 1 direct inventory product."
+        );
+      }
+
+      for (const dp of directPayload) {
+        const q = Number(dp.qty);
+        if (!Number.isFinite(q) || q <= 0) {
+          throw new Error("Direct product qty must be greater than 0.");
         }
       }
 
-      // Optional rule (recommended): require at least one stock source
-      // If you want to allow items with no deductions, remove this.
-      if (!hasRecipe && !hasDirect) {
-        throw new Error("Please add at least 1 ingredient OR select a direct inventory product.");
-      }
-
-      // ✅ FormData
       const form = new FormData();
       form.append("name", cleanName);
       form.append("description", cleanDesc);
       form.append("price", String(itemPrice));
-      form.append("categoryId", f.categoryId);
+      form.append("categoryId", String(f.categoryId));
       form.append("categoryName", cleanCatName);
-      form.append("ingredients", JSON.stringify(ingPayload));
 
-      // ingredients always sent (backend normalizes)
-      form.append("inventoryIngredientId", f.inventoryIngredientId ? String(f.inventoryIngredientId) : "");
-      form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
+      // ✅ NEW fields
+      form.append("ingredients", JSON.stringify(ingPayload));
+      form.append("directProducts", JSON.stringify(directPayload));
+
+      // (Optional) if keeping legacy fields, send empty to avoid conflicts
+      // form.append("inventoryIngredientId", "");
+      // form.append("inventoryDeductQty", "1");
 
       if (f.imageFile) form.append("image", f.imageFile);
 
@@ -726,6 +846,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
       setOpenEdit(false);
       setEditingId("");
       resetForm();
+      setDirectProducts([]);
       alert.success("Item updated.");
     } catch (e) {
       setSaveErr(e?.message || "Update failed");
@@ -756,6 +877,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
       price: full.price != null ? String(full.price) : "",
       imageFile: null,
       imagePreview: full.imageUrl || "",
+      stockMode: full.stockMode || "ingredients",
       inventoryProductCategory: "",
       inventoryIngredientId: full.inventoryIngredientId || "",
       inventoryDeductQty: full.inventoryDeductQty != null ? String(full.inventoryDeductQty) : "1",
@@ -776,14 +898,33 @@ function onSelectIngredientCategory(rowId, categoryName) {
         })
       : [];
 
+    const initialDirect = Array.isArray(full.directProducts)
+      ? full.directProducts.map((x, idx) => {
+          const inv = inventoryProducts.find(
+            (p) => String(p.id) === String(x.inventoryIngredientId)
+          );
+
+          return {
+            id: `dp-${idx}-${Date.now()}`,
+            category: inv?.category || "",
+            inventoryIngredientId: String(x.inventoryIngredientId || ""),
+            name: inv?.name || x.name || "",
+            unit: inv?.unit || "",
+            currentStock: inv?.currentStock || 0,
+            qty: x.qty != null ? String(x.qty) : "",
+          };
+        })
+      : [];
+
     setEditingId(full.id);
     setF(nextF);
     setItemIngredients(initialIngredients);
+    setDirectProducts(initialDirect);
     setSaveErr("");
     setOpenEdit(true);
     setEditShowErrors(false);
 
-    initialEditRef.current = snapshotFormFrom(nextF, initialIngredients);
+    initialEditRef.current = snapshotFormFrom(nextF, initialIngredients, initialDirect);
     editTouchedRef.current = false;
   }
 
@@ -791,6 +932,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
     setOpenEdit(false);
     setEditingId("");
     resetForm();
+    setDirectProducts([]);
     setSaveErr("");
     initialEditRef.current = null;
     editTouchedRef.current = false;
@@ -890,16 +1032,17 @@ function onSelectIngredientCategory(rowId, categoryName) {
   const initialCreateRef = useRef(null); // { f, itemIngredients }
   const initialEditRef   = useRef(null);
 
-  function snapshotFormFrom(formState, ingredientsState) {
+  function snapshotFormFrom(formState, ingredientsState, directProductsState) {
     const cleanF = {
       ...formState,
       name: String(formState.name || "").trim(),
       description: String(formState.description || "").trim(),
       categoryId: String(formState.categoryId || ""),
       categoryName: String(formState.categoryName || "").trim(),
-      price: String(formState.price || "").trim(), // item price still tracked
+      price: String(formState.price || "").trim(),
       imageFile: !!formState.imageFile,
       imagePreview: !!formState.imagePreview,
+      stockMode: String(formState.stockMode || "ingredients"),
       inventoryIngredientId: String(formState.inventoryIngredientId || ""),
       inventoryDeductQty: String(formState.inventoryDeductQty || "1").trim(),
     };
@@ -909,7 +1052,14 @@ function onSelectIngredientCategory(rowId, categoryName) {
       qty: String(r.qty || "").trim(),
     }));
 
-    return { f: cleanF, ings };
+    const dps = (directProductsState || []).map((r) => ({
+      category: String(r.category || ""),
+      inventoryIngredientId: String(r.inventoryIngredientId || ""),
+      qty: String(r.qty || "").trim(),
+    }));
+
+    // ✅ IMPORTANT: include dps in the returned snapshot
+    return { f: cleanF, ings, dps };
   }
 
   // ✦ Normalize the form for stable comparison (current state)
@@ -928,12 +1078,19 @@ function onSelectIngredientCategory(rowId, categoryName) {
       inventoryDeductQty: String(f.inventoryDeductQty || "1").trim(),
     };
 
-    const ings = itemIngredients.map(r => ({
+    const ings = (itemIngredients || []).map((r) => ({
       ingredientId: String(r.ingredientId || ""),
       qty: String(r.qty || "").trim(),
     }));
 
-    return { f: cleanF, ings };
+    const dps = (directProducts || []).map((r) => ({
+      category: String(r.category || ""),
+      inventoryIngredientId: String(r.inventoryIngredientId || ""),
+      qty: String(r.qty || "").trim(),
+    }));
+
+    // ✅ IMPORTANT: include dps in the returned snapshot
+    return { f: cleanF, ings, dps };
   }
 
   function deepEqual(a, b) {
@@ -964,7 +1121,7 @@ function onSelectIngredientCategory(rowId, categoryName) {
     if (!f.categoryId) return false;
     return isDirty("edit");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openEdit, f, itemIngredients]);
+  }, [openEdit, f, itemIngredients, directProducts]);
 
   // ✦ Centralized close attempt
   function tryClose(target) {
@@ -1024,12 +1181,13 @@ function onSelectIngredientCategory(rowId, categoryName) {
 
                 setF(nextF);
                 setItemIngredients([]);
+                setDirectProducts([]);
                 setSaveErr("");
                 setOpenCreate(true);
                 setCreateShowErrors(false);
                 setCreateTouched({ category: false });
 
-                initialCreateRef.current = snapshotFormFrom(nextF, []);
+                initialCreateRef.current = snapshotFormFrom(nextF, [], []);
                 createTouchedRef.current = false;
               }}
               sx={{ flexShrink: 0 }}
@@ -1503,80 +1661,131 @@ function onSelectIngredientCategory(rowId, categoryName) {
 
           {/* ✅ Direct Inventory Product (always optional) */}
           <Stack spacing={2}>
-            <Typography fontWeight={700}>Direct Inventory Product (optional)</Typography>
 
-            {/* Product Category filter */}
-            <FormControl fullWidth size="small">
-              <InputLabel id="add-direct-cat-label">Product Category</InputLabel>
-              <Select
-                labelId="add-direct-cat-label"
-                label="Product Category"
-                value={f.inventoryProductCategory || ""}
-                onChange={(e) =>
-                  setF((s) => ({
-                    ...s,
-                    inventoryProductCategory: e.target.value,
-                    inventoryIngredientId: "", // reset product when category changes
-                  }))
-                }
-                MenuProps={dropdownMenuProps}
-              >
-                <MenuItem value="">
-                  <em>All categories</em>
-                </MenuItem>
-                {productInvCategories.map((c) => (
-                  <MenuItem key={c.id} value={c.name}>
-                    {c.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              {/* Inventory Product */}
-              <FormControl fullWidth size="small">
-                <InputLabel id="add-direct-product-label">Inventory Product</InputLabel>
-                <Select
-                  labelId="add-direct-product-label"
-                  label="Inventory Product"
-                  value={f.inventoryIngredientId || ""}
-                  onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
-                  MenuProps={dropdownMenuProps}
-                  renderValue={(val) => {
-                    if (!val) return <em>Select Inventory Product</em>;
-                    const picked = inventoryProducts.find((p) => String(p.id) === String(val));
-                    return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                  }}
+            <Stack spacing={1}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between">
+                <Typography fontWeight={700}>Direct Inventory Products</Typography>
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={addDirectProductRow}
                 >
-                  {inventoryProducts.length === 0 ? (
-                    <MenuItem value="" disabled>
-                      <em>No products found</em>
-                    </MenuItem>
-                  ) : (
-                    inventoryProducts.map((p) => (
-                      <MenuItem key={p.id} value={p.id}>
-                        {renderInvOption(p)}
-                      </MenuItem>
-                    ))
-                  )}
-                </Select>
-              </FormControl>
+                  Add Product
+                </Button>
+              </Stack>
 
-              {/* Deduct Qty */}
-              <TextField
-                label="Deduct Qty"
-                size="small"
-                value={f.inventoryDeductQty || "1"}
-                onChange={(e) => {
-                  const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                  setF((s) => ({ ...s, inventoryDeductQty: v }));
-                }}
-                inputMode="decimal"
-                helperText="How much inventory to deduct per 1 item sold"
-                sx={{ minWidth: { sm: 220 } }}
-                disabled={!f.inventoryIngredientId}
-              />
+              <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 1, overflow: "hidden" }} >
+                <Table size="small" sx={{ tableLayout: "fixed" }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell width="25%">Category</TableCell>
+                      <TableCell width="45%">Product</TableCell>
+                      <TableCell sx={{ width: 140 }}>Qty</TableCell>
+                      <TableCell width={40} />
+                    </TableRow>
+                  </TableHead>
+
+                  <TableBody>
+                    {directProducts.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Typography variant="body2" color="text.secondary">
+                            No direct products added.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      directProducts.map((row) => (
+                        <TableRow key={row.id}>
+                          {/* Category */}
+                          <TableCell>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.category || ""}
+                                displayEmpty
+                                onChange={(e) =>
+                                  onSelectDirectCategory(row.id, e.target.value)
+                                }
+                                MenuProps={dropdownMenuProps}
+                              >
+                                <MenuItem value="">
+                                  <em>Select category</em>
+                                </MenuItem>
+                                {productInvCategories.map((c) => (
+                                  <MenuItem key={c.id} value={c.name}>
+                                    {c.name}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+
+                          {/* Product */}
+                          <TableCell>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.inventoryIngredientId || ""}
+                                displayEmpty
+                                disabled={!row.category}
+                                onChange={(e) =>
+                                  onSelectDirectProduct(row.id, e.target.value)
+                                }
+                                MenuProps={dropdownMenuProps}
+                                renderValue={(val) => {
+                                  if (!row.category) return <em>Select category first</em>;
+                                  if (!val) return <em>Select product</em>;
+                                  const picked = inventoryProducts.find(
+                                    (p) => String(p.id) === String(val)
+                                  );
+                                  return picked ? renderInvOption(picked) : <em>Select product</em>;
+                                }}
+                              >
+                                <MenuItem value="">
+                                  <em>{row.category ? "Select product" : "Select category first"}</em>
+                                </MenuItem>
+                                {inventoryProducts
+                                  .filter((p) => p.category === row.category)
+                                  .map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                      {renderInvOption(p)}
+                                    </MenuItem>
+                                  ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+
+                          {/* Qty */}
+                          <TableCell>
+                            <TextField
+                              size="small"
+                              value={row.qty || ""}
+                              onChange={(e) =>
+                                onDirectQtyChange(row.id, e.target.value)
+                              }
+                              disabled={!row.inventoryIngredientId}
+                              inputMode="decimal"
+                              placeholder="1"
+                              fullWidth
+                            />
+                          </TableCell>
+
+                          {/* Remove */}
+                          <TableCell align="right">
+                            <IconButton
+                              size="small"
+                              onClick={() => removeDirectProductRow(row.id)}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             </Stack>
+
           </Stack>
 
           {/* Item Price only – no cost/profit */}
@@ -1891,82 +2100,143 @@ function onSelectIngredientCategory(rowId, categoryName) {
 
           <Divider />
 
-          {/* ✅ Direct Inventory Product (optional) — ADD THIS IN EDIT */}
+          {/* ✅ Direct Inventory Products */}
           <Stack spacing={2}>
-            <Typography fontWeight={700}>Direct Inventory Product (optional)</Typography>
 
-            {/* Product Category filter */}
-            <FormControl fullWidth size="small">
-              <InputLabel id="edit-direct-cat-label">Product Category</InputLabel>
-              <Select
-                labelId="edit-direct-cat-label"
-                label="Product Category"
-                value={f.inventoryProductCategory || ""}
-                onChange={(e) =>
-                  setF((s) => ({
-                    ...s,
-                    inventoryProductCategory: e.target.value,
-                    inventoryIngredientId: "", // reset product when category changes
-                  }))
-                }
-                MenuProps={dropdownMenuProps}
-              >
-                <MenuItem value="">
-                  <em>All categories</em>
-                </MenuItem>
-                {productInvCategories.map((c) => (
-                  <MenuItem key={c.id} value={c.name}>
-                    {c.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Stack spacing={1}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between">
+                <Typography fontWeight={700}>Direct Inventory Products</Typography>
+                <Button size="small" startIcon={<AddIcon />} onClick={addDirectProductRow}>
+                  Add Product
+                </Button>
+              </Stack>
 
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              {/* Inventory Product */}
-              <FormControl fullWidth size="small">
-                <InputLabel id="edit-direct-product-label">Inventory Product</InputLabel>
-                <Select
-                  labelId="edit-direct-product-label"
-                  label="Inventory Product"
-                  value={f.inventoryIngredientId || ""}
-                  onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
-                  MenuProps={dropdownMenuProps}
-                  renderValue={(val) => {
-                    if (!val) return <em>Select Inventory Product</em>;
-                    const picked = inventoryProducts.find((p) => String(p.id) === String(val));
-                    return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                  }}
-                >
-                  {inventoryProducts.length === 0 ? (
-                    <MenuItem value="" disabled>
-                      <em>No products found</em>
-                    </MenuItem>
-                  ) : (
-                    inventoryProducts.map((p) => (
-                      <MenuItem key={p.id} value={p.id}>
-                        {renderInvOption(p)}
-                      </MenuItem>
-                    ))
-                  )}
-                </Select>
-              </FormControl>
+              <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 1, overflow: "hidden" }}>
+                <Table size="small" sx={{ tableLayout: "fixed" }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell width="25%">Category</TableCell>
+                      <TableCell width="45%">Product</TableCell>
+                      <TableCell width="20%">Qty</TableCell>
+                      <TableCell width={40} />
+                    </TableRow>
+                  </TableHead>
 
-              {/* Deduct Qty */}
+                  <TableBody>
+                    {directProducts.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Typography variant="body2" color="text.secondary">
+                            No direct products added.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      directProducts.map((row) => (
+                        <TableRow key={row.id}>
+                          {/* Category */}
+                          <TableCell>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.category || ""}
+                                displayEmpty
+                                onChange={(e) => onSelectDirectCategory(row.id, e.target.value)}
+                                MenuProps={dropdownMenuProps}
+                              >
+                                <MenuItem value="">
+                                  <em>Select category</em>
+                                </MenuItem>
+                                {productInvCategories.map((c) => (
+                                  <MenuItem key={c.id} value={c.name}>
+                                    {c.name}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+
+                          {/* Product */}
+                          <TableCell>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={row.inventoryIngredientId || ""}
+                                displayEmpty
+                                disabled={!row.category}
+                                onChange={(e) => onSelectDirectProduct(row.id, e.target.value)}
+                                MenuProps={dropdownMenuProps}
+                                renderValue={(val) => {
+                                  if (!row.category) return <em>Select category first</em>;
+                                  if (!val) return <em>Select product</em>;
+                                  const picked = inventoryProducts.find((p) => String(p.id) === String(val));
+                                  return picked ? renderInvOption(picked) : <em>Select product</em>;
+                                }}
+                              >
+                                <MenuItem value="">
+                                  <em>{row.category ? "Select product" : "Select category first"}</em>
+                                </MenuItem>
+                                {inventoryProducts
+                                  .filter((p) => p.category === row.category)
+                                  .map((p) => (
+                                    <MenuItem key={p.id} value={p.id}>
+                                      {renderInvOption(p)}
+                                    </MenuItem>
+                                  ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+
+                          {/* Qty */}
+                          <TableCell>
+                            <TextField
+                              size="small"
+                              value={row.qty || ""}
+                              onChange={(e) => onDirectQtyChange(row.id, e.target.value)}
+                              disabled={!row.inventoryIngredientId}
+                              inputMode="decimal"
+                              placeholder="1"
+                              fullWidth
+                            />
+                          </TableCell>
+
+                          {/* Remove */}
+                          <TableCell align="right">
+                            <IconButton size="small" onClick={() => removeDirectProductRow(row.id)}>
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Stack>
+          </Stack>
+
+          {/* Item Price only – no cost/profit */}
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={2}
+            alignItems="center"
+            justifyContent="flex-end"
+            sx={{ mt: 2, flexWrap: "wrap" }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <TextField
-                label="Deduct Qty"
+                label="Item Price"
                 size="small"
-                value={f.inventoryDeductQty || "1"}
+                value={f.price}
                 onChange={(e) => {
                   const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                  setF((s) => ({ ...s, inventoryDeductQty: v }));
+                  setF((s) => ({ ...s, price: v }));
+                }}
+                InputProps={{
+                  startAdornment: <InputAdornment position="start">₱</InputAdornment>,
                 }}
                 inputMode="decimal"
-                helperText="How much inventory to deduct per 1 item sold"
-                sx={{ minWidth: { sm: 220 } }}
-                disabled={!f.inventoryIngredientId}
+                sx={{ width: 140 }}
               />
-            </Stack>
+            </Box>
           </Stack>
 
           {saveErr && (

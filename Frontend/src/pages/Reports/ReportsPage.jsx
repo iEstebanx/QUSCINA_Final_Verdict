@@ -422,7 +422,7 @@ useEffect(() => {
         paymentsData: pick.paymentTypes ? payments : [],
         bestSellerItems: exportBestSellerItems,
         bestSellerTitle: bestSellerExportTitle,
-        staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
+        shiftSalesHistory: pick.shiftHistory ? shiftSalesHistory : [],
         preparedBy,
       });
     }
@@ -435,7 +435,7 @@ useEffect(() => {
         paymentsData: pick.paymentTypes ? payments : [],
         bestSellerItems: exportBestSellerItems,
         bestSellerTitle: bestSellerExportTitle,
-        staffPerformanceData: pick.shiftHistory ? staffPerformance : [],
+        shiftSalesHistory: pick.shiftHistory ? shiftSalesHistory : [],
         preparedBy,
       });
     }
@@ -623,7 +623,7 @@ useEffect(() => {
   const [payments, setPayments] = useState([]);
   const [bestSeller, setBestSeller] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [staffPerformance, setStaffPerformance] = useState([]);
+  const [shiftSalesHistory, setShiftSalesHistory] = useState([]);
 
   const theme = useTheme();
   const isSmall = useMediaQuery(theme.breakpoints.down("md"));
@@ -942,13 +942,13 @@ const bestSellerBoardHeight = Math.min(
         // cache-buster so Refresh always re-fetches
         const qs = `${baseQs}&_=${reloadTick}`;
 
-        const [c1, c2, p, b, o, sp] = await Promise.all([
+        const [c1, c2, p, b, o, sh] = await Promise.all([
           fetch(`/api/reports/items-top5?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/category-series?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/payments?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/best-sellers?${qs}`).then((r) => r.json()),
           fetch(`/api/reports/orders?${qs}`).then((r) => r.json()),
-          fetch(`/api/reports/staff-performance?${qs}`).then((r) => r.json()),
+          fetch(`/api/reports/shift-sales-history?${qs}`).then((r) => r.json()),
         ]);
 
         if (!alive) return;
@@ -966,7 +966,7 @@ const bestSellerBoardHeight = Math.min(
         setPayments(p?.ok ? p.data || [] : []);
         setBestSeller(b?.ok ? b.data || [] : []);
         setOrders(o?.ok ? o.data || [] : []);
-        setStaffPerformance(sp?.ok ? sp.data || [] : []);
+        setShiftSalesHistory(sh?.ok ? sh.data || [] : []);
       } catch (err) {
         console.error("[reports] load failed", err);
         if (!alive) return;
@@ -975,7 +975,7 @@ const bestSellerBoardHeight = Math.min(
         setPayments([]);
         setBestSeller([]);
         setOrders([]);
-        setStaffPerformance([]);
+        setShiftSalesHistory([]);
       }
     }
 
@@ -1026,523 +1026,637 @@ const bestSellerBoardHeight = Math.min(
     return true;
   };
 
-  const buildSalesExcelXlsx = async ({
-    rangeText,
-    categorySeriesData,
-    paymentsData,
-    bestSellerItems,
-    bestSellerTitle,
-    staffPerformanceData,
-    preparedBy,
-  }) => {
-    const wb = new ExcelJS.Workbook();
-    wb.creator = "Quscina POS";
-    wb.created = new Date();
+const buildSalesExcelXlsx = async ({
+  rangeText,
+  categorySeriesData,
+  paymentsData,
+  bestSellerItems,
+  bestSellerTitle,
+  shiftSalesHistory,
+  preparedBy,
+}) => {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Quscina POS";
+  wb.created = new Date();
 
-    // =========================
-    // Sheet 1: REPORT (pretty)
-    // =========================
-    const ws = wb.addWorksheet("Sales Report", {
-      views: [{ state: "frozen", ySplit: 6 }], // freeze header area
-      pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
-    });
+  // =========================
+  // Sheet 1: REPORT (pretty)
+  // =========================
+  const ws = wb.addWorksheet("Sales Report", {
+    views: [{ state: "frozen", ySplit: 6 }], // freeze header area
+    pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
 
-    // Column widths (feel free to tweak)
-    ws.columns = [
-      { key: "c1", width: 6 },
-      { key: "c2", width: 28 },
-      { key: "c3", width: 16 },
-      { key: "c4", width: 16 },
-      { key: "c5", width: 16 },
-      { key: "c6", width: 18 },
-      { key: "c7", width: 24 },
-    ];
+  // Column widths
+  ws.columns = [
+    { key: "c1", width: 10 }, // was 6, widen for shift labels
+    { key: "c2", width: 30 },
+    { key: "c3", width: 22 },
+    { key: "c4", width: 20 },
+    { key: "c5", width: 16 },
+    { key: "c6", width: 16 },
+    { key: "c7", width: 18 },
+  ];
 
-    const moneyFmt = '"₱"#,##0.00';
-    const dateFmt = "mmm dd, yyyy";
+  const moneyFmt = '"₱"#,##0.00';
+  const dateFmt = "mmm dd, yyyy";
+  const dateTimeFmt = "mmm dd, yyyy h:mm AM/PM";
 
-    const borderAll = {
-      top: { style: "thin", color: { argb: "FFD0D0D0" } },
-      left: { style: "thin", color: { argb: "FFD0D0D0" } },
-      bottom: { style: "thin", color: { argb: "FFD0D0D0" } },
-      right: { style: "thin", color: { argb: "FFD0D0D0" } },
-    };
-
-    const fillHeader = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFEFEF" } };
-    const fillSection = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" } }; // dark
-    const fontSection = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
-
-    const setRow = (r, opts = {}) => {
-      r.height = opts.height ?? r.height;
-      r.eachCell({ includeEmpty: true }, (cell) => {
-        if (opts.font) cell.font = opts.font;
-        if (opts.fill) cell.fill = opts.fill;
-        if (opts.alignment) cell.alignment = opts.alignment;
-        if (opts.border) cell.border = opts.border;
-      });
-    };
-
-    const mergeTitle = (rowNo, text) => {
-      ws.mergeCells(`A${rowNo}:F${rowNo}`);
-      const cell = ws.getCell(`A${rowNo}`);
-      cell.value = text;
-      cell.font = { bold: true, size: 18 };
-      cell.alignment = { vertical: "middle", horizontal: "center" };
-    };
-
-    const sectionTitle = (rowNo, text) => {
-      ws.mergeCells(`A${rowNo}:F${rowNo}`);
-      const cell = ws.getCell(`A${rowNo}`);
-      cell.value = text;
-      cell.fill = fillSection;
-      cell.font = fontSection;
-      cell.alignment = { vertical: "middle", horizontal: "left" };
-      ws.getRow(rowNo).height = 20;
-    };
-
-    const keyValue = (rowNo, k, v) => {
-      ws.getCell(`A${rowNo}`).value = k;
-      ws.getCell(`A${rowNo}`).font = { bold: true };
-      ws.getCell(`B${rowNo}`).value = v;
-      ws.mergeCells(`B${rowNo}:F${rowNo}`);
-    };
-
-    const tableHeader = (rowNo, headers) => {
-      const row = ws.getRow(rowNo);
-      headers.forEach((h, idx) => {
-        const cell = row.getCell(idx + 1);
-        cell.value = h;
-        cell.font = { bold: true };
-        cell.fill = fillHeader;
-        cell.border = borderAll;
-        cell.alignment = { vertical: "middle", horizontal: "left" };
-      });
-      row.height = 18;
-    };
-
-    const tableRow = (rowNo, values, { moneyCols = [], rightCols = [] } = {}) => {
-      const row = ws.getRow(rowNo);
-      values.forEach((val, idx) => {
-        const col = idx + 1;
-        const cell = row.getCell(col);
-        cell.value = val ?? "";
-        cell.border = borderAll;
-
-        if (moneyCols.includes(col)) {
-          cell.numFmt = moneyFmt;
-          cell.alignment = { vertical: "middle", horizontal: "right" };
-        } else if (rightCols.includes(col)) {
-          cell.alignment = { vertical: "middle", horizontal: "right" };
-        } else {
-          cell.alignment = { vertical: "middle", horizontal: "left" };
-        }
-      });
-      row.height = 16;
-    };
-
-    let r = 1;
-
-    // Title + meta
-    mergeTitle(r++, "QUSCINA • SALES REPORT");
-    ws.getRow(r).height = 6; r++; // spacer
-
-    keyValue(r++, "Date Range", rangeText || "N/A");
-    keyValue(r++, "Generated At", new Date().toLocaleString("en-PH"));
-    keyValue(r++, "Branch", "Kawit, Cavite"); // change if dynamic
-    ws.getRow(r).height = 6; r++; // spacer
-
-    // --------------------------
-    // SALES BY PAYMENT TYPE
-    // --------------------------
-    sectionTitle(r++, "SALES BY PAYMENT TYPE");
-    tableHeader(r++, ["Payment Type", "Payment Tx", "Refund Tx", "Net Amount"]);
-    if ((paymentsData || []).length) {
-      paymentsData.forEach((p) => {
-        tableRow(
-          r++,
-          [p.type, Number(p.tx || 0), Number(p.refundTx || 0), Number(p.net || 0)],
-          { moneyCols: [4], rightCols: [2, 3] }
-        );
-      });
-    } else {
-      tableRow(r++, ["No data", "", "", ""], {});
-    }
-    ws.getRow(r).height = 6; r++;
-
-    // --------------------------
-    // BEST SELLER ITEMS (CUSTOM)
-    // --------------------------
-    sectionTitle(r++, bestSellerTitle || "BEST SELLER ITEMS");
-
-    tableHeader(r++, ["Rank", "Item", "Category", "Orders", "Qty", "Sales"]);
-
-    if (bestSellerItems.length) {
-      bestSellerItems.forEach((it, idx) => {
-        tableRow(
-          r++,
-          [
-            idx + 1,
-            it.name,
-            it.category,
-            it.orders,
-            it.qty,
-            it.sales,
-          ],
-          { moneyCols: [6], rightCols: [1, 4, 5] }
-        );
-      });
-    } else {
-      tableRow(r++, ["", "No data", "", "", "", ""], {});
-    }
-
-    ws.getRow(r).height = 6;
-    r++;
-
-    // --------------------------
-    // SHIFT HISTORY
-    // --------------------------
-    sectionTitle(r++, "SHIFT HISTORY");
-    tableHeader(r++, ["Shift No.", "Staff Name", "Date", "Starting Cash", "Count Cash", "Actual Cash", "Remarks"]);
-    // widen for this section using extra columns: we’ll use A..G by reusing A..F plus one more column
-    // quick hack: write into A..G by direct getCell; ExcelJS allows it even if we set 6 cols
-    const writeShiftRow = (rowNo, vals) => {
-      const row = ws.getRow(rowNo);
-      vals.forEach((val, idx) => {
-        const cell = row.getCell(idx + 1);
-        cell.value = val ?? "";
-        cell.border = borderAll;
-        cell.alignment = { vertical: "middle", horizontal: idx >= 3 && idx <= 5 ? "right" : "left" };
-        if (idx >= 3 && idx <= 5) cell.numFmt = moneyFmt;
-      });
-      row.height = 16;
-    };
-
-    if ((staffPerformanceData || []).length) {
-      (staffPerformanceData || []).forEach((s) => {
-        const dt = toLocalDateOnly(s.date);
-        writeShiftRow(r++, [
-          s.shiftNo,
-          s.staffName,
-          dt ? dt : s.date,
-          Number(s.startingCash || 0),
-          Number(s.countCash || 0),
-          Number(s.actualCash || 0),
-          s.remarks || "",
-        ]);
-        // format date cell
-        const dateCell = ws.getCell(`C${r - 1}`);
-        if (dt) dateCell.numFmt = dateFmt;
-      });
-    } else {
-      writeShiftRow(r++, ["", "No data for this range", "", "", "", "", ""]);
-    }
-
-    ws.getRow(r).height = 8; r++;
-
-    // Footer
-    ws.mergeCells(`A${r}:F${r}`);
-    ws.getCell(`A${r}`).value = preparedBy || "Prepared by: N/A";
-    ws.getCell(`A${r}`).font = { italic: true };
-    ws.getCell(`A${r}`).alignment = { horizontal: "left" };
-
-    // =========================
-    // Sheet 2: Chart Data
-    // =========================
-    const ws2 = wb.addWorksheet("Chart Data", {
-      views: [{ state: "frozen", ySplit: 1 }],
-    });
-
-    ws2.columns = [
-      { header: getSeriesPeriodHeader(range), key: "x", width: 18 },
-      { header: "Amount", key: "y", width: 16 },
-    ];
-
-    ws2.getRow(1).font = { bold: true };
-    ws2.getRow(1).fill = fillHeader;
-
-    (categorySeriesData || []).forEach((d) => {
-      ws2.addRow({
-        x: formatSeriesLabel(range, d.x),
-        y: Number(d.y || 0),
-      });
-    });
-
-    ws2.getColumn(2).numFmt = moneyFmt;
-
-    // Download
-    const buffer = await wb.xlsx.writeBuffer();
-    const filename = `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}-${Date.now()}.xlsx`;
-    saveAs(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
+  const borderAll = {
+    top: { style: "thin", color: { argb: "FFD0D0D0" } },
+    left: { style: "thin", color: { argb: "FFD0D0D0" } },
+    bottom: { style: "thin", color: { argb: "FFD0D0D0" } },
+    right: { style: "thin", color: { argb: "FFD0D0D0" } },
   };
 
-  /* ------------------ Shared PDF builder (uses passed data) ------------------ */
-  const buildSalesPdf = async ({
-    rangeText,
-    categoryTop5Data,
-    categorySeriesData,
-    paymentsData,
-    bestSellerItems,
-    bestSellerTitle,
-    staffPerformanceData,
-    preparedBy,
-  }) => {
-    const totalSales = paymentsData.reduce((sum, p) => sum + (p.net || 0), 0);
-    const totalOrders = paymentsData.reduce((sum, p) => sum + (p.tx || 0), 0);
-    const customerCount = totalOrders * 2 + 18; // placeholder
+  const fillHeader = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFEFEF" } };
+  const fillSection = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2937" } }; // dark
+  const fontSection = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
 
-    const dailyRows = categorySeriesData.map((d, idx) => {
-      const avgOrdersPerDay =
-        categorySeriesData.length > 0
-          ? Math.round(totalOrders / categorySeriesData.length)
-          : 0;
-      const retail = d.y;
-      const discountedOrders = idx === 0 ? 2 : idx === 2 ? 5 : 0; // still mock
-      const totalRevenue = d.y;
-      const totalProfit = d.y * 0.4;
+  const mergeTitle = (rowNo, text) => {
+    ws.mergeCells(`A${rowNo}:F${rowNo}`);
+    const cell = ws.getCell(`A${rowNo}`);
+    cell.value = text;
+    cell.font = { bold: true, size: 18 };
+    cell.alignment = { vertical: "middle", horizontal: "center" };
+  };
 
-      return {
-        date: d.x,
-        totalOrders: avgOrdersPerDay,
-        retail,
-        discountedOrders,
-        totalRevenue,
-        totalProfit,
-      };
+  const sectionTitle = (rowNo, text) => {
+    ws.mergeCells(`A${rowNo}:F${rowNo}`);
+    const cell = ws.getCell(`A${rowNo}`);
+    cell.value = text;
+    cell.fill = fillSection;
+    cell.font = fontSection;
+    cell.alignment = { vertical: "middle", horizontal: "left" };
+    ws.getRow(rowNo).height = 20;
+  };
+
+  const keyValue = (rowNo, k, v) => {
+    ws.getCell(`A${rowNo}`).value = k;
+    ws.getCell(`A${rowNo}`).font = { bold: true };
+    ws.getCell(`B${rowNo}`).value = v;
+    ws.mergeCells(`B${rowNo}:F${rowNo}`);
+  };
+
+  const tableHeader = (rowNo, headers) => {
+    const row = ws.getRow(rowNo);
+    headers.forEach((h, idx) => {
+      const cell = row.getCell(idx + 1);
+      cell.value = h;
+      cell.font = { bold: true };
+      cell.fill = fillHeader;
+      cell.border = borderAll;
+      cell.alignment = { vertical: "middle", horizontal: "left" };
     });
+    row.height = 18;
+  };
 
-    const doc = new jsPDF({
-      orientation: "portrait",
-      unit: "pt",
-      format: "a4",
-    });
+  const tableRow = (rowNo, values, { moneyCols = [], rightCols = [] } = {}) => {
+    const row = ws.getRow(rowNo);
+    values.forEach((val, idx) => {
+      const col = idx + 1;
+      const cell = row.getCell(col);
+      cell.value = val ?? "";
+      cell.border = borderAll;
 
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const bottomMargin = 60;
-
-    function ensureSpace(requiredHeight = 80) {
-      if (cursorY + requiredHeight > pageHeight - bottomMargin) {
-        doc.addPage();
-        cursorY = 72;
+      if (moneyCols.includes(col)) {
+        cell.numFmt = moneyFmt;
+        cell.alignment = { vertical: "middle", horizontal: "right" };
+      } else if (rightCols.includes(col)) {
+        cell.alignment = { vertical: "middle", horizontal: "right" };
+      } else {
+        cell.alignment = { vertical: "middle", horizontal: "left" };
       }
+    });
+    row.height = 16;
+  };
+
+  // --- Shift helpers (7 columns: A..G) ---
+  const mergeAcross7 = (rowNo) => ws.mergeCells(`A${rowNo}:G${rowNo}`);
+
+  const shiftHeaderRow = (rowNo, text) => {
+    mergeAcross7(rowNo);
+    const c = ws.getCell(`A${rowNo}`);
+    c.value = text;
+    c.font = { bold: true, size: 12, color: { argb: "FFFFFFFF" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF111827" } };
+    c.alignment = { vertical: "middle", horizontal: "left" };
+    ws.getRow(rowNo).height = 20;
+
+    for (let col = 1; col <= 7; col++) {
+      ws.getRow(rowNo).getCell(col).border = borderAll;
     }
+  };
 
-    const pageWidth = doc.internal.pageSize.getWidth();
-    let cursorY = 48;
+  const writeRow7 = (rowNo, vals, { moneyCols = [], rightCols = [] } = {}) => {
+    const row = ws.getRow(rowNo);
+    vals.forEach((val, idx) => {
+      const col = idx + 1;
+      const cell = row.getCell(col);
+      cell.value = val ?? "";
+      cell.border = borderAll;
 
-    const img = new Image();
-    img.src = logo;
+      if (moneyCols.includes(col)) {
+        cell.numFmt = moneyFmt;
+        cell.alignment = { vertical: "middle", horizontal: "right" };
+      } else if (rightCols.includes(col)) {
+        cell.alignment = { vertical: "middle", horizontal: "right" };
+      } else {
+        cell.alignment = { vertical: "middle", horizontal: "left" };
+      }
+    });
+    row.height = 16;
+  };
 
-    await new Promise((resolve) => {
-      img.onload = resolve;
-      img.onerror = resolve;
+  const shiftTxHeader = (rowNo) => {
+    const headers = ["Order #", "Closed At", "Type", "Staff", "Gross", "Discount", "Net"];
+    const row = ws.getRow(rowNo);
+    headers.forEach((h, idx) => {
+      const cell = row.getCell(idx + 1);
+      cell.value = h;
+      cell.font = { bold: true };
+      cell.fill = fillHeader;
+      cell.border = borderAll;
+      cell.alignment = { vertical: "middle", horizontal: idx >= 4 ? "right" : "left" };
+    });
+    row.height = 18;
+  };
+
+  const asDate = (v) => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  let r = 1;
+
+  // Title + meta
+  mergeTitle(r++, "QUSCINA • SALES REPORT");
+  ws.getRow(r).height = 6; r++;
+
+  keyValue(r++, "Date Range", rangeText || "N/A");
+  keyValue(r++, "Generated At", new Date().toLocaleString("en-PH"));
+  keyValue(r++, "Branch", "Kawit, Cavite");
+  ws.getRow(r).height = 6; r++;
+
+  // --------------------------
+  // SALES BY PAYMENT TYPE
+  // --------------------------
+  sectionTitle(r++, "SALES BY PAYMENT TYPE");
+  tableHeader(r++, ["Payment Type", "Payment Tx", "Refund Tx", "Net Amount"]);
+
+  if ((paymentsData || []).length) {
+    paymentsData.forEach((p) => {
+      tableRow(
+        r++,
+        [p.type, Number(p.tx || 0), Number(p.refundTx || 0), Number(p.net || 0)],
+        { moneyCols: [4], rightCols: [2, 3] }
+      );
+    });
+  } else {
+    tableRow(r++, ["No data", "", "", ""], {});
+  }
+  ws.getRow(r).height = 6; r++;
+
+  // --------------------------
+  // BEST SELLER ITEMS
+  // --------------------------
+  sectionTitle(r++, bestSellerTitle || "BEST SELLER ITEMS");
+  tableHeader(r++, ["Rank", "Item", "Category", "Orders", "Qty", "Sales"]);
+
+  if ((bestSellerItems || []).length) {
+    bestSellerItems.forEach((it, idx) => {
+      tableRow(
+        r++,
+        [idx + 1, it.name, it.category, it.orders, it.qty, it.sales],
+        { moneyCols: [6], rightCols: [1, 4, 5] }
+      );
+    });
+  } else {
+    tableRow(r++, ["", "No data", "", "", "", ""], {});
+  }
+
+  ws.getRow(r).height = 6; r++;
+
+  // --------------------------
+  // SHIFT SALES HISTORY (Nested)
+  // --------------------------
+  sectionTitle(r++, "SHIFT SALES HISTORY (SALES PER SHIFT)");
+  ws.getRow(r).height = 4; r++;
+
+  const shiftsArr = Array.isArray(shiftSalesHistory) ? shiftSalesHistory : [];
+
+  if (shiftsArr.length) {
+    shiftsArr.forEach((s) => {
+      const opened = asDate(s.openedAt);
+      const closed = asDate(s.closedAt);
+
+      const openedText = opened ? opened.toLocaleString("en-PH") : (s.openedAt || "");
+      const closedText = closed ? closed.toLocaleString("en-PH") : (s.closedAt || "");
+
+      const header = `Shift #${s.shiftNo} • ${s.staffName || "N/A"} • Opened: ${openedText}${closedText ? ` • Closed: ${closedText}` : ""}`;
+      shiftHeaderRow(r++, header);
+
+      // Totals row: money in last 3 cols (E,F,G)
+      writeRow7(
+        r++,
+        [
+          "Shift Totals",
+          "",
+          "",
+          "",
+          Number(s.grossSales || 0),
+          Number(s.discounts || 0),
+          Number(s.netSales || 0),
+        ],
+        { moneyCols: [5, 6, 7], rightCols: [] }
+      );
+
+      // Cash/variance row (more readable as text)
+      writeRow7(
+        r++,
+        [
+          "Cash",
+          `Opening: ${Number(s.openingCash || 0).toFixed(2)}`,
+          `Expected: ${Number(s.expectedCash || 0).toFixed(2)}`,
+          `Actual: ${Number(s.actualCash || 0).toFixed(2)}`,
+          "",
+          `Refunds: ${Number(s.refunds || 0).toFixed(2)}`,
+          `Variance: ${Number(s.variance || 0).toFixed(2)}`,
+        ],
+        {}
+      );
+
+      // Transactions table
+      shiftTxHeader(r++);
+
+      const txs = Array.isArray(s.transactions) ? s.transactions : [];
+      if (txs.length) {
+        txs.forEach((t) => {
+          const d = asDate(t.date);
+          writeRow7(
+            r++,
+            [
+              t.orderNo || "",
+              d || (t.date || ""),
+              t.type || "",
+              t.staff || "",
+              Number(t.gross || 0),
+              Number(t.discount || 0),
+              Number(t.net || 0),
+            ],
+            { moneyCols: [5, 6, 7], rightCols: [5, 6, 7] }
+          );
+
+          // format datetime cell (B)
+          const dtCell = ws.getCell(`B${r - 1}`);
+          if (d) dtCell.numFmt = dateTimeFmt;
+        });
+      } else {
+        writeRow7(r++, ["", "No transactions in this shift", "", "", "", "", ""], {});
+      }
+
+      // spacer row
+      ws.getRow(r).height = 8; r++;
+    });
+  } else {
+    writeRow7(r++, ["", "No shift history for this range", "", "", "", "", ""], {});
+  }
+
+  ws.getRow(r).height = 8; r++;
+
+  // Footer
+  ws.mergeCells(`A${r}:F${r}`);
+  ws.getCell(`A${r}`).value = preparedBy || "Prepared by: N/A";
+  ws.getCell(`A${r}`).font = { italic: true };
+  ws.getCell(`A${r}`).alignment = { horizontal: "left" };
+
+  // =========================
+  // Sheet 2: Chart Data
+  // =========================
+  const ws2 = wb.addWorksheet("Chart Data", {
+    views: [{ state: "frozen", ySplit: 1 }],
+  });
+
+  ws2.columns = [
+    { header: getSeriesPeriodHeader(range), key: "x", width: 18 },
+    { header: "Amount", key: "y", width: 16 },
+  ];
+
+  ws2.getRow(1).font = { bold: true };
+  ws2.getRow(1).fill = fillHeader;
+
+  (categorySeriesData || []).forEach((d) => {
+    ws2.addRow({
+      x: formatSeriesLabel(range, d.x),
+      y: Number(d.y || 0),
+    });
+  });
+
+  ws2.getColumn(2).numFmt = moneyFmt;
+
+  // Download
+  const buffer = await wb.xlsx.writeBuffer();
+  const filename = `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}-${Date.now()}.xlsx`;
+  saveAs(
+    new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    filename
+  );
+};
+
+
+  /* ------------------ Shared PDF builder (uses passed data) ------------------ */
+const buildSalesPdf = async ({
+  rangeText,
+  categoryTop5Data,
+  categorySeriesData,
+  paymentsData,
+  bestSellerItems,
+  bestSellerTitle,
+  shiftSalesHistory,
+  preparedBy,
+}) => {
+  const totalSales = (paymentsData || []).reduce((sum, p) => sum + (p.net || 0), 0);
+  const totalOrders = (paymentsData || []).reduce((sum, p) => sum + (p.tx || 0), 0);
+  const customerCount = totalOrders * 2 + 18; // placeholder
+
+  const dailyRows = (categorySeriesData || []).map((d, idx) => {
+    const avgOrdersPerDay =
+      categorySeriesData.length > 0
+        ? Math.round(totalOrders / categorySeriesData.length)
+        : 0;
+
+    const discountedOrders = idx === 0 ? 2 : idx === 2 ? 5 : 0; // still mock
+
+    return {
+      date: d.x,
+      totalOrders: avgOrdersPerDay,
+      discountedOrders,
+      totalRevenue: d.y,
+      totalProfit: d.y * 0.4,
+    };
+  });
+
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "pt",
+    format: "a4",
+  });
+
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const bottomMargin = 60;
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  let cursorY = 48;
+
+  function ensureSpace(requiredHeight = 80) {
+    if (cursorY + requiredHeight > pageHeight - bottomMargin) {
+      doc.addPage();
+      cursorY = 72;
+    }
+  }
+
+  const img = new Image();
+  img.src = logo;
+
+  await new Promise((resolve) => {
+    img.onload = resolve;
+    img.onerror = resolve;
+  });
+
+  const logoW = 80;
+  const logoH = 80;
+  const logoX = (pageWidth - logoW) / 2;
+  doc.addImage(img, "PNG", logoX, cursorY, logoW, logoH);
+  cursorY += logoH + 10;
+
+  doc.setFont("times", "bold");
+  doc.setFontSize(22);
+  doc.text("Quscina", pageWidth / 2, cursorY, { align: "center" });
+  cursorY += 26;
+
+  doc.setFont("times", "normal");
+  doc.setFontSize(20);
+  doc.text("Sales report", pageWidth / 2, cursorY, { align: "center" });
+  cursorY += 32;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+
+  doc.setFont(undefined, "bold");
+  doc.text("Report Date range:", 72, cursorY);
+  doc.setFont(undefined, "normal");
+  doc.text(rangeText, 180, cursorY);
+  cursorY += 16;
+
+  doc.setFont(undefined, "bold");
+  doc.text("Branch:", 72, cursorY);
+  doc.setFont(undefined, "normal");
+  doc.text("Kawit, Cavite", 120, cursorY);
+  cursorY += 22;
+
+  doc.setFont(undefined, "bold");
+  doc.text("Sales Summary", 72, cursorY);
+  cursorY += 14;
+
+  doc.setFont(undefined, "normal");
+  doc.text(`Total Sales: ${pdfMoney(totalSales)}`, 72, cursorY);
+  cursorY += 14;
+  doc.text(`Total Orders: ${totalOrders} Orders`, 72, cursorY);
+  cursorY += 14;
+
+  doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
+  cursorY += 26;
+
+  // DAILY / PERIOD SALES
+  if (categorySeriesData?.length) {
+    doc.setFont(undefined, "bold");
+    const seriesTitle = getSeriesSectionLabel(range, customFrom, customTo);
+    const periodHeader = getSeriesPeriodHeader(range);
+
+    doc.text(seriesTitle, 72, cursorY);
+    cursorY += 8;
+
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [[periodHeader, "Total Orders", "Discounted Orders", "Total Revenue", "Total Profit"]],
+      body: dailyRows.map((r) => [
+        pdfXLabel(range, r.date),
+        r.totalOrders,
+        r.discountedOrders,
+        formatNumberMoney(r.totalRevenue),
+        formatNumberMoney(r.totalProfit),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 40 },
     });
 
-    const logoW = 80;
-    const logoH = 80;
-    const logoX = (pageWidth - logoW) / 2;
-    doc.addImage(img, "PNG", logoX, cursorY, logoW, logoH);
-    cursorY += logoH + 10;
+    cursorY = doc.lastAutoTable.finalY + 24;
+  }
 
-    doc.setFont("times", "bold");
-    doc.setFontSize(22);
-    doc.text("Quscina", pageWidth / 2, cursorY, { align: "center" });
-    cursorY += 26;
+  // TOP 5 ITEMS
+  if (categoryTop5Data?.length) {
+    doc.setFont("helvetica", "bold");
+    doc.text("Top 5 Items", 72, cursorY);
+    cursorY += 8;
 
-    doc.setFont("times", "normal");
-    doc.setFontSize(20);
-    doc.text("Sales report", pageWidth / 2, cursorY, { align: "center" });
-    cursorY += 32;
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [["Rank", "Item", "Net Sales"]],
+      body: (categoryTop5Data || []).map((it, idx) => [idx + 1, it.name, pdfMoney(it.net)]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 180 },
+    });
 
-    doc.setFont("helvetica", "normal");
+    cursorY = doc.lastAutoTable.finalY + 24;
+  }
+
+  // Best Seller Items
+  if (bestSellerItems?.length) {
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(11);
 
-    doc.setFont(undefined, "bold");
-    doc.text("Report Date range:", 72, cursorY);
-    doc.setFont(undefined, "normal");
-    doc.text(rangeText, 180, cursorY);
-    cursorY += 16;
+    const titleRaw = bestSellerTitle || "BEST SELLER ITEMS";
+    const title = pdfSafeText(titleRaw);
 
-    doc.setFont(undefined, "bold");
-    doc.text("Branch:", 72, cursorY);
-    doc.setFont(undefined, "normal");
-    doc.text("Kawit, Cavite", 120, cursorY);
-    cursorY += 22;
+    const maxW = pageWidth - 72 - 40;
+    const lines = doc.splitTextToSize(title, maxW);
 
-    doc.setFont(undefined, "bold");
-    doc.text("Sales Summary", 72, cursorY);
-    cursorY += 14;
+    doc.text(lines, 72, cursorY);
+    cursorY += lines.length * 14 + 8;
 
-    doc.setFont(undefined, "normal");
-    doc.text(`Total Sales: ${pdfMoney(totalSales)}`, 72, cursorY);
-    cursorY += 14;
-    doc.text(`Total Orders: ${totalOrders} Orders`, 72, cursorY);
-    cursorY += 14;
+    autoTable(doc, {
+      startY: cursorY,
+      head: [["#", "Item", "Category", "Orders", "Qty", "Sales"]],
+      body: bestSellerItems.map((it, idx) => [
+        idx + 1,
+        pdfSafeText(it.name),
+        pdfSafeText(it.category),
+        Number(it.orders || 0),
+        Number(it.qty || 0),
+        pdfMoney(it.sales),
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 40 },
+    });
 
-    doc.text(`Customer Count: ${customerCount} Customers`, 72, cursorY);
-    cursorY += 26;
+    cursorY = doc.lastAutoTable.finalY + 22;
+  }
 
-    // DAILY / PERIOD SALES
-    if (categorySeriesData?.length) {
-      doc.setFont(undefined, "bold");
-      const seriesTitle = getSeriesSectionLabel(range, customFrom, customTo);
-      const periodHeader = getSeriesPeriodHeader(range);
+  // Payments
+  if (paymentsData?.length) {
+    doc.setFont("helvetica", "bold");
+    doc.text("Payment Type", 72, cursorY);
+    cursorY += 8;
 
-      doc.text(seriesTitle, 72, cursorY);
-      cursorY += 8;
+    autoTable(doc, {
+      startY: cursorY + 8,
+      head: [["Payment Method", "Orders", "Refund Orders", "Net Sales"]],
+      body: paymentsData.map((p) => [p.type, p.tx, p.refundTx, pdfMoney(p.net)]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 4 },
+      headStyles: pdfHeadStyles,
+      margin: { left: 72, right: 40 },
+    });
 
-      autoTable(doc, {
-        startY: cursorY + 8,
-        head: [[
-          periodHeader,
-          "Total Orders",
-          "Discounted Orders",
-          "Total Revenue (Discount Included)",
-          "Total Profit",
-        ]],
-        body: dailyRows.map((r) => [
-          pdfXLabel(range, r.date),
-          r.totalOrders,
-          r.discountedOrders,
-          formatNumberMoney(r.totalRevenue),
-          formatNumberMoney(r.totalProfit),
-        ]),
-        theme: "grid",
-        styles: { fontSize: 9, cellPadding: 4 },
-        headStyles: pdfHeadStyles,
-        margin: { left: 72, right: 40 },
-      });
+    cursorY = doc.lastAutoTable.finalY + 24;
+  }
 
-      cursorY = doc.lastAutoTable.finalY + 24;
-    }
+  // ==========================
+  // SHIFT SALES HISTORY (Nested)
+  // ==========================
+  const shiftsArr = Array.isArray(shiftSalesHistory) ? shiftSalesHistory : [];
 
-    // TOP 5 ITEMS
-    if (categoryTop5Data?.length) {
+  if (shiftsArr.length) {
+    doc.setFont("helvetica", "bold");
+    doc.text("Shift Sales History (Sales per Shift)", 72, cursorY);
+    cursorY += 10;
+
+    shiftsArr.forEach((s) => {
+      const opened = s.openedAt ? formatDateTimeNoTZ(s.openedAt) : "";
+      const closed = s.closedAt ? formatDateTimeNoTZ(s.closedAt) : "";
+
+      const header = pdfSafeText(
+        `Shift #${s.shiftNo} • ${s.staffName || "N/A"} • Opened: ${opened}${closed ? ` • Closed: ${closed}` : ""}`
+      );
+
+      ensureSpace(120);
+
       doc.setFont("helvetica", "bold");
-      doc.text("Top 5 Items", 72, cursorY);
-      cursorY += 8;
-
-      autoTable(doc, {
-        startY: cursorY + 8,
-        head: [["Rank", "Item", "Net Sales"]],
-        body: (categoryTop5Data || []).map((it, idx) => [
-          idx + 1,
-          it.name,
-          pdfMoney(it.net),
-        ]),
-        theme: "grid",
-        styles: { fontSize: 9, cellPadding: 4 },
-        headStyles: pdfHeadStyles,
-        margin: { left: 72, right: 180 },
-      });
-
-      cursorY = doc.lastAutoTable.finalY + 24;
-    }
-
-    // Best Seller Items (CUSTOM)
-    if (bestSellerItems?.length) {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-
-      // ✅ wrap + sanitize (avoid arrows/unicode issues)
-      const titleRaw = bestSellerTitle || "BEST SELLER ITEMS";
-      const title = pdfSafeText(titleRaw);
-
-      const maxW = pageWidth - 72 - 40; // left=72, right margin=40
-      const lines = doc.splitTextToSize(title, maxW);
-
-      doc.text(lines, 72, cursorY);
-      cursorY += lines.length * 14 + 8; // line height
+      doc.setFontSize(10);
+      doc.text(doc.splitTextToSize(header, pageWidth - 72 - 40), 72, cursorY);
+      cursorY += 12;
 
       autoTable(doc, {
         startY: cursorY,
-        head: [["#", "Item", "Category", "Orders", "Qty", "Sales"]],
-        body: bestSellerItems.map((it, idx) => [
-          idx + 1,
-          pdfSafeText(it.name),
-          pdfSafeText(it.category),
-          Number(it.orders || 0),
-          Number(it.qty || 0),
-          pdfMoney(it.sales),
-        ]),
-        theme: "grid",
-        styles: { fontSize: 9, cellPadding: 4 },
-        headStyles: pdfHeadStyles,
-        margin: { left: 72, right: 40 },
-      });
-
-      cursorY = doc.lastAutoTable.finalY + 22;
-    }
-
-    // Payments
-    if (paymentsData?.length) {
-      doc.setFont("helvetica", "bold");
-      doc.text("Payment Type", 72, cursorY);
-      cursorY += 8;
-
-      autoTable(doc, {
-        startY: cursorY + 8,
-        head: [["Payment Method", "Orders", "Refund Orders", "Net Sales"]],
-        body: paymentsData.map((p) => [p.type, p.tx, p.refundTx, pdfMoney(p.net)]),
-        theme: "grid",
-        styles: { fontSize: 9, cellPadding: 4 },
-        headStyles: pdfHeadStyles,
-        margin: { left: 72, right: 40 },
-      });
-
-      cursorY = doc.lastAutoTable.finalY + 24;
-    }
-
-    // Shift History
-    if (staffPerformanceData?.length) {
-      doc.setFont("helvetica", "bold");
-      doc.text("Shift History", 72, cursorY);
-      cursorY += 8;
-
-      autoTable(doc, {
-        startY: cursorY + 8,
         head: [[
-          "Shift No.",
-          "Staff Name",
-          "Date",
-          "Starting Cash",
-          "Cash In/Out",
-          "Count Cash",
+          "Gross",
+          "Discounts",
+          "Net",
+          "Refunds",
+          "Opening Cash",
+          "Expected Cash",
           "Actual Cash",
-          "Remarks",
+          "Variance",
         ]],
-        body: staffPerformanceData.map((s) => {
-          const dt = toLocalDateOnly(s.date);
-          const dateText = dt ? dayjs(dt).format("MMM DD, YYYY") : pdfSafeText(s.date);
-
-          return [
-            s.shiftNo,
-            s.staffName,
-            dateText,
-            pdfMoney(s.startingCash),
-            pdfSafeText(s.cashInOut),
-            pdfMoney(s.countCash),
-            pdfMoney(s.actualCash),
-            pdfSafeText(s.remarks),
-          ];
-        }),
+        body: [[
+          pdfMoney(s.grossSales || 0),
+          pdfMoney(s.discounts || 0),
+          pdfMoney(s.netSales || 0),
+          pdfMoney(s.refunds || 0),
+          pdfMoney(s.openingCash || 0),
+          pdfMoney(s.expectedCash || 0),
+          pdfMoney(s.actualCash || 0),
+          pdfMoney(s.variance || 0),
+        ]],
         theme: "grid",
-        styles: { fontSize: 9, cellPadding: 4 },
+        styles: { fontSize: 8, cellPadding: 3 },
         headStyles: pdfHeadStyles,
         margin: { left: 72, right: 40 },
       });
-    }
 
-    // 🔹 Prepared by footer
-    const footerY = doc.lastAutoTable
-      ? doc.lastAutoTable.finalY + 32
-      : cursorY + 32;
+      cursorY = doc.lastAutoTable.finalY + 10;
 
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
+      const txs = Array.isArray(s.transactions) ? s.transactions : [];
 
-    doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
-  };
+      autoTable(doc, {
+        startY: cursorY,
+        head: [[ "Order #", "Closed At", "Type", "Staff", "Gross", "Discount", "Net" ]],
+        body: txs.length
+          ? txs.map((t) => ([
+              pdfSafeText(t.orderNo || ""),
+              pdfSafeText(t.date ? formatDateTimeNoTZ(t.date) : ""),
+              pdfSafeText(t.type || ""),
+              pdfSafeText(t.staff || ""),
+              pdfMoney(t.gross || 0),
+              pdfMoney(t.discount || 0),
+              pdfMoney(t.net || 0),
+            ]))
+          : [[ "", "No transactions in this shift", "", "", "", "", "" ]],
+        theme: "grid",
+        styles: { fontSize: 8, cellPadding: 3 },
+        headStyles: pdfHeadStyles,
+        margin: { left: 72, right: 40 },
+      });
+
+      cursorY = doc.lastAutoTable.finalY + 18;
+    });
+  }
+
+  // Prepared by footer
+  const footerY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 32 : cursorY + 32;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
+
+  doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
+};
 
   async function openBestCategory(row) {
     setBestCatSelected(row);

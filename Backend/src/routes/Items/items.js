@@ -88,15 +88,34 @@ function parseJsonArrayMaybe(raw) {
   return [];
 }
 
+function unwrapRows(q) {
+  // mysql2/promise returns [rows, fields]
+  if (Array.isArray(q) && Array.isArray(q[0])) return q[0];
+  return q; // already rows
+}
+
 async function getInventoryRow(db, id) {
-  const rows = await db.query(
+  const q = await db.query(
     `SELECT id, name, inventory_type_id, currentStock
        FROM inventory_ingredients
       WHERE id = ?
       LIMIT 1`,
     [id]
   );
+  const rows = unwrapRows(q);
   return rows?.[0] || null;
+}
+
+function cleanDirectProducts(raw) {
+  const arr = parseJsonArrayMaybe(raw);
+
+  return arr
+    .map((r) => ({
+      inventoryIngredientId: Number(r?.inventoryIngredientId || r?.id || 0),
+      name: normalize(r?.name),
+      qty: cleanDecimalQty(r?.qty, 0),
+    }))
+    .filter((r) => Number.isFinite(r.inventoryIngredientId) && r.inventoryIngredientId > 0 && r.qty > 0);
 }
 
 /**
@@ -108,9 +127,9 @@ async function getInventoryRow(db, id) {
  * Returns normalized fields ready for INSERT/UPDATE:
  * { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients }
  */
-function deriveStockMode(ingredients, inventoryIngredientId) {
+function deriveStockMode(ingredients, directProducts) {
   const hasIng = Array.isArray(ingredients) && ingredients.length > 0;
-  const hasDirect = !!inventoryIngredientId;
+  const hasDirect = Array.isArray(directProducts) && directProducts.length > 0;
 
   if (hasIng && hasDirect) return "hybrid";
   if (hasIng) return "ingredients";
@@ -119,12 +138,11 @@ function deriveStockMode(ingredients, inventoryIngredientId) {
 }
 
 async function validateAndNormalizeStockFields(db, input) {
-  const rawIngredients = parseJsonArrayMaybe(input.ingredients);
-
   // Normalize recipe ingredients
+  const rawIngredients = parseJsonArrayMaybe(input.ingredients);
   const ingredients = rawIngredients
     .map((r) => ({
-      ingredientId: String(r?.ingredientId ?? "").trim(), // KEEP STRING
+      ingredientId: String(r?.ingredientId ?? "").trim(),
       name: normalize(r?.name),
       category: normalize(r?.category),
       unit: normalize(r?.unit),
@@ -132,40 +150,42 @@ async function validateAndNormalizeStockFields(db, input) {
     }))
     .filter((r) => r.ingredientId && r.qty > 0);
 
-  // Normalize direct inventory link
-  let inventoryIngredientId = null;
-  if (input.inventoryIngredientId != null && input.inventoryIngredientId !== "") {
-    const n = Number(input.inventoryIngredientId);
-    if (Number.isFinite(n) && n > 0) inventoryIngredientId = n;
-  }
+  // ✅ NEW: directProducts array (preferred)
+  let directProducts = cleanDirectProducts(input.directProducts);
 
-  let inventoryDeductQty = cleanDecimalQty(input.inventoryDeductQty, 1.0);
-
-  // If there is NO direct link, deduct qty is irrelevant — normalize to 1
-  if (!inventoryIngredientId) inventoryDeductQty = 1.0;
-
-  // If there IS direct link, validate qty
-  if (inventoryIngredientId) {
-    if (inventoryDeductQty <= 0) throw new Error("inventoryDeductQty must be greater than 0.");
-    if (inventoryDeductQty > 999999999.999) throw new Error("inventoryDeductQty is too large.");
-
-    // Must be Product type
-    const inv = await getInventoryRow(db, inventoryIngredientId);
-    if (!inv) throw new Error("Selected inventory item does not exist.");
-    if (Number(inv.inventory_type_id || 1) !== 2) {
-      throw new Error("Direct inventory link can only use inventory items marked as Product.");
+  // ✅ BACKWARD COMPAT (optional):
+  // if no directProducts provided but old fields exist, convert to array
+  if ((!directProducts || directProducts.length === 0) && input.inventoryIngredientId) {
+    const idNum = Number(input.inventoryIngredientId);
+    const dq = cleanDecimalQty(input.inventoryDeductQty, 1.0);
+    if (Number.isFinite(idNum) && idNum > 0 && dq > 0) {
+      directProducts = [{ inventoryIngredientId: idNum, name: "", qty: dq }];
     }
   }
 
-  // ✅ Require at least one source (keep this rule since your frontend also enforces it)
-  if (!ingredients.length && !inventoryIngredientId) {
+  // Validate each direct product is Product type (inventory_type_id = 2)
+  for (const dp of directProducts) {
+    if (dp.qty <= 0) throw new Error("Direct product qty must be greater than 0.");
+    if (dp.qty > 999999999.999) throw new Error("Direct product qty is too large.");
+
+    const inv = await getInventoryRow(db, dp.inventoryIngredientId);
+    if (!inv) throw new Error("Selected inventory product does not exist.");
+    if (Number(inv.inventory_type_id || 1) !== 2) {
+      throw new Error("Direct inventory link can only use inventory items marked as Product.");
+    }
+
+    // fill name if missing
+    if (!dp.name) dp.name = inv.name || "";
+  }
+
+  // Keep your rule: must have at least one source
+  if (!ingredients.length && !directProducts.length) {
     throw new Error("Item must have at least one stock source (ingredients or direct inventory).");
   }
 
-  // ✅ stockMode becomes derived, not user-chosen
-  const stockMode = deriveStockMode(ingredients, inventoryIngredientId);
+  const stockMode = deriveStockMode(ingredients, directProducts);
 
-  return { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients };
+  return { stockMode, ingredients, directProducts };
 }
 
 /* ============================================================
@@ -308,7 +328,7 @@ module.exports = ({ db } = {}) => {
         .toLowerCase();
 
       let sql = `SELECT id, name, description, categoryId, categoryName, categoryKey, imageDataUrl,
-                        createdAt, updatedAt, price, ingredients,
+                        createdAt, updatedAt, price, ingredients, directProducts,
                         stockMode, inventoryIngredientId, inventoryDeductQty,
                         active
                    FROM items`;
@@ -325,7 +345,8 @@ module.exports = ({ db } = {}) => {
 
       if (where.length) sql += " WHERE " + where.join(" AND ");
       sql += " ORDER BY updatedAt DESC, nameLower ASC";
-      const rows = await db.query(sql, params);
+      const q = await db.query(sql, params);
+      const rows = unwrapRows(q);
 
       const items = rows.map((x) => {
         const parsedIngredients =
@@ -352,6 +373,10 @@ module.exports = ({ db } = {}) => {
           price: Number(x.price || 0),
           ingredients: normalizedIngredients,
           stockMode: x.stockMode || "ingredients",
+          directProducts:
+            typeof x.directProducts === "string"
+              ? JSON.parse(x.directProducts || "[]")
+              : x.directProducts || [],
           inventoryIngredientId:
             x.inventoryIngredientId != null ? String(x.inventoryIngredientId) : "",
           inventoryDeductQty: Number(x.inventoryDeductQty || 1),
@@ -373,9 +398,9 @@ module.exports = ({ db } = {}) => {
         return res.status(400).json({ ok: false, error: "invalid id" });
       }
 
-      const rows = await db.query(
+      const q = await db.query(
         `SELECT id, name, description, categoryId, categoryName, categoryKey, imageDataUrl,
-                createdAt, updatedAt, price, ingredients,
+                createdAt, updatedAt, price, ingredients, directProducts,
                 stockMode, inventoryIngredientId, inventoryDeductQty,
                 active
           FROM items
@@ -384,6 +409,7 @@ module.exports = ({ db } = {}) => {
         [id]
       );
 
+      const rows = unwrapRows(q);
       const x = rows?.[0];
       if (!x) return res.status(404).json({ ok: false, error: "not found" });
 
@@ -401,6 +427,10 @@ module.exports = ({ db } = {}) => {
           typeof x.ingredients === "string"
             ? JSON.parse(x.ingredients || "[]")
             : x.ingredients || [],
+        directProducts:
+          typeof x.directProducts === "string"
+            ? JSON.parse(x.directProducts || "[]")
+            : x.directProducts || [],
         stockMode: x.stockMode || "ingredients",
         inventoryIngredientId: x.inventoryIngredientId != null ? String(x.inventoryIngredientId) : "",
         inventoryDeductQty: Number(x.inventoryDeductQty || 1),
@@ -447,22 +477,32 @@ module.exports = ({ db } = {}) => {
 
       // ✅ Stock normalization (Option 2)
       const norm = await validateAndNormalizeStockFields(db, {
+        ingredients: b.ingredients,
+        directProducts: b.directProducts,
         inventoryIngredientId: b.inventoryIngredientId,
         inventoryDeductQty: b.inventoryDeductQty,
-        ingredients: b.ingredients,
       });
 
       const now = new Date();
 
+      // derive legacy single link for backward compat (first direct product)
+      const legacyInvId = norm.directProducts?.[0]?.inventoryIngredientId
+        ? Number(norm.directProducts[0].inventoryIngredientId)
+        : null;
+
+      const legacyDeductQty = norm.directProducts?.[0]?.qty
+        ? Number(norm.directProducts[0].qty)
+        : null;
+
       const result = await db.query(
         `INSERT INTO items
           (name, description, categoryId, categoryName, categoryKey,
-           imageDataUrl, price, ingredients,
-           stockMode, inventoryIngredientId, inventoryDeductQty,
-           costOverall, profit, active, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, '', ?, ?,
-                 ?, ?, ?,
-                 0, 0, 1, ?, ?)`,
+          imageDataUrl, price, ingredients, directProducts,
+          stockMode, inventoryIngredientId, inventoryDeductQty,
+          costOverall, profit, active, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, '', ?, ?, ?,
+                ?, ?, ?,
+                0, 0, 1, ?, ?)`,
         [
           name,
           description,
@@ -471,15 +511,17 @@ module.exports = ({ db } = {}) => {
           categoryKey,
           price,
           JSON.stringify(norm.ingredients || []),
+          JSON.stringify(norm.directProducts || []),
           norm.stockMode,
-          norm.inventoryIngredientId,
-          norm.inventoryDeductQty,
+          legacyInvId,
+          legacyDeductQty,
           now,
           now,
         ]
       );
 
-      const id = result.insertId;
+      const ok = Array.isArray(result) ? result[0] : result;
+      const id = ok?.insertId;
 
       // optional image
       let imageUrl = "";
@@ -499,11 +541,12 @@ module.exports = ({ db } = {}) => {
         imageUrl = dataUrl;
       }
 
-      const createdRows = await db.query(
+      const createdQ = await db.query(
         `SELECT * FROM items WHERE id = ? LIMIT 1`,
         [id]
       );
-      const created = createdRows[0] || null;
+      const createdRows = unwrapRows(createdQ);
+      const created = createdRows?.[0] || null;
 
       await logItemsAuditSafe(db, req, {
         action: "Item Created",
@@ -561,11 +604,10 @@ module.exports = ({ db } = {}) => {
       if (!Number.isFinite(id))
         return res.status(400).json({ ok: false, error: "invalid id" });
 
-      const beforeRows = await db.query(
-        `SELECT * FROM items WHERE id = ? LIMIT 1`,
-        [id]
-      );
-      const before = beforeRows[0] || null;
+      const beforeQ = await db.query(`SELECT * FROM items WHERE id = ? LIMIT 1`, [id]);
+      const beforeRows = unwrapRows(beforeQ);
+      const before = beforeRows?.[0] || null;
+
       if (!before) {
         return res.status(404).json({ ok: false, error: "not found" });
       }
@@ -576,7 +618,7 @@ module.exports = ({ db } = {}) => {
 
       // track if stock-related fields were touched so we can normalize
       const touchingStock =
-        Object.prototype.hasOwnProperty.call(b, "stockMode") ||
+        Object.prototype.hasOwnProperty.call(b, "directProducts") ||
         Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId") ||
         Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty") ||
         Object.prototype.hasOwnProperty.call(b, "ingredients");
@@ -631,37 +673,49 @@ module.exports = ({ db } = {}) => {
       if (touchingStock) {
         // Use incoming values if present, otherwise fallback to existing row
           const incoming = {
-            inventoryIngredientId:
-              Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId")
-                ? b.inventoryIngredientId
-                : before.inventoryIngredientId,
-
-            inventoryDeductQty:
-              Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty")
-                ? b.inventoryDeductQty
-                : before.inventoryDeductQty,
-
+            directProducts:
+              Object.prototype.hasOwnProperty.call(b, "directProducts")
+                ? b.directProducts
+                : before.directProducts,
             ingredients:
               Object.prototype.hasOwnProperty.call(b, "ingredients")
                 ? b.ingredients
                 : before.ingredients,
+            inventoryIngredientId:
+              Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId")
+                ? b.inventoryIngredientId
+                : before.inventoryIngredientId,
+            inventoryDeductQty:
+              Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty")
+                ? b.inventoryDeductQty
+                : before.inventoryDeductQty,
           };
 
-          const norm = await validateAndNormalizeStockFields(db, incoming);
+        const norm = await validateAndNormalizeStockFields(db, incoming);
 
-          sets.push(
-            "stockMode = ?",
-            "inventoryIngredientId = ?",
-            "inventoryDeductQty = ?",
-            "ingredients = ?"
-          );
+        const legacyInvId = norm.directProducts?.[0]?.inventoryIngredientId
+          ? Number(norm.directProducts[0].inventoryIngredientId)
+          : null;
 
-          params.push(
-            norm.stockMode,
-            norm.inventoryIngredientId,
-            norm.inventoryDeductQty,
-            JSON.stringify(norm.ingredients || [])
-          );
+        const legacyDeductQty = norm.directProducts?.[0]?.qty
+          ? Number(norm.directProducts[0].qty)
+          : null;
+
+        sets.push(
+          "stockMode = ?",
+          "directProducts = ?",
+          "ingredients = ?",
+          "inventoryIngredientId = ?",
+          "inventoryDeductQty = ?"
+        );
+
+        params.push(
+          norm.stockMode,
+          JSON.stringify(norm.directProducts || []),
+          JSON.stringify(norm.ingredients || []),
+          legacyInvId,
+          legacyDeductQty
+        );
       } else {
         // If ingredients came alone (shouldn't), keep old behavior: ignore
         // (touchingStock covers it)
@@ -689,18 +743,17 @@ module.exports = ({ db } = {}) => {
 
       // category safety
       if (!touchingCatId && !touchingCatName) {
-        const chk = await db.query(`SELECT categoryId, categoryName FROM items WHERE id = ?`, [id]);
-        const row = chk && chk[0];
+        const chkQ = await db.query(`SELECT categoryId, categoryName FROM items WHERE id = ?`, [id]);
+        const chkRows = unwrapRows(chkQ);
+        const row = chkRows?.[0];
         if (!row || !row.categoryId || !row.categoryName) {
           return res.status(409).json({ ok: false, error: "Item must have a category." });
         }
       }
 
-      const afterRows = await db.query(
-        `SELECT * FROM items WHERE id = ? LIMIT 1`,
-        [id]
-      );
-      const after = afterRows[0] || null;
+      const afterQ = await db.query(`SELECT * FROM items WHERE id = ? LIMIT 1`, [id]);
+      const afterRows = unwrapRows(afterQ);
+      const after = afterRows?.[0] || null;
 
       const fieldsToCompare = [
         "name",
@@ -783,10 +836,11 @@ module.exports = ({ db } = {}) => {
 
       const placeholders = ids.map(() => "?").join(",");
 
-      const existingRows = await db.query(
+      const existingQ = await db.query(
         `SELECT * FROM items WHERE id IN (${placeholders})`,
         ids
       );
+      const existingRows = unwrapRows(existingQ);
 
       await db.query(`DELETE FROM items WHERE id IN (${placeholders})`, ids);
 
@@ -816,8 +870,9 @@ module.exports = ({ db } = {}) => {
       if (!Number.isFinite(id))
         return res.status(400).json({ ok: false, error: "id is required" });
 
-      const rows = await db.query(`SELECT * FROM items WHERE id = ? LIMIT 1`, [id]);
-      const itemRow = rows[0] || null;
+      const q = await db.query(`SELECT * FROM items WHERE id = ? LIMIT 1`, [id]);
+      const rows = unwrapRows(q);
+      const itemRow = rows?.[0] || null;
       if (!itemRow) return res.status(404).json({ ok: false, error: "not found" });
 
       await db.query(`DELETE FROM items WHERE id = ?`, [id]);

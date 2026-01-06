@@ -625,5 +625,114 @@ router.get("/best-seller-items", async (req, res) => {
     }
   });
 
+/* =========================================================================
+ * 7) SHIFT SALES HISTORY (Shift → Transactions)
+ * ========================================================================= */
+router.get("/shift-sales-history", async (req, res) => {
+  try {
+    const { range = "days", from, to } = req.query;
+
+    let where;
+    if (range === "custom" && from && to) {
+      where = `DATE(s.opened_at) BETWEEN DATE('${from}') AND DATE('${to}')`;
+    } else {
+      const raw = buildRangeSQL(range, from, to);
+      where = raw.replace(/o\.closed_at/g, "s.opened_at");
+    }
+
+    // 1️⃣ SHIFT-LEVEL TOTALS
+    const shifts = await db.query(`
+      SELECT
+        s.shift_id,
+        s.opened_at,
+        s.closed_at,
+        s.opening_float,
+        s.expected_cash,
+        s.declared_cash,
+        s.variance_cash,
+        COALESCE(
+          NULLIF(CONCAT_WS(' ', e.first_name, e.last_name), ''),
+          CONCAT('[Deleted User] ', COALESCE(s.employee_id, 'Unknown'))
+        ) AS staff_name,
+
+        -- SALES
+        SUM(CASE WHEN o.status = 'paid' THEN o.gross_amount ELSE 0 END) AS gross_sales,
+        SUM(CASE WHEN o.status = 'paid' THEN o.discount_amount ELSE 0 END) AS discounts,
+        SUM(CASE WHEN o.status = 'paid' THEN o.net_amount ELSE 0 END) AS net_sales,
+
+        -- REFUNDS
+        SUM(CASE WHEN o.status = 'refunded' THEN o.net_amount ELSE 0 END) AS refunds
+
+      FROM pos_shifts s
+      LEFT JOIN pos_orders o ON o.shift_id = s.shift_id
+      LEFT JOIN employees e ON e.employee_id = s.employee_id
+      WHERE ${where}
+      GROUP BY s.shift_id
+      ORDER BY s.opened_at DESC
+    `);
+
+    // 2️⃣ TRANSACTIONS PER SHIFT
+    const tx = await db.query(`
+      SELECT
+        o.shift_id,
+        o.order_id,
+        o.closed_at,
+        o.status,
+        o.gross_amount,
+        o.discount_amount,
+        o.net_amount,
+        COALESCE(
+          NULLIF(CONCAT_WS(' ', e.first_name, e.last_name), ''),
+          CONCAT('[Deleted User] ', COALESCE(o.created_by, 'Unknown'))
+        ) AS staff_name
+      FROM pos_orders o
+      JOIN pos_shifts s ON s.shift_id = o.shift_id
+      LEFT JOIN employees e ON e.employee_id = o.created_by
+      WHERE o.shift_id IS NOT NULL
+        AND ${where}
+      ORDER BY o.closed_at ASC
+    `);
+
+    // 3️⃣ GROUP TRANSACTIONS BY SHIFT
+    const txByShift = {};
+    for (const t of tx) {
+      if (!txByShift[t.shift_id]) txByShift[t.shift_id] = [];
+      txByShift[t.shift_id].push({
+        orderNo: `#${t.order_id}`,
+        date: t.closed_at,
+        type: t.status === "refunded" ? "Refund" : "Sale",
+        gross: Number(t.gross_amount || 0),
+        discount: Number(t.discount_amount || 0),
+        net: Number(t.net_amount || 0),
+        staff: t.staff_name,
+      });
+    }
+
+    // 4️⃣ FINAL SHAPE
+    const data = shifts.map((s) => ({
+      shiftNo: s.shift_id,
+      staffName: s.staff_name,
+      openedAt: s.opened_at,
+      openingCash: Number(s.opening_float || 0),
+
+      grossSales: Number(s.gross_sales || 0),
+      discounts: Number(s.discounts || 0),
+      netSales: Number(s.net_sales || 0),
+      refunds: Number(s.refunds || 0),
+
+      expectedCash: Number(s.expected_cash || 0),
+      actualCash: Number(s.declared_cash || 0),
+      variance: Number(s.variance_cash || 0),
+
+      transactions: txByShift[s.shift_id] || [],
+    }));
+
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error("SHIFT SALES HISTORY ERROR", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
   return router;
 };

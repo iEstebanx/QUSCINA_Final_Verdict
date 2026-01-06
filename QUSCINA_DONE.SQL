@@ -311,6 +311,7 @@ CREATE TABLE IF NOT EXISTS `items` (
 
   -- Recipe-based stock
   `ingredients` JSON NULL,
+  `directProducts` JSON NULL,
   `costOverall` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `profit` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
 

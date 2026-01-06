@@ -1,5 +1,6 @@
 // QUSCINA_BACKOFFICE/Backend/src/routes/Inventory/inv-activity.js
 const express = require("express");
+const dayjs = require("dayjs");
 const { requireAuth } = require("../../auth/requireAuth");
 
 // Prefer DI, but fall back to shared pool
@@ -26,6 +27,35 @@ const kindToTypeId = (v) => {
   return null;
 };
 
+// ====== AVAILABLE RANGE HELPERS (ReportsPage-style) ======
+
+const ymd = (iso) => dayjs(iso).format("YYYY-MM-DD");
+
+// Monday start (ISO-like) without needing isoWeek plugin on backend
+const startOfWeekMon = (d) => {
+  const dow = d.day(); // 0..6 (Sun..Sat)
+  return d.subtract((dow + 6) % 7, "day").startOf("day");
+};
+
+const getWeekRangeMonSun = (base) => {
+  const from = startOfWeekMon(base);
+  const to = from.add(6, "day").endOf("day");
+  return { from, to };
+};
+
+// month label e.g. "2026-01"
+const ymKey = (d) => d.format("YYYY-MM");
+
+// week key e.g. "2026-01 W02" (unique enough for dropdown lists)
+const weekKey = (weekFrom) => {
+  const y = weekFrom.year();
+  const m = String(weekFrom.month() + 1).padStart(2, "0");
+  // compute week-of-month (1..6)
+  const firstMon = startOfWeekMon(weekFrom.startOf("month"));
+  const diffWeeks = Math.floor(weekFrom.startOf("day").diff(firstMon, "day") / 7) + 1;
+  const w = String(diffWeeks).padStart(2, "0");
+  return `${y}-${m} W${w}`;
+};
 
 function getAuditUserFromReq(req) {
   const authUser = req?.user || null;
@@ -164,7 +194,123 @@ module.exports = ({ db } = {}) => {
 
   // 🔐 Require auth for all inventory activity routes
   router.use(requireAuth);
-  
+
+// GET /api/inventory/inv-activity/available-days
+router.get("/available-days", async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 5000)
+      : 5000;
+
+    const q = await db.query(`
+      SELECT COALESCE(ts, createdAt) AS t
+      FROM inventory_activity
+      ORDER BY COALESCE(ts, createdAt) DESC, id DESC
+      LIMIT ${limit}
+    `);
+
+    const rows = Array.isArray(q) && Array.isArray(q[0]) ? q[0] : q;
+
+    const s = new Set();
+    for (const r of rows || []) {
+      const iso = toIsoManila(r.t);
+      s.add(dayjs(iso).format("YYYY-MM-DD"));
+    }
+
+    const days = [...s].sort(); // ascending
+    return res.json({ ok: true, days, min: days[0] || "", max: days[days.length - 1] || "" });
+  } catch (e) {
+    console.error("[inv-activity] available-days failed:", e);
+    res.status(500).json({ ok: false, error: e.message || "available-days failed" });
+  }
+});
+
+// GET /api/inventory/inv-activity/available-months
+router.get("/available-months", async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 5000)
+      : 5000;
+
+    const q = await db.query(`
+      SELECT COALESCE(ts, createdAt) AS t
+      FROM inventory_activity
+      ORDER BY COALESCE(ts, createdAt) DESC, id DESC
+      LIMIT ${limit}
+    `);
+
+    const rows = Array.isArray(q) && Array.isArray(q[0]) ? q[0] : q;
+
+    const s = new Set();
+    for (const r of rows || []) {
+      const iso = toIsoManila(r.t);
+      s.add(dayjs(iso).format("YYYY-MM"));
+    }
+
+    const months = [...s].sort(); // ascending
+    return res.json({ ok: true, months });
+  } catch (e) {
+    console.error("[inv-activity] available-months failed:", e);
+    res.status(500).json({ ok: false, error: e.message || "available-months failed" });
+  }
+});
+
+// GET /api/inventory/inv-activity/available-weeks?year=2026&month=1
+router.get("/available-weeks", async (req, res) => {
+  try {
+    const year = Number(req.query.year);
+    const month = Number(req.query.month); // 1..12
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+      return res.status(400).json({ ok: false, error: "year and month required (month 1..12)" });
+    }
+
+    // Load enough rows to cover that month
+    const q = await db.query(`
+      SELECT COALESCE(ts, createdAt) AS t
+      FROM inventory_activity
+      ORDER BY COALESCE(ts, createdAt) DESC, id DESC
+      LIMIT 5000
+    `);
+
+    const rows = Array.isArray(q) && Array.isArray(q[0]) ? q[0] : q;
+
+    // Collect days in target month
+    const days = [];
+    for (const r of rows || []) {
+      const iso = toIsoManila(r.t);
+      const d = dayjs(iso);
+      if (d.year() === year && d.month() === (month - 1)) {
+        days.push(d);
+      }
+    }
+
+    if (!days.length) return res.json({ ok: true, weeks: [] });
+
+    // Build unique week ranges (Mon-Sun) that have at least 1 activity day
+    const weekMap = new Map(); // key -> { from, to, label }
+    for (const d of days) {
+      const { from, to } = getWeekRangeMonSun(d);
+      const key = weekKey(from);
+      if (!weekMap.has(key)) {
+        weekMap.set(key, {
+          key,
+          from: from.format("YYYY-MM-DD"),
+          to: to.format("YYYY-MM-DD"),
+          label: `${from.format("MMM DD")} – ${to.format("MMM DD, YYYY")}`,
+        });
+      }
+    }
+
+    const weeks = [...weekMap.values()].sort((a, b) => a.from.localeCompare(b.from));
+    return res.json({ ok: true, weeks });
+  } catch (e) {
+    console.error("[inv-activity] available-weeks failed:", e);
+    res.status(500).json({ ok: false, error: e.message || "available-weeks failed" });
+  }
+});
+
 // GET /api/inventory/inv-activity?limit=1000&kind=ingredient|product|all&inventoryTypeId=1|2&category=...
 router.get("/", async (req, res) => {
   try {

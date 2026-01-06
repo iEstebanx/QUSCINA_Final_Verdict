@@ -447,14 +447,25 @@ const formatInventoryProblems = (problems = []) => {
       setItems((prev) =>
         prev.map((it) =>
           it.id === item.id
-            ? { ...it, manualAvailable: wantAvailable ? 1 : 0 }
+            ? {
+                ...it,
+                manualAvailable: wantAvailable ? 1 : 0,
+                available: wantAvailable, // ✅ so the Available/Unavailable filter reacts immediately
+                canAddToCart: wantAvailable, // optional
+              }
             : it
         )
       );
 
       // Also update dialog copy if it’s open on this item
       setSelectedItem((prev) =>
-        prev && prev.id === item.id ? { ...prev, available: wantAvailable } : prev
+        prev && prev.id === item.id
+          ? {
+              ...prev,
+              manualAvailable: wantAvailable ? 1 : 0, // ✅ update what button uses
+              available: wantAvailable,               // optional
+            }
+          : prev
       );
 
       // Always close dialog after a successful toggle

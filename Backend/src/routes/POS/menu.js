@@ -30,6 +30,35 @@ function num(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function normalizeDirectLinks(directProductsJson, legacyInvId, legacyQty) {
+  let dps = safeJsonParse(directProductsJson, []);
+  if (!Array.isArray(dps)) dps = [];
+
+  const fromJson = dps
+    .map((r) => ({
+      inventoryIngredientId: String(
+        r?.inventoryIngredientId ??
+        r?.inventory_ingredient_id ??
+        r?.invId ??
+        ""
+      ).trim(),
+      qty: num(r?.qty ?? r?.quantity ?? r?.amount, 0),
+    }))
+    .filter((r) => r.inventoryIngredientId && r.qty > 0);
+
+  if (fromJson.length) return fromJson;
+
+  // ✅ fallback: old single direct link
+  const invId = num(legacyInvId, 0);
+  const q = num(legacyQty, 1);
+
+  if (invId > 0) {
+    return [{ inventoryIngredientId: String(invId), qty: q > 0 ? q : 1 }];
+  }
+
+  return [];
+}
+
 module.exports = function posMenuRouterFactory({ db } = {}) {
   const router = express.Router();
 
@@ -65,6 +94,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           price,
           imageDataUrl     AS imageUrl,
           ingredients      AS ingredientsJson,
+          directProducts   AS directProductsJson,
           stockMode,
           inventoryIngredientId,
           inventoryDeductQty,
@@ -126,6 +156,12 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
         let hasStock = true;
         let stockReason = "ok";
 
+        const directLinks = normalizeDirectLinks(
+          row.directProductsJson,
+          row.inventoryIngredientId,
+          row.inventoryDeductQty
+        );
+
         if (stockMode === "ingredients") {
           const hasIngredients = ingredients.length > 0;
 
@@ -148,33 +184,31 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
             if (!hasStock) stockReason = "insufficient-ingredients-stock";
           }
         } else if (stockMode === "direct") {
-          const invIdNum = num(row.inventoryIngredientId, 0);
-          const deductQty = num(row.inventoryDeductQty, 1);
-
-          if (!invIdNum) {
+          if (directLinks.length === 0) {
             hasStock = false;
             stockReason = "no-direct-link";
           } else {
-            const inv = invById.get(invIdNum);
-            if (!inv) {
-              hasStock = false;
-              stockReason = "direct-link-missing";
-            } else if (Number(inv.inventoryTypeId || 1) !== 2) {
+            const okDirect = directLinks.every((d) => {
+              const invId = Number(d.inventoryIngredientId);
+              if (!Number.isFinite(invId) || invId <= 0) return false;
+
+              const inv = invById.get(invId);
+              if (!inv) return false;
+
               // direct must link to Product (inventory_type_id=2)
-              hasStock = false;
-              stockReason = "direct-link-not-product";
-            } else {
+              if (Number(inv.inventoryTypeId || 1) !== 2) return false;
+
+              const need = num(d.qty, 1);
               const current = num(inv.currentStock, 0);
-              hasStock = current >= (deductQty > 0 ? deductQty : 1);
-              if (!hasStock) stockReason = "insufficient-direct-stock";
-            }
+              return current >= (need > 0 ? need : 1);
+            });
+
+            hasStock = okDirect;
+            if (!hasStock) stockReason = "insufficient-direct-stock";
           }
-        } else if (stockMode === "hybrid") {
+         } else if (stockMode === "hybrid") {
           // HYBRID = must satisfy BOTH recipe ingredients AND direct product stock
           const hasIngredients = ingredients.length > 0;
-
-          const invIdNum = num(row.inventoryIngredientId, 0);
-          const deductQty = num(row.inventoryDeductQty, 1);
 
           // 1) recipe check
           let okRecipe = false;
@@ -193,25 +227,30 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
             });
           }
 
-          // 2) direct check (must be Product)
+          // 2) direct check (JSON array; each must be Product + enough stock)
           let okDirect = false;
-          if (!invIdNum) {
+          if (directLinks.length === 0) {
             okDirect = false;
           } else {
-            const inv = invById.get(invIdNum);
-            if (!inv) okDirect = false;
-            else if (Number(inv.inventoryTypeId || 1) !== 2) okDirect = false;
-            else {
+            okDirect = directLinks.every((d) => {
+              const invId = Number(d.inventoryIngredientId);
+              if (!Number.isFinite(invId) || invId <= 0) return false;
+
+              const inv = invById.get(invId);
+              if (!inv) return false;
+              if (Number(inv.inventoryTypeId || 1) !== 2) return false;
+
+              const need = num(d.qty, 1);
               const current = num(inv.currentStock, 0);
-              okDirect = current >= (deductQty > 0 ? deductQty : 1);
-            }
+              return current >= (need > 0 ? need : 1);
+            });
           }
 
           hasStock = okRecipe && okDirect;
 
           // debug reason
           if (!hasIngredients) stockReason = "hybrid-missing-recipe";
-          else if (!invIdNum) stockReason = "hybrid-missing-direct";
+          else if (directLinks.length === 0) stockReason = "hybrid-missing-direct";
           else if (!okRecipe) stockReason = "insufficient-ingredients-stock";
           else if (!okDirect) stockReason = "insufficient-direct-stock";
           else stockReason = "ok";
@@ -244,6 +283,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           inventoryDeductQty: num(row.inventoryDeductQty, 1),
           available: available ? 1 : 0,
           ingredients,
+          directProducts: directLinks,
         };
 
         if (wantDebug) {
@@ -310,6 +350,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           active AS isActive,
           manualAvailable,
           ingredients AS ingredientsJson,
+          directProducts AS directProductsJson,
           stockMode,
           inventoryIngredientId,
           inventoryDeductQty
@@ -344,6 +385,12 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
         }
 
         const stockMode = String(item.stockMode || "ingredients").toLowerCase();
+
+        const directLinks = normalizeDirectLinks(
+          item.directProductsJson,
+          item.inventoryIngredientId,
+          item.inventoryDeductQty
+        );
 
         // /pos/menu/toggle — stockMode gates (UPDATED with HYBRID support)
         if (stockMode === "ingredients") {
@@ -404,47 +451,47 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           }
 
         } else if (stockMode === "direct") {
-          const invIdNum = num(item.inventoryIngredientId, 0);
-          const deductQty = num(item.inventoryDeductQty, 1);
-
-          if (!invIdNum) {
+          if (directLinks.length === 0) {
             return res.status(400).json({
               ok: false,
               error: "This item cannot be marked available because it has no Direct inventory link.",
             });
           }
 
-          const invRows = await db.query(
-            `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
-            [invIdNum]
-          );
-          const inv = asArray(invRows)[0];
+          // Each direct link must be Product + in stock
+          for (const d of directLinks) {
+            const invIdNum = num(d.inventoryIngredientId, 0);
+            const need = num(d.qty, 1) > 0 ? num(d.qty, 1) : 1;
 
-          if (!inv) {
-            return res.status(400).json({
-              ok: false,
-              error: "This item cannot be marked available because its linked inventory record was not found.",
-            });
+            const invRows = await db.query(
+              `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+              [invIdNum]
+            );
+            const inv = asArray(invRows)[0];
+
+            if (!inv) {
+              return res.status(400).json({
+                ok: false,
+                error: "This item cannot be marked available because its linked inventory record was not found.",
+              });
+            }
+
+            if (Number(inv.inventory_type_id || 1) !== 2) {
+              return res.status(400).json({
+                ok: false,
+                error: "Direct stock mode can only link to inventory items marked as Product (inventory_type_id=2).",
+              });
+            }
+
+            const current = num(inv.currentStock, 0);
+            if (current < need) {
+              return res.status(400).json({
+                ok: false,
+                error: "This item cannot be marked available because the linked inventory is out of stock.",
+              });
+            }
           }
-
-          if (Number(inv.inventory_type_id || 1) !== 2) {
-            return res.status(400).json({
-              ok: false,
-              error: "Direct stock mode can only link to inventory items marked as Product (inventory_type_id=2).",
-            });
-          }
-
-          const current = num(inv.currentStock, 0);
-          const need = deductQty > 0 ? deductQty : 1;
-
-          if (current < need) {
-            return res.status(400).json({
-              ok: false,
-              error: "This item cannot be marked available because the linked inventory is out of stock.",
-            });
-          }
-
-        } else if (stockMode === "hybrid") {
+         } else if (stockMode === "hybrid") {
           // ✅ HYBRID: require BOTH (ingredients in stock) AND (direct product in stock)
 
           // --- (A) ingredients check ---
@@ -505,44 +552,45 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
           }
 
           // --- (B) direct check ---
-          const invIdNum = num(item.inventoryIngredientId, 0);
-          const deductQty = num(item.inventoryDeductQty, 1);
-
-          if (!invIdNum) {
+          // --- (B) direct check (JSON array; each must be Product + in stock) ---
+          if (directLinks.length === 0) {
             return res.status(400).json({
               ok: false,
               error: "This item cannot be marked available because it has no Direct inventory link.",
             });
           }
 
-          const invRows2 = await db.query(
-            `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
-            [invIdNum]
-          );
-          const inv2 = asArray(invRows2)[0];
+          for (const d of directLinks) {
+            const invIdNum = num(d.inventoryIngredientId, 0);
+            const need = num(d.qty, 1) > 0 ? num(d.qty, 1) : 1;
 
-          if (!inv2) {
-            return res.status(400).json({
-              ok: false,
-              error: "This item cannot be marked available because its linked inventory record was not found.",
-            });
-          }
+            const invRows2 = await db.query(
+              `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+              [invIdNum]
+            );
+            const inv2 = asArray(invRows2)[0];
 
-          if (Number(inv2.inventory_type_id || 1) !== 2) {
-            return res.status(400).json({
-              ok: false,
-              error: "Hybrid mode direct link must be a Product (inventory_type_id=2).",
-            });
-          }
+            if (!inv2) {
+              return res.status(400).json({
+                ok: false,
+                error: "This item cannot be marked available because its linked inventory record was not found.",
+              });
+            }
 
-          const current2 = num(inv2.currentStock, 0);
-          const need2 = deductQty > 0 ? deductQty : 1;
+            if (Number(inv2.inventory_type_id || 1) !== 2) {
+              return res.status(400).json({
+                ok: false,
+                error: "Hybrid mode direct link must be a Product (inventory_type_id=2).",
+              });
+            }
 
-          if (current2 < need2) {
-            return res.status(400).json({
-              ok: false,
-              error: "This item cannot be marked available because the linked inventory is out of stock.",
-            });
+            const current2 = num(inv2.currentStock, 0);
+            if (current2 < need) {
+              return res.status(400).json({
+                ok: false,
+                error: "This item cannot be marked available because the linked inventory is out of stock.",
+              });
+            }
           }
 
         } else {
