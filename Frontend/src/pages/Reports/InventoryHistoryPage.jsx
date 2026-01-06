@@ -72,8 +72,10 @@ const comfyCells = {
   },
 };
 
-const formatNumber = (n) =>
-  Number(n || 0).toLocaleString("en-PH", { maximumFractionDigits: 3 });
+const formatNumber = (n) => {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+  return Number(n).toLocaleString("en-PH", { maximumFractionDigits: 3 });
+};
 
 const pdfSafeText = (v) => {
   if (v === null || v === undefined) return "";
@@ -147,6 +149,22 @@ const hardNoTypeDateField = {
 export default function InventoryHistoryPage() {
   const { user } = useAuth();
 
+const authFetch = (url, opts = {}) => {
+  const token =
+    localStorage.getItem("qd_token") ||
+    localStorage.getItem("token") ||
+    ""; // use whatever your app stores
+
+  return fetch(url, {
+    ...opts,
+    headers: {
+      ...(opts.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    credentials: "include", // safe even if you use headers
+  });
+};
+
   const [ingredients, setIngredients] = useState([]);
   const [activity, setActivity] = useState([]);
 
@@ -205,7 +223,7 @@ export default function InventoryHistoryPage() {
 
     (async () => {
       try {
-        const res = await fetch(ING_API);
+        const res = await authFetch(ING_API);
         const j = await res.json();
         if (!alive) return;
         if (j?.ok) setIngredients(j.ingredients || []);
@@ -219,82 +237,107 @@ export default function InventoryHistoryPage() {
     };
   }, []);
 
-  /* LOAD INVENTORY ACTIVITY */
-  useEffect(() => {
-    let alive = true;
+/* LOAD INVENTORY ACTIVITY */
+useEffect(() => {
+  let alive = true;
 
-    (async () => {
+  (async () => {
+    try {
+      const res = await authFetch(`${ACT_API}?limit=2000`);
+
+      const text = await res.text();
+      let j = null;
       try {
-        const res = await fetch(`${ACT_API}?limit=2000`);
-        const j = await res.json();
-        if (!alive) return;
-        if (!j?.ok) return;
-
-        const rows = (j.rows || []).map((r) => ({
-          ...r,
-          qty: Number(r.qty || 0),
-        }));
-
-        setActivity(rows);
-      } catch (e) {
-        console.error("load activity failed:", e);
+        j = JSON.parse(text);
+      } catch {
+        // backend returned HTML or non-JSON (important to see)
       }
-    })();
 
-    return () => {
-      alive = false;
-    };
-  }, [reloadTick]);
+      if (!res.ok) {
+        console.error("inv-activity failed:", res.status, text);
+        return;
+      }
+
+      if (!j?.ok) return;
+      if (!alive) return;
+
+      const rows = (j.rows || []).map((r) => ({
+        ...r,
+        qty: Number(r.qty || 0),
+      }));
+
+      setActivity(rows);
+    } catch (e) {
+      console.error("load activity failed:", e);
+    }
+  })();
+
+  return () => {
+    alive = false;
+  };
+}, [reloadTick]);
 
   /* MERGE + COMPUTE */
   const computedRows = useMemo(() => {
-    if (!activity.length || !ingredients.length) return [];
+    if (!activity.length) return [];
 
-    // 1) sort oldest → newest for correct running stock
-    const sorted = activity
+    // ✅ backend already provides beforeStock/afterStock, so we only need correct ordering
+    // ✅ use ts (effective) then id as tie-breaker
+    const newestFirst = activity
       .slice()
-      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      .sort((a, b) => {
+        const ta = new Date(a.ts).getTime();
+        const tb = new Date(b.ts).getTime();
+        if (ta !== tb) return tb - ta;
+        const ida = String(a.id || "");
+        const idb = String(b.id || "");
 
-    const mapLastEnd = new Map();
+        // numeric part at the end (act:123 / audit:456)
+        const na = Number(ida.split(":").pop());
+        const nb = Number(idb.split(":").pop());
 
-    const result = sorted.map((r) => {
-      const ing = ingredients.find((i) => i.id === r.ingredientId);
+        if (Number.isFinite(nb) && Number.isFinite(na)) return nb - na;
+        return idb.localeCompare(ida);
+      });
 
-      const previousEnd = mapLastEnd.get(r.ingredientId) ?? 0;
-      const adjust = r.io === "In" ? r.qty : -r.qty;
-      const newEnd = previousEnd + adjust;
+    const result = newestFirst.map((r) => {
+      const qtyRaw = r.qty;
+      const qty = qtyRaw === null || qtyRaw === undefined ? null : Number(qtyRaw);
 
-      mapLastEnd.set(r.ingredientId, newEnd);
+      const io = String(r.io || "In") === "Out" ? "Out" : "In";
 
-      const reasonText =
-        r.reason || r.remarks || (r.io === "In" ? "Stock In" : "Stock Out");
+      // ✅ treat meta events as non-movement when qty is 0 (Created/Deleted/Edited Meta)
+      const isMetaEvent =
+        qty === null ||
+        qty === 0 ||
+        String(r.reason || "").toLowerCase().includes("created inventory item") ||
+        String(r.reason || "").toLowerCase().includes("deleted inventory item");
+
+      const adjust = isMetaEvent ? null : (io === "In" ? qty : -qty);
+
+
+      // ✅ DO NOT force null → 0 (that creates fake data)
+      const beginStock =
+        r.beforeStock ?? r.beginStock ?? r.currentStock ?? null;
+
+      const endStock =
+        r.afterStock ?? r.endStock ?? r.currentStock ?? null;
 
       return {
         id: r.id,
         ts: r.ts,
-        reason: reasonText,
-        ingredientName: r.ingredientName || ing?.name || "Unknown",
-        category: ing?.category || "",
-        unit: ing?.type || "",
-        beginStock: previousEnd,
+        reason: r.reason || r.remarks || (io === "In" ? "Stock In" : "Stock Out"),
+        ingredientName: r.ingredientName || "Unknown",
+        category: r.category || "",
+        unit: r.unit || "",
+        beginStock,
         adjust,
-        endStock: newEnd,
+        endStock,
       };
     });
 
-    // 2) show newest first in the UI and PDF
-    return result.slice().reverse();
-  }, [activity, ingredients]);
-
-  // Build “active days” from computedRows (for disabling calendar dates like ReportsPage)
-  const activeDaySet = useMemo(() => {
-    const s = new Set();
-    for (const r of computedRows) {
-      const key = dayjs(r.ts).format("YYYY-MM-DD");
-      s.add(key);
-    }
-    return s;
-  }, [computedRows]);
+    return result;
+  }, [activity]);
 
   const dateBounds = useMemo(() => {
     if (!computedRows.length) return { min: "", max: "" };
@@ -309,6 +352,17 @@ export default function InventoryHistoryPage() {
       max: dayjs(maxTs).format("YYYY-MM-DD"),
     };
   }, [computedRows]);
+
+    // Build “active days” set (used to disable dates in DatePicker like ReportsPage)
+  const activeDaySet = useMemo(() => {
+    const s = new Set();
+    for (const r of computedRows) {
+      const key = dayjs(r.ts).format("YYYY-MM-DD");
+      s.add(key);
+    }
+    return s;
+  }, [computedRows]);
+
 
   const clampToBounds = (s) => {
     const { min, max } = dateBounds || {};
@@ -411,47 +465,43 @@ export default function InventoryHistoryPage() {
     return !activeDaySet.has(key);
   };
 
-  // Filter by range (same idea as ReportsPage)
-  const rangeFilteredRows = useMemo(() => {
-    if (!computedRows.length) return [];
+const rangeFilteredRows = useMemo(() => {
+  if (!computedRows.length) return [];
 
-    const now = dayjs();
-    let from = null;
-    let to = null;
+  const anchor = dateBounds.max ? dayjs(dateBounds.max) : dayjs();
+  let from = null;
+  let to = null;
 
-    if (range === "custom") {
-      if (!customFrom || !customTo) return computedRows; // let UI show; export will block if incomplete
-      from = dayjs(customFrom).startOf("day");
-      to = dayjs(customTo).endOf("day");
-    } else if (range === "days") {
-      from = now.startOf("day");
-      to = now.endOf("day");
-    } else if (range === "weeks") {
-      const w = getIsoWeekRange(now);
+  if (range === "custom") {
+    if (!customFrom || !customTo) return computedRows;
+    from = dayjs(customFrom).startOf("day");
+    to = dayjs(customTo).endOf("day");
+  } else if (range === "days") {
+    from = anchor.startOf("day");
+    to = anchor.endOf("day");
+  } else if (range === "weeks") {
+    const w = getIsoWeekRange(anchor);
+    from = w.from;
+    to = w.to;
+  } else if (range === "monthly") {
+    from = anchor.startOf("month");
+    to = anchor.endOf("month");
+  } else if (range === "quarterly") {
+    from = anchor.startOf("quarter");
+    to = anchor.endOf("quarter");
+  } else if (range === "yearly") {
+    from = anchor.startOf("year");
+    to = anchor.endOf("year");
+  }
 
-      const monthStart = now.startOf("month").startOf("day");
-      const monthEnd = now.endOf("month").endOf("day");
+  if (!from || !to) return computedRows;
 
-      from = w.from.isBefore(monthStart) ? monthStart : w.from;
-      to = w.to.isAfter(monthEnd) ? monthEnd : w.to;
-    } else if (range === "monthly") {
-      from = now.startOf("month");
-      to = now.endOf("month");
-    } else if (range === "quarterly") {
-      from = now.startOf("quarter");
-      to = now.endOf("quarter");
-    } else if (range === "yearly") {
-      from = now.startOf("year");
-      to = now.endOf("year");
-    }
+  return computedRows.filter((r) => {
+    const dt = dayjs(r.ts);
+    return dt.isAfter(from.subtract(1, "millisecond")) && dt.isBefore(to.add(1, "millisecond"));
+  });
+}, [computedRows, range, customFrom, customTo, dateBounds.max]);
 
-    if (!from || !to) return computedRows;
-
-    return computedRows.filter((r) => {
-      const dt = dayjs(r.ts);
-      return dt.isAfter(from.subtract(1, "millisecond")) && dt.isBefore(to.add(1, "millisecond"));
-    });
-  }, [computedRows, range, customFrom, customTo]);
 
   /* SEARCH (applies after range filter) */
   const filtered = useMemo(() => {
@@ -808,13 +858,15 @@ export default function InventoryHistoryPage() {
 
                       <TableCell
                         sx={{
-                          color: row.adjust >= 0 ? "success.main" : "error.main",
-                          fontWeight: 800,
+                          color: row.adjust === null ? "text.secondary" : row.adjust >= 0 ? "success.main" : "error.main",
+                          fontWeight: row.adjust === null ? 400 : 800,
                         }}
                       >
-                        {row.adjust >= 0
-                          ? `+${formatNumber(row.adjust)}`
-                          : formatNumber(row.adjust)}
+                        {row.adjust === null
+                          ? "—"
+                          : row.adjust >= 0
+                            ? `+${formatNumber(row.adjust)}`
+                            : formatNumber(row.adjust)}
                       </TableCell>
 
                       <TableCell>{formatNumber(row.endStock)}</TableCell>

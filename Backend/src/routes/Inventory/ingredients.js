@@ -9,6 +9,19 @@ try {
   sharedDb = require("../../shared/db/mysql").db;
 } catch {}
 
+const unwrapRows = (q) => (Array.isArray(q) && Array.isArray(q[0]) ? q[0] : q);
+
+const getEmployeeNameFromReq = (req) => {
+  const u = req?.user;
+  return (
+    u?.employeeName ||
+    u?.name ||
+    u?.username ||
+    u?.email ||
+    `Employee #${u?.employeeId || u?.sub || "Unknown"}`
+  );
+};
+
 /* ============================================================
    AUDIT HELPERS FOR INVENTORY INGREDIENTS
    ============================================================ */
@@ -412,6 +425,7 @@ module.exports = ({ db } = {}) => {
       const now = new Date(
         new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" })
       );
+
       const result = await db.query(
         `INSERT INTO inventory_ingredients
           (name, inventory_type_id, category, type, currentStock, lowStock, createdAt, updatedAt)
@@ -419,14 +433,36 @@ module.exports = ({ db } = {}) => {
         [name, typeId, category, type, now, now]
       );
 
-      const newId = result.insertId;
+      const ok = Array.isArray(result) ? result[0] : result; // ✅
+      const newId = ok?.insertId;
 
-      // Fetch full row for audit detail
+      if (!newId) {
+        console.error("[ingredients] insert did not return insertId:", result);
+        return res.status(500).json({ ok: false, error: "Create failed (no insertId)" });
+      }
+
       const createdRows = await db.query(
         `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
         [newId]
       );
-      const created = createdRows[0] || null;
+      const createdList = unwrapRows(createdRows);
+      const created = createdList?.[0] || null;
+
+      // ✅ ALSO log "Created" into inventory_activity (so InventoryHistoryPage can show it)
+      await db.query(
+        `
+        INSERT INTO inventory_activity
+          (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
+        VALUES
+          (NOW(), ?, ?, 'In', 0, ?, ?, NOW(), NOW())
+        `,
+        [
+          getEmployeeNameFromReq(req),
+          "Created Inventory Item",
+          newId,
+          created?.name || name,
+        ]
+      );
 
       const label = Number(created?.inventory_type_id || typeId) === 2 ? "Product" : "Ingredient";
       const statusMessage = created
@@ -479,11 +515,13 @@ module.exports = ({ db } = {}) => {
       }
 
       // Fetch "before" snapshot for audit
-      const beforeRows = await db.query(
+      const beforeQ = await db.query(
         `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
         [id]
       );
-      const before = beforeRows[0] || null;
+      const beforeRows = unwrapRows(beforeQ);
+      const before = beforeRows?.[0] || null;
+
       if (!before) {
         return res.status(404).json({ ok: false, error: "not found" });
       }
@@ -627,12 +665,42 @@ module.exports = ({ db } = {}) => {
         params
       );
 
-      // Fetch "after" snapshot
-      const afterRows = await db.query(
+      const afterQ = await db.query(
         `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
         [id]
       );
-      const after = afterRows[0] || null;
+      const afterList = unwrapRows(afterQ);
+      const after = afterList?.[0] || null;
+
+      // ✅ If the edit form directly changed currentStock, write an activity row too
+      if (userSentCurrentStock && after) {
+        const beforeStock = Number(before.currentStock || 0);
+        const afterStock = Number(after.currentStock || 0);
+
+        const delta = afterStock - beforeStock;
+
+        if (Number.isFinite(delta) && delta !== 0) {
+          const io = delta > 0 ? "In" : "Out";
+          const qty = Math.abs(delta);
+
+          await db.query(
+            `
+            INSERT INTO inventory_activity
+              (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
+            VALUES
+              (NOW(), ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            `,
+            [
+              getEmployeeNameFromReq(req),
+              "Inventory Count",            // or "Edited Stock"
+              io,
+              qty,
+              id,
+              after.name,
+            ]
+          );
+        }
+      }
 
       // Compute field-level changes for audit
       const fieldsToCompare = [
@@ -727,14 +795,26 @@ module.exports = ({ db } = {}) => {
       }
 
       // Fetch row for logging (before delete)
-      const rows = await db.query(
+      const q0 = await db.query(
         `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
         [id]
       );
-      const ingredientRow = rows[0] || null;
+      const rows0 = unwrapRows(q0);
+      const ingredientRow = rows0?.[0] || null;
+
       if (!ingredientRow) {
         return res.status(404).json({ ok: false, error: "not found" });
       }
+
+      await db.query(
+        `
+        INSERT INTO inventory_activity
+          (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
+        VALUES
+          (NOW(), ?, 'Deleted Inventory Item', NULL, NULL ?, ?, NOW(), NOW())
+        `,
+        [getEmployeeNameFromReq(req), id, ingredientRow?.name || ""]
+      );
 
       const currentStock = Number(ingredientRow.currentStock || 0);
 

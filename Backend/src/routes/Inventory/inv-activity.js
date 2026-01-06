@@ -115,6 +115,25 @@ async function logInventoryIngredientAudit(
   );
 }
 
+// ✅ Make MySQL DATETIME strings parse safely in dayjs (PH timezone)
+const toIsoManila = (v) => {
+  if (!v) return new Date().toISOString();
+
+  // already a Date
+  if (v instanceof Date) return v.toISOString();
+
+  const s = String(v);
+
+  // MySQL DATETIME: "YYYY-MM-DD HH:mm:ss"
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s)) {
+    return s.replace(" ", "T") + "+08:00";
+  }
+
+  // fallback
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
+};
+
 async function logInventoryIngredientAuditSafe(db, req, payload) {
   try {
     await logInventoryIngredientAudit(db, req, payload);
@@ -145,248 +164,336 @@ module.exports = ({ db } = {}) => {
 
   // 🔐 Require auth for all inventory activity routes
   router.use(requireAuth);
+  
+// GET /api/inventory/inv-activity?limit=1000&kind=ingredient|product|all&inventoryTypeId=1|2&category=...
+router.get("/", async (req, res) => {
+  try {
+    const category = normalize(req.query.category);
 
-  // GET /api/inventory/inv-activity?limit=1000
-  router.get("/", async (req, res) => {
-    try {
-      // ✅ helpers MUST exist in this file:
-      // const normalize = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-      // const normalizeKind = (...) => "ingredient"|"product"|null;
+    const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
+    const rawTypeId = req.query.inventoryTypeId ?? req.query.inventory_type_id;
 
-      const category = normalize(req.query.category);
+    const typeIdFromKind = rawKind === "all" ? "all" : kindToTypeId(rawKind);
+    const typeIdFromQuery = isValidTypeId(normalizeTypeId(rawTypeId))
+      ? normalizeTypeId(rawTypeId)
+      : null;
 
-      const rawKind = String(req.query.kind ?? "").trim().toLowerCase();
-      const rawTypeId = req.query.inventoryTypeId ?? req.query.inventory_type_id;
+    const typeFilter =
+      rawKind === "all" ? "all" : (typeIdFromQuery ?? typeIdFromKind ?? null);
 
-      const typeIdFromKind = rawKind === "all" ? "all" : kindToTypeId(rawKind);
-      const typeIdFromQuery = isValidTypeId(normalizeTypeId(rawTypeId))
-        ? normalizeTypeId(rawTypeId)
-        : null;
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 5000)
+      : 1000;
 
-      const typeFilter = rawKind === "all"
-        ? "all"
-        : (typeIdFromQuery ?? typeIdFromKind ?? null);
+    // ✅ inline limit (safe because we clamp to 1..5000 and Number())
+    const sql = `
+      SELECT
+        ia.id,
+        ia.ts,
+        ia.createdAt,
+        ia.employee,
+        ia.reason,
+        ia.io,
+        ia.qty,
+        ia.ingredientId,
+        ia.ingredientName,
 
-      const params = [];
-      const where = [];
+        ii_id.id AS ii_id,
+        ii_id.category AS ii_category_id,
+        ii_id.type AS ii_unit_id,
+        ii_id.inventory_type_id AS ii_type_id,
+        ii_id.currentStock AS ii_stock_id,
+        ii_id.name_lower AS ii_name_lower_id,
 
-      // We filter via inventory_ingredients (joined as ii)
-      if (typeFilter && typeFilter !== "all") {
-        where.push("(ii.id IS NOT NULL AND ii.inventory_type_id = ?)");
-        params.push(typeFilter);
-      }
-      if (category && category !== "all") {
-        where.push("(ii.id IS NOT NULL AND ii.category = ?)");
-        params.push(category);
-      }
+        ii_name.id AS in_id,
+        ii_name.category AS in_category,
+        ii_name.type AS in_unit,
+        ii_name.inventory_type_id AS in_type,
+        ii_name.currentStock AS in_stock,
+        ii_name.name_lower AS in_name_lower
+      FROM inventory_activity ia
+      LEFT JOIN inventory_ingredients ii_id
+        ON ii_id.id = ia.ingredientId
+      LEFT JOIN inventory_ingredients ii_name
+        ON ii_name.name_lower = LOWER(TRIM(COALESCE(ia.ingredientName, '')))
+      ORDER BY COALESCE(ia.ts, ia.createdAt) DESC, ia.id DESC
+      LIMIT ${limit}
+    `;
 
-      const sqlWhere = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const q = await db.query(sql); // <-- no params
+    const rows = Array.isArray(q) && Array.isArray(q[0]) ? q[0] : q;
 
-      const limitRaw = Number(req.query.limit);
-      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 5000) : 1000;
 
-      const rows = await db.query(
-        `
-        SELECT
-          ia.id,
-          ia.ts,
-          ia.employee,
-          ia.reason,
-          ia.io,
-          ia.qty,
-          ia.ingredientId,
-          ia.ingredientName
-        FROM inventory_activity ia
-        LEFT JOIN inventory_ingredients ii
-          ON ii.id = ia.ingredientId
-        ${sqlWhere}
-        ORDER BY ia.ts DESC, ia.id DESC
-        LIMIT ${limit}
-        `,
-        params
-      );
+    // Build normalized rows first (still newest-first)
+    const normalized = (rows || []).map((r) => {
+      const resolvedIngredientId =
+        r.ii_id ?? (r.ingredientId ? Number(r.ingredientId) : null) ?? r.in_id ?? null;
+      const resolvedNameLower =
+        r.ii_name_lower_id || r.in_name_lower || "";
 
-      const out = (rows || []).map((r) => ({
+      const resolvedCategory = r.ii_category_id ?? r.in_category ?? "";
+      const resolvedUnit = r.ii_unit_id ?? r.in_unit ?? "";
+      const resolvedTypeId = r.ii_type_id ?? r.in_type ?? null;
+      const resolvedCurrentStock = Number(r.ii_stock_id ?? r.in_stock ?? 0);
+
+      const tsRaw = r.ts ?? r.createdAt ?? null;
+
+      return {
         id: String(r.id),
-        ts: r.ts
-          ? typeof r.ts === "string"
-            ? r.ts
-            : new Date(r.ts).toISOString()
-          : new Date().toISOString(),
+        ts: toIsoManila(tsRaw),
+
         employee: r.employee || "",
         reason: r.reason || "",
-        io: String(r.io || "In") === "Out" ? "Out" : "In",
-        qty: Number(r.qty || 0),
+        io: r.io === null || r.io === undefined ? null : (String(r.io) === "Out" ? "Out" : "In"),
+        qty: r.qty === null || r.qty === undefined ? null : Number(r.qty),
+
         ingredientId: r.ingredientId ? String(r.ingredientId) : "",
         ingredientName: r.ingredientName || "",
-      }));
 
-      res.json({ ok: true, rows: out });
-    } catch (e) {
-      console.error("[inv-activity] list failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "List failed" });
+        // resolved fields
+        resolvedIngredientId: resolvedIngredientId ? String(resolvedIngredientId) : "",
+        resolvedNameLower,
+        category: resolvedCategory || "",
+        unit: resolvedUnit || "",
+        inventoryTypeId: resolvedTypeId ? Number(resolvedTypeId) : null,
+        currentStockNow:
+          resolvedIngredientId ? resolvedCurrentStock : null,
+      };
+    });
+
+    // Apply filters (type/category) using resolved fields
+    const filtered = normalized.filter((r) => {
+      if (typeFilter && typeFilter !== "all") {
+        if (Number(r.inventoryTypeId || 0) !== Number(typeFilter)) return false;
+      }
+      if (category && category !== "all") {
+        if (String(r.category || "") !== String(category)) return false;
+      }
+      return true;
+    });
+
+    // ✅ Compute before/after in JS (no window functions)
+    // We’re iterating newest -> oldest.
+    // afterStock = currentStockNow - sum(newer deltas)
+    // beforeStock = afterStock - delta
+    const newerDeltaSumByKey = new Map(); // key -> sum of deltas for rows newer than current
+    const out = filtered.map((r) => {
+      // pick a stable key per ingredient:
+      // prefer resolvedIngredientId; fallback to nameLower; else empty means unknown
+      const key =
+        r.resolvedIngredientId
+          ? `id:${r.resolvedIngredientId}`
+          : (r.resolvedNameLower ? `name:${r.resolvedNameLower}` : "");
+
+      const delta =
+        r.io === "In" ? Number(r.qty || 0)
+        : r.io === "Out" ? -Number(r.qty || 0)
+        : 0;
+
+      if (!key || r.currentStockNow === null) {
+        return {
+          id: r.id,
+          ts: r.ts,
+          employee: r.employee,
+          reason: r.reason,
+          io: r.io,
+          qty: r.qty,
+          ingredientId: r.ingredientId,
+          ingredientName: r.ingredientName,
+
+          category: r.category,
+          unit: r.unit,
+          inventoryTypeId: r.inventoryTypeId,
+
+          beforeStock: null,
+          afterStock: null,
+        };
+      }
+
+      const newerSum = newerDeltaSumByKey.get(key) ?? 0;
+
+      const afterStock = Number(r.currentStockNow) - Number(newerSum);
+      const beforeStock = afterStock - delta;
+
+      // update for next (older) rows
+      newerDeltaSumByKey.set(key, newerSum + delta);
+
+      return {
+        id: r.id,
+        ts: r.ts,
+        employee: r.employee,
+        reason: r.reason,
+        io: r.io,
+        qty: r.qty,
+        ingredientId: r.ingredientId,
+        ingredientName: r.ingredientName,
+
+        category: r.category,
+        unit: r.unit,
+        inventoryTypeId: r.inventoryTypeId,
+
+        beforeStock,
+        afterStock,
+      };
+    });
+
+    res.json({ ok: true, rows: out });
+  } catch (e) {
+    console.error("[inv-activity] list failed:", e);
+    res.status(500).json({ ok: false, error: e.message || "List failed" });
+  }
+});
+
+
+// POST /api/inventory/inv-activity  (Stock In/Out movement)
+router.post("/", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const ingredientIdRaw = body.ingredientId ?? body.ingredient_id ?? null;
+    const ingredientId = ingredientIdRaw ? Number(String(ingredientIdRaw).trim()) : null;
+
+    const ingredientName = normalize(body.ingredientName ?? body.ingredient_name ?? "");
+    const io = String(body.io || "").trim() === "Out" ? "Out" : "In";
+    const qty = Number(body.qty);
+
+    const reason = normalize(body.reason || "");
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ ok: false, error: "Invalid qty" });
     }
-  });
 
-  /**
-   * POST /api/inventory/inv-activity
-   * body: { ts?, employee?, reason?, io: 'In'|'Out', qty, ingredientId, ingredientName }
-   *
-   * ➜ Writes both inventory_activity row AND an audit_trail row
-   *    "Inventory - Ingredient Updated (Stock In/Out)" – quantity-only.
-   */
-  router.post("/", async (req, res) => {
-    try {
-      const io = String(req.body?.io || "In") === "Out" ? "Out" : "In";
-      const qty = Number(req.body?.qty || 0);
-      const ingredientId = req.body?.ingredientId
-        ? String(req.body.ingredientId)
-        : "";
-      const ingredientName = req.body?.ingredientName
-        ? String(req.body.ingredientName)
-        : "";
+    // employee should come from auth (ignore client-sent "Chef")
+    const user = getAuditUserFromReq(req);
+    const employee = user?.employeeName || normalize(body.employee) || "System";
 
-      const authUser = req.user || null;
-      const employeeFromAuth =
-        (authUser &&
-          (authUser.employeeName ||
-            authUser.name ||
-            authUser.username ||
-            authUser.email)) ||
-        null;
-      const employee =
-        employeeFromAuth || String(req.body?.employee || "Inventory User");
+    // ✅ resolve ingredient row (by id, fallback by name)
+    let ingredient = null;
 
-      const reason = String(req.body?.reason || "").trim();
+    if (ingredientId) {
+      const rows = await db.query(`SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`, [ingredientId]);
+      ingredient = rows?.[0] || null;
+    }
 
-      const tsRaw = req.body?.ts;
-      const tsVal =
-        typeof tsRaw === "string" && tsRaw.trim() ? new Date(tsRaw) : null;
+    if (!ingredient && ingredientName) {
+      const q2 = await db.query(
+        `SELECT * FROM inventory_ingredients WHERE name_lower = LOWER(?) LIMIT 1`,
+        [ingredientName]
+      );
+      const rows2 = Array.isArray(q2) && Array.isArray(q2[0]) ? q2[0] : q2;
+      ingredient = rows2?.[0] || null;
+    }
 
-      const now = new Date(
-        new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" })
+    if (!ingredient) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    const beforeStock = Number(ingredient.currentStock || 0);
+    const delta = io === "In" ? qty : -qty;
+
+    // prevent stock out more than current
+    if (io === "Out" && qty > beforeStock) {
+      return res.status(409).json({
+        ok: false,
+        error: "Insufficient stock",
+        code: "INSUFFICIENT_STOCK",
+        currentStock: beforeStock,
+        attempted: qty,
+      });
+    }
+
+    // write activity + update stock in one transaction
+    let insertedId = null;
+    let afterRow = null;
+
+    await db.tx(async (t) => {
+      // 1) insert activity (always record the original ingredientId + name)
+      const insertRes = await t.query(
+        `
+        INSERT INTO inventory_activity
+          (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
+        VALUES
+          (NOW(), ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `,
+        [
+          employee,
+          reason,
+          io,
+          qty,
+          ingredient.id,
+          ingredient.name,
+        ]
       );
 
-      const insertedId = await db.tx(async (conn) => {
-        // 1) insert activity row (no price column anymore)
-        const insert = await conn.execute(
-          `INSERT INTO inventory_activity
-            (ts, employee, reason, io, qty, ingredientId, ingredientName, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            tsVal || now,
-            employee,
-            reason,
+      insertedId = insertRes?.insertId || null;
+
+      // 2) update stock (never negative)
+      await t.query(
+        `
+        UPDATE inventory_ingredients
+        SET currentStock = GREATEST(0, currentStock + ?),
+            updatedAt = NOW()
+        WHERE id = ?
+        `,
+        [delta, ingredient.id]
+      );
+
+      // 3) fetch updated ingredient row
+      const afterRows = await t.query(`SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`, [ingredient.id]);
+      afterRow = afterRows?.[0] || null;
+    });
+
+    const afterStock = Number(afterRow?.currentStock || 0);
+
+    // ✅ audit (qty-only movement)
+    await logInventoryIngredientAuditSafe(db, req, {
+      action: "Inventory - Ingredient Updated (Stock In/Out)",
+      actionType: "update",
+      ingredient: afterRow,
+      before: { currentStock: beforeStock },
+      after: { currentStock: afterStock },
+      changes: { currentStock: { before: beforeStock, after: afterStock } },
+      extra: {
+        statusMessage: io === "In" ? "Stock in saved" : "Stock out saved",
+        actionDetails: {
+          movement: {
             io,
             qty,
-            ingredientId || null,
-            ingredientName || "",
-            now,
-            now,
-          ]
-        );
-        const newId = insert.insertId;
+            reason,
+            ingredientId: String(ingredient.id),
+            ingredientName: ingredient.name,
+            beforeStock,
+            afterStock,
+          },
+        },
+      },
+    });
 
-        // 2) update ingredient stock (if ingredientId present)
-        if (ingredientId) {
-          const delta = io === "In" ? qty : -qty;
-
-          await conn.execute(
-            `UPDATE inventory_ingredients
-                SET currentStock = GREATEST(0, COALESCE(currentStock,0) + ?),
-                    updatedAt = ?
-              WHERE id = ?`,
-            [delta, new Date(), Number(ingredientId)]
-          );
-        }
-
-        return newId;
-      });
-
-      const rowTs = tsVal ? tsVal.toISOString() : now.toISOString();
-
-      const row = {
-        id: String(insertedId),
-        ts: rowTs,
+    return res.json({
+      ok: true,
+      id: insertedId,
+      row: {
+        id: insertedId,
+        ts: new Date().toISOString(),
         employee,
         reason,
         io,
         qty,
-        ingredientId,
-        ingredientName,
-      };
-
-      /* ------------------------------------------------------------
-         AUDIT LOG: Stock In / Out for ingredient (qty-only)
-         ------------------------------------------------------------ */
-      if (ingredientId) {
-        try {
-          const afterRows = await db.query(
-            `SELECT * FROM inventory_ingredients WHERE id = ? LIMIT 1`,
-            [Number(ingredientId)]
-          );
-          const after = afterRows[0] || null;
-
-          if (after) {
-            const delta = io === "In" ? qty : -qty;
-            const afterQty = Number(after.currentStock || 0);
-            const beforeQty = afterQty - delta;
-
-            const before = {
-              ...after,
-              currentStock: beforeQty,
-            };
-
-            const changes = {
-              currentStock: {
-                before: beforeQty,
-                after: afterQty,
-              },
-            };
-
-            const movement = {
-              direction: io,         // "In" | "Out"
-              qty,
-              beforeQty,
-              afterQty,
-              reason,
-              at: rowTs,
-            };
-
-            const statusMessage = `Inventory ${
-              io === "In" ? "stock in" : "stock out"
-            } for "${after.name}" (${qty}).`;
-
-            await logInventoryIngredientAuditSafe(db, req, {
-              action:
-                io === "In"
-                  ? "Inventory - Ingredient Updated (Stock In)"
-                  : "Inventory - Ingredient Updated (Stock Out)",
-              actionType: "update",
-              ingredient: after,
-              before,
-              after,
-              changes,
-              extra: {
-                statusMessage,
-                actionDetails: {
-                  ingredientId: String(after.id),
-                  movement,
-                },
-              },
-            });
-          }
-        } catch (err) {
-          console.error("[inv-activity] audit log failed:", err);
-        }
-      }
-
-      res.status(201).json({ ok: true, id: String(insertedId), row });
-    } catch (e) {
-      console.error("[inv-activity] create failed:", e);
-      res.status(500).json({ ok: false, error: e.message || "Create failed" });
-    }
-  });
+        ingredientId: String(ingredient.id),
+        ingredientName: ingredient.name,
+        // optional extras (your history page likes these)
+        category: ingredient.category || "",
+        unit: ingredient.type || "",
+        inventoryTypeId: Number(ingredient.inventory_type_id || 1),
+        beforeStock,
+        afterStock,
+      },
+    });
+  } catch (e) {
+    console.error("[inv-activity] save failed:", e);
+    return res.status(500).json({ ok: false, error: e.message || "Save failed" });
+  }
+});
 
   return router;
 };
