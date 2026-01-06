@@ -5,7 +5,7 @@ import {
   Table, TableHead, TableBody, TableRow, TableCell, TableContainer,
   Typography, Divider, CircularProgress, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, Avatar, TablePagination,
-  Checkbox, IconButton, Tooltip, InputAdornment, useMediaQuery
+  Checkbox, IconButton, Tooltip, InputAdornment, useMediaQuery, Chip,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -575,26 +575,20 @@ function onSelectIngredientCategory(rowId, categoryName) {
           qty: Number(r.qty || 0),
         }));
 
-      // ✅ declare ONCE
-      const stockMode = String(f.stockMode || "ingredients");
+      const hasRecipe = ingPayload.length > 0;
+      const hasDirect = !!f.inventoryIngredientId;
 
-      // ✅ validate ONCE using that same variable
-      if (!["ingredients", "direct"].includes(stockMode)) {
-        throw new Error("Invalid stock mode.");
-      }
-
-      if (stockMode === "direct") {
-        if (!f.inventoryIngredientId) {
-          throw new Error("Inventory Product is required for Direct mode.");
-        }
+      if (hasDirect) {
         const dq = Number(String(f.inventoryDeductQty || "1"));
         if (!Number.isFinite(dq) || dq <= 0) {
           throw new Error("Deduct Qty must be greater than 0.");
         }
       }
 
-      if (stockMode === "ingredients" && ingPayload.length === 0) {
-        throw new Error("Please add at least 1 ingredient for Ingredients mode.");
+      // Optional rule (recommended): require at least one stock source
+      // If you want to allow items with no deductions, remove this.
+      if (!hasRecipe && !hasDirect) {
+        throw new Error("Please add at least 1 ingredient OR select a direct inventory product.");
       }
 
       // ✅ NOW FormData uses the SAME stockMode variable
@@ -605,18 +599,9 @@ function onSelectIngredientCategory(rowId, categoryName) {
       form.append("categoryId", f.categoryId);
       form.append("categoryName", cleanCatName);
       if (f.imageFile) form.append("image", f.imageFile);
-
-      form.append("stockMode", stockMode);
-
-      if (stockMode === "direct") {
-        form.append("inventoryIngredientId", String(f.inventoryIngredientId));
-        form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
-      } else {
-        form.append("inventoryIngredientId", "");
-        form.append("inventoryDeductQty", "1");
-      }
-
       form.append("ingredients", JSON.stringify(ingPayload));
+      form.append("inventoryIngredientId", f.inventoryIngredientId ? String(f.inventoryIngredientId) : "");
+      form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
 
       const res = await fetch(`/api/items`, { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
@@ -689,23 +674,20 @@ function onSelectIngredientCategory(rowId, categoryName) {
           qty: Number(r.qty || 0),
         }));
 
-      // ✅ declare once
-      const stockMode = String(f.stockMode || "ingredients");
+      const hasRecipe = ingPayload.length > 0;
+      const hasDirect = !!f.inventoryIngredientId;
 
-      if (!["ingredients", "direct"].includes(stockMode)) throw new Error("Invalid stock mode.");
-
-      if (stockMode === "direct") {
-        if (!f.inventoryIngredientId) {
-          throw new Error("Inventory Product is required for Direct mode.");
-        }
+      if (hasDirect) {
         const dq = Number(String(f.inventoryDeductQty || "1"));
         if (!Number.isFinite(dq) || dq <= 0) {
           throw new Error("Deduct Qty must be greater than 0.");
         }
       }
 
-      if (stockMode === "ingredients" && ingPayload.length === 0) {
-        throw new Error("Please add at least 1 ingredient for Ingredients mode.");
+      // Optional rule (recommended): require at least one stock source
+      // If you want to allow items with no deductions, remove this.
+      if (!hasRecipe && !hasDirect) {
+        throw new Error("Please add at least 1 ingredient OR select a direct inventory product.");
       }
 
       // ✅ FormData
@@ -715,23 +697,11 @@ function onSelectIngredientCategory(rowId, categoryName) {
       form.append("price", String(itemPrice));
       form.append("categoryId", f.categoryId);
       form.append("categoryName", cleanCatName);
-
-      // =======================
-      // ✅ STOCK MODE (NEW)
-      // =======================
-      form.append("stockMode", stockMode);
-
-      if (stockMode === "direct") {
-        form.append("inventoryIngredientId", String(f.inventoryIngredientId));
-        form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
-      } else {
-        // keep DB clean
-        form.append("inventoryIngredientId", "");
-        form.append("inventoryDeductQty", "1");
-      }
+      form.append("ingredients", JSON.stringify(ingPayload));
 
       // ingredients always sent (backend normalizes)
-      form.append("ingredients", JSON.stringify(ingPayload));
+      form.append("inventoryIngredientId", f.inventoryIngredientId ? String(f.inventoryIngredientId) : "");
+      form.append("inventoryDeductQty", String(f.inventoryDeductQty || "1"));
 
       if (f.imageFile) form.append("image", f.imageFile);
 
@@ -770,17 +740,13 @@ function onSelectIngredientCategory(rowId, categoryName) {
     let full = row;
 
     // If list payload doesn't include ingredients, fetch full item
-    if (String(row.stockMode || "") === "ingredients" && !Array.isArray(row.ingredients)) {
+    if (!Array.isArray(row.ingredients)) {
       try {
         const res = await fetch(`/api/items/${encodeURIComponent(row.id)}`, { cache: "no-store" });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data?.ok && data?.item) full = data.item;
       } catch {}
     }
-
-    const normalizedStockMode = ["ingredients", "direct"].includes(String(full.stockMode || ""))
-      ? String(full.stockMode)
-      : "ingredients";
 
     const nextF = {
       name: full.name || "",
@@ -793,7 +759,6 @@ function onSelectIngredientCategory(rowId, categoryName) {
       inventoryProductCategory: "",
       inventoryIngredientId: full.inventoryIngredientId || "",
       inventoryDeductQty: full.inventoryDeductQty != null ? String(full.inventoryDeductQty) : "1",
-      stockMode: normalizedStockMode,
     };
 
     const initialIngredients = Array.isArray(full.ingredients)
@@ -935,7 +900,6 @@ function onSelectIngredientCategory(rowId, categoryName) {
       price: String(formState.price || "").trim(), // item price still tracked
       imageFile: !!formState.imageFile,
       imagePreview: !!formState.imagePreview,
-      stockMode: String(formState.stockMode || "ingredients"),
       inventoryIngredientId: String(formState.inventoryIngredientId || ""),
       inventoryDeductQty: String(formState.inventoryDeductQty || "1").trim(),
     };
@@ -1246,9 +1210,25 @@ function onSelectIngredientCategory(rowId, categoryName) {
                       </TableCell>
 
                       <TableCell>
-                        <Typography variant="body2">
-                          {r.stockMode === "direct" ? "Direct" : r.stockMode === "ingredients" ? "Recipe" : "—"}
-                        </Typography>
+                        {(() => {
+                          const mode = String(r.stockMode || "").toLowerCase();
+
+                          if (mode === "direct") {
+                            return <Chip size="small" label="Direct" variant="outlined" />;
+                          }
+                          if (mode === "ingredients") {
+                            return <Chip size="small" label="Recipe" variant="outlined" />;
+                          }
+                          if (mode === "hybrid") {
+                            return (
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Chip size="small" label="Recipe" variant="outlined" />
+                                <Chip size="small" label="Direct" variant="outlined" />
+                              </Stack>
+                            );
+                          }
+                          return <Typography variant="body2">—</Typography>;
+                        })()}
                       </TableCell>
 
                       <TableCell align="center" onClick={(e) => e.stopPropagation()} sx={{ width: 64 }}>
@@ -1398,243 +1378,206 @@ function onSelectIngredientCategory(rowId, categoryName) {
             </Stack>
           </Stack>
 
-          {/* ✅ Stock mode */}
+          <Divider />
+
+          {/* Section 2: Ingredients */}
+          <Stack spacing={1}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} flexWrap="wrap">
+              <Typography fontWeight={700}>Ingredients</Typography>
+              <Button size="small" onClick={addIngredientRow} startIcon={<AddIcon />}>Add Ingredient</Button>
+            </Stack>
+
+            <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 1, overflow: "hidden" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell width="25%">Inventory Category</TableCell>
+                    <TableCell width="45%">Inventory Name</TableCell>
+                    <TableCell width="20%">Qty</TableCell>
+                    <TableCell align="right" width={40}></TableCell>
+                  </TableRow>
+                </TableHead>
+
+                <TableBody>
+                  {itemIngredients.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3}>
+                        <Typography variant="body2" color="text.secondary">
+                          No ingredients added yet.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    itemIngredients.map((row) => (
+                      <TableRow key={row.id}>
+                        {/* Category selector (NEW) */}
+                        <TableCell>
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.category || ""}
+                              displayEmpty
+                              onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
+                              MenuProps={dropdownMenuProps}
+                            >
+                              <MenuItem value="">
+                                <em>Select category</em>
+                              </MenuItem>
+                              {ingredientInvCategories.map((c) => (
+                                <MenuItem key={c.id} value={c.name}>
+                                  {c.name}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
+
+                        {/* Inventory Name selector (FILTERED + DISABLED until category picked) */}
+                        <TableCell>
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.ingredientId || ""}
+                              displayEmpty
+                              disabled={!row.category}
+                              onChange={(e) => onSelectInventory(row.id, e.target.value)}
+                              MenuProps={dropdownMenuProps}
+                              sx={{
+                                "& .MuiSelect-select": {
+                                  display: "flex",
+                                  alignItems: "center",
+                                  py: 1.25,
+                                },
+                              }}
+                              renderValue={(val) => {
+                                if (!row.category) return <em>Select category first</em>;
+                                if (!val) return <em>Select ingredient</em>;
+                                const picked = inventory.find((x) => String(x.id) === String(val));
+                                return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
+                              }}
+                            >
+                              <MenuItem value="">
+                                <em>{row.category ? "Select ingredient" : "Select category first"}</em>
+                              </MenuItem>
+
+                              {inventory
+                                .filter((x) => String(x.kind || "").toLowerCase() !== "product")
+                                .filter((x) => String(x.category || "") === String(row.category || ""))
+                                .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+                                .map((ing) => (
+                                  <MenuItem key={ing.id} value={ing.id}>
+                                    {renderRecipeIngOption(ing)}
+                                  </MenuItem>
+                                ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
+
+                        {/* Qty */}
+                        <TableCell>
+                          <TextField
+                            size="small"
+                            value={row.qty || ""}
+                            onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
+                            inputMode="numeric"
+                            placeholder="0"
+                            fullWidth
+                            disabled={!row.ingredientId}
+                          />
+                        </TableCell>
+
+                        {/* Remove */}
+                        <TableCell align="right">
+                          <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+          </Stack>
+
+          <Divider />
+
+          {/* ✅ Direct Inventory Product (always optional) */}
           <Stack spacing={2}>
+            <Typography fontWeight={700}>Direct Inventory Product (optional)</Typography>
+
+            {/* Product Category filter */}
             <FormControl fullWidth size="small">
-              <InputLabel id="create-stockmode-label">Stock Mode</InputLabel>
+              <InputLabel id="add-direct-cat-label">Product Category</InputLabel>
               <Select
-                labelId="create-stockmode-label"
-                label="Stock Mode"
-                value={f.stockMode || "ingredients"}
-                onChange={(e) => {
-                  const mode = e.target.value;
+                labelId="add-direct-cat-label"
+                label="Product Category"
+                value={f.inventoryProductCategory || ""}
+                onChange={(e) =>
                   setF((s) => ({
                     ...s,
-                    stockMode: mode,
-                    ...(mode !== "direct"
-                      ? {
-                          inventoryIngredientId: "",
-                          inventoryDeductQty: "1",
-                          inventoryProductCategory: "",
-                        }
-                      : {}),
-                  }));
-                }}
+                    inventoryProductCategory: e.target.value,
+                    inventoryIngredientId: "", // reset product when category changes
+                  }))
+                }
                 MenuProps={dropdownMenuProps}
               >
-                <MenuItem value="ingredients">Ingredients (recipe)</MenuItem>
-                <MenuItem value="direct">Direct Inventory (product)</MenuItem>
+                <MenuItem value="">
+                  <em>All categories</em>
+                </MenuItem>
+                {productInvCategories.map((c) => (
+                  <MenuItem key={c.id} value={c.name}>
+                    {c.name}
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
 
-            {String(f.stockMode || "ingredients") === "direct" && (
-              <Stack spacing={2}>
-                {/* ✅ Product Category filter */}
-                <FormControl fullWidth size="small">
-                  <InputLabel id="create-direct-cat-label">Product Category</InputLabel>
-                  <Select
-                    labelId="create-direct-cat-label"
-                    label="Product Category"
-                    value={f.inventoryProductCategory || ""}
-                    onChange={(e) =>
-                      setF((s) => ({
-                        ...s,
-                        inventoryProductCategory: e.target.value,
-                        inventoryIngredientId: "", // reset product when category changes
-                      }))
-                    }
-                    MenuProps={dropdownMenuProps}
-                  >
-                    <MenuItem value="">
-                      <em>All categories</em>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              {/* Inventory Product */}
+              <FormControl fullWidth size="small">
+                <InputLabel id="add-direct-product-label">Inventory Product</InputLabel>
+                <Select
+                  labelId="add-direct-product-label"
+                  label="Inventory Product"
+                  value={f.inventoryIngredientId || ""}
+                  onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                  MenuProps={dropdownMenuProps}
+                  renderValue={(val) => {
+                    if (!val) return <em>Select Inventory Product</em>;
+                    const picked = inventoryProducts.find((p) => String(p.id) === String(val));
+                    return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
+                  }}
+                >
+                  {inventoryProducts.length === 0 ? (
+                    <MenuItem value="" disabled>
+                      <em>No products found</em>
                     </MenuItem>
-
-                    {productInvCategories.map((c) => (
-                      <MenuItem key={c.id} value={c.name}>
-                        {c.name}
+                  ) : (
+                    inventoryProducts.map((p) => (
+                      <MenuItem key={p.id} value={p.id}>
+                        {renderInvOption(p)}
                       </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
+                    ))
+                  )}
+                </Select>
+              </FormControl>
 
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  {/* Inventory Product */}
-                  <FormControl
-                    fullWidth
-                    size="small"
-                    required
-                    error={createShowErrors && !f.inventoryIngredientId}
-                  >
-                    <InputLabel id="create-direct-product-label">Inventory Product</InputLabel>
-                    <Select
-                      labelId="create-direct-product-label"
-                      label="Inventory Product"
-                      value={f.inventoryIngredientId || ""}
-                      onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
-                      MenuProps={dropdownMenuProps}
-                      renderValue={(val) => {
-                        if (!val) return <em>Select Inventory Product</em>;
-                        const picked = inventoryProducts.find(p => String(p.id) === String(val));
-                        return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                      }}
-                    >
-                      {inventoryProducts.length === 0 ? (
-                        <MenuItem value="" disabled>
-                          <em>No products found</em>
-                        </MenuItem>
-                      ) : (
-                        inventoryProducts.map((p) => (
-                          <MenuItem key={p.id} value={p.id}>
-                            {renderInvOption(p)}
-                          </MenuItem>
-                        ))
-                      )}
-                    </Select>
-                  </FormControl>
-
-                  {/* Deduct Qty */}
-                  <TextField
-                    label="Deduct Qty"
-                    size="small"
-                    value={f.inventoryDeductQty || "1"}
-                    onChange={(e) => {
-                      const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                      setF((s) => ({ ...s, inventoryDeductQty: v }));
-                    }}
-                    inputMode="decimal"
-                    helperText="How much inventory to deduct per 1 item sold"
-                    sx={{ minWidth: { sm: 220 } }}
-                  />
-                </Stack>
-              </Stack>
-            )}
+              {/* Deduct Qty */}
+              <TextField
+                label="Deduct Qty"
+                size="small"
+                value={f.inventoryDeductQty || "1"}
+                onChange={(e) => {
+                  const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
+                  setF((s) => ({ ...s, inventoryDeductQty: v }));
+                }}
+                inputMode="decimal"
+                helperText="How much inventory to deduct per 1 item sold"
+                sx={{ minWidth: { sm: 220 } }}
+                disabled={!f.inventoryIngredientId}
+              />
+            </Stack>
           </Stack>
-
-          {/* ✅ Only show recipe UI when stockMode = ingredients */}
-          {String(f.stockMode || "ingredients") === "ingredients" ? (
-            <>
-              <Divider />
-
-              {/* Section 2: Ingredients */}
-              <Stack spacing={1}>
-                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} flexWrap="wrap">
-                  <Typography fontWeight={700}>Ingredients</Typography>
-                  <Button size="small" onClick={addIngredientRow} startIcon={<AddIcon />}>Add Ingredient</Button>
-                </Stack>
-
-                <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 1, overflow: "hidden" }}>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell width="25%">Inventory Category</TableCell>
-                        <TableCell width="45%">Inventory Name</TableCell>
-                        <TableCell width="20%">Qty</TableCell>
-                        <TableCell align="right" width={40}></TableCell>
-                      </TableRow>
-                    </TableHead>
-
-                    <TableBody>
-                      {itemIngredients.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={3}>
-                            <Typography variant="body2" color="text.secondary">
-                              No ingredients added yet.
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        itemIngredients.map((row) => (
-                          <TableRow key={row.id}>
-                            {/* Category selector (NEW) */}
-                            <TableCell>
-                              <FormControl fullWidth size="small">
-                                <Select
-                                  value={row.category || ""}
-                                  displayEmpty
-                                  onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
-                                  MenuProps={dropdownMenuProps}
-                                >
-                                  <MenuItem value="">
-                                    <em>Select category</em>
-                                  </MenuItem>
-                                  {ingredientInvCategories.map((c) => (
-                                    <MenuItem key={c.id} value={c.name}>
-                                      {c.name}
-                                    </MenuItem>
-                                  ))}
-                                </Select>
-                              </FormControl>
-                            </TableCell>
-
-                            {/* Inventory Name selector (FILTERED + DISABLED until category picked) */}
-                            <TableCell>
-                              <FormControl fullWidth size="small">
-                                <Select
-                                  value={row.ingredientId || ""}
-                                  displayEmpty
-                                  disabled={!row.category}
-                                  onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                                  MenuProps={dropdownMenuProps}
-                                  sx={{
-                                    "& .MuiSelect-select": {
-                                      display: "flex",
-                                      alignItems: "center",
-                                      py: 1.25,
-                                    },
-                                  }}
-                                  renderValue={(val) => {
-                                    if (!row.category) return <em>Select category first</em>;
-                                    if (!val) return <em>Select ingredient</em>;
-                                    const picked = inventory.find((x) => String(x.id) === String(val));
-                                    return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
-                                  }}
-                                >
-                                  <MenuItem value="">
-                                    <em>{row.category ? "Select ingredient" : "Select category first"}</em>
-                                  </MenuItem>
-
-                                  {inventory
-                                    .filter((x) => String(x.kind || "").toLowerCase() !== "product")
-                                    .filter((x) => String(x.category || "") === String(row.category || ""))
-                                    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-                                    .map((ing) => (
-                                      <MenuItem key={ing.id} value={ing.id}>
-                                        {renderRecipeIngOption(ing)}
-                                      </MenuItem>
-                                    ))}
-                                </Select>
-                              </FormControl>
-                            </TableCell>
-
-                            {/* Qty */}
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={row.qty || ""}
-                                onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
-                                inputMode="numeric"
-                                placeholder="0"
-                                fullWidth
-                                disabled={!row.ingredientId}
-                              />
-                            </TableCell>
-
-                            {/* Remove */}
-                            <TableCell align="right">
-                              <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
-                                <DeleteOutlineIcon fontSize="small" />
-                              </IconButton>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-
-              </Stack>
-            </>
-          ) : <Divider />}
 
           {/* Item Price only – no cost/profit */}
           <Stack
@@ -1796,272 +1739,235 @@ function onSelectIngredientCategory(rowId, categoryName) {
             </Stack>
           </Stack>
 
-          {/* ✅ Stock mode */}
+          <Divider />
+
+          {/* Ingredients table */}
+          <Stack spacing={1}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              spacing={1}
+              flexWrap="wrap"
+            >
+              <Typography fontWeight={700}>Ingredients</Typography>
+              <Button
+                size="small"
+                onClick={() => {
+                  // ensure at least one row shows immediately when adding
+                  addIngredientRow();
+                }}
+                startIcon={<AddIcon />}
+              >
+                Add Ingredient
+              </Button>
+            </Stack>
+
+            <TableContainer
+              component={Paper}
+              elevation={0}
+              sx={{
+                border: "1px solid",
+                borderColor: "divider",
+                borderRadius: 1,
+                overflow: "hidden",
+              }}
+            >
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700, width: 220 }}>Inventory Category</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Inventory Name</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 160 }}>Qty</TableCell>
+                    <TableCell sx={{ width: 48 }} />
+                  </TableRow>
+                </TableHead>
+
+                <TableBody>
+                  {itemIngredients.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3}>
+                        <Typography variant="body2" color="text.secondary">
+                          No ingredients yet. Click <strong>Add Ingredient</strong>.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    itemIngredients.map((row) => (
+                      <TableRow key={row.id} hover>
+                        {/* Category selector (NEW) */}
+                        <TableCell>
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.category || ""}
+                              displayEmpty
+                              onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
+                              MenuProps={dropdownMenuProps}
+                            >
+                              <MenuItem value="">
+                                <em>Select category</em>
+                              </MenuItem>
+                              {ingredientInvCategories.map((c) => (
+                                <MenuItem key={c.id} value={c.name}>
+                                  {c.name}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
+
+                        {/* Inventory Name */}
+                        <TableCell>
+                          <FormControl fullWidth size="small">
+                            <Select
+                              value={row.ingredientId || ""}
+                              displayEmpty
+                              disabled={!row.category}
+                              onChange={(e) => onSelectInventory(row.id, e.target.value)}
+                              MenuProps={dropdownMenuProps}
+                              sx={{
+                                "& .MuiSelect-select": {
+                                  display: "flex",
+                                  alignItems: "center",
+                                  py: 1.25,
+                                },
+                              }}
+                              renderValue={(val) => {
+                                if (!row.category) return <em>Select category first</em>;
+                                if (!val) return <em>Select ingredient</em>;
+                                const picked = inventory.find((x) => String(x.id) === String(val));
+                                return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
+                              }}
+                            >
+                              <MenuItem value="">
+                                <em>{row.category ? "Select ingredient" : "Select category first"}</em>
+                              </MenuItem>
+
+                              {inventory
+                                .filter((x) => String(x.kind || "").toLowerCase() !== "product")
+                                .filter((x) => String(x.category || "") === String(row.category || ""))
+                                .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+                                .map((ing) => (
+                                  <MenuItem key={ing.id} value={ing.id}>
+                                    {renderRecipeIngOption(ing)}
+                                  </MenuItem>
+                                ))}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
+
+                        {/* Qty */}
+                        <TableCell>
+                          <TextField
+                            size="small"
+                            value={row.qty || ""}
+                            onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
+                            inputMode="numeric"
+                            placeholder="0"
+                            fullWidth
+                            disabled={!row.ingredientId}
+                          />
+                        </TableCell>
+
+                        {/* Remove */}
+                        <TableCell align="right">
+                          <Tooltip title="Remove ingredient">
+                            <span>
+                              <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+
+            </TableContainer>
+            
+          </Stack>
+
+          <Divider />
+
+          {/* ✅ Direct Inventory Product (optional) — ADD THIS IN EDIT */}
           <Stack spacing={2}>
+            <Typography fontWeight={700}>Direct Inventory Product (optional)</Typography>
+
+            {/* Product Category filter */}
             <FormControl fullWidth size="small">
-              <InputLabel id="edit-stockmode-label">Stock Mode</InputLabel>
+              <InputLabel id="edit-direct-cat-label">Product Category</InputLabel>
               <Select
-                labelId="edit-stockmode-label"
-                label="Stock Mode"
-                value={f.stockMode || "ingredients"}
-                onChange={(e) => {
-                  const mode = e.target.value;
+                labelId="edit-direct-cat-label"
+                label="Product Category"
+                value={f.inventoryProductCategory || ""}
+                onChange={(e) =>
                   setF((s) => ({
                     ...s,
-                    stockMode: mode,
-                    ...(mode !== "direct"
-                      ? {
-                          inventoryIngredientId: "",
-                          inventoryDeductQty: "1",
-                          inventoryProductCategory: "",
-                        }
-                      : {}),
-                  }));
-                }}
+                    inventoryProductCategory: e.target.value,
+                    inventoryIngredientId: "", // reset product when category changes
+                  }))
+                }
                 MenuProps={dropdownMenuProps}
               >
-                <MenuItem value="ingredients">Ingredients (recipe)</MenuItem>
-                <MenuItem value="direct">Direct Inventory (product)</MenuItem>
+                <MenuItem value="">
+                  <em>All categories</em>
+                </MenuItem>
+                {productInvCategories.map((c) => (
+                  <MenuItem key={c.id} value={c.name}>
+                    {c.name}
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
 
-            {String(f.stockMode || "ingredients") === "direct" && (
-              <Stack spacing={2}>
-                {/* ✅ Product Category filter */}
-                <FormControl fullWidth size="small">
-                  <InputLabel id="edit-direct-cat-label">Product Category</InputLabel>
-                  <Select
-                    labelId="edit-direct-cat-label"
-                    label="Product Category"
-                    value={f.inventoryProductCategory || ""}
-                    onChange={(e) =>
-                      setF((s) => ({
-                        ...s,
-                        inventoryProductCategory: e.target.value,
-                        inventoryIngredientId: "", // reset product when category changes
-                      }))
-                    }
-                    MenuProps={dropdownMenuProps}
-                  >
-                    <MenuItem value="">
-                      <em>All categories</em>
-                    </MenuItem>
-
-                    {productInvCategories.map((c) => (
-                      <MenuItem key={c.id} value={c.name}>
-                        {c.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                  {/* Inventory Product */}
-                  <FormControl
-                    fullWidth
-                    size="small"
-                    required
-                    error={editShowErrors && !f.inventoryIngredientId}
-                  >
-                    <InputLabel id="edit-direct-product-label">Inventory Product</InputLabel>
-                    <Select
-                      labelId="edit-direct-product-label"
-                      label="Inventory Product"
-                      value={f.inventoryIngredientId || ""}
-                      onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
-                      MenuProps={dropdownMenuProps}
-                      renderValue={(val) => {
-                        if (!val) return <em>Select Inventory Product</em>;
-                        const picked = inventoryProducts.find((p) => String(p.id) === String(val));
-                        return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
-                      }}
-                    >
-                      {inventoryProducts.length === 0 ? (
-                        <MenuItem value="" disabled>
-                          <em>No products found</em>
-                        </MenuItem>
-                      ) : (
-                        inventoryProducts.map((p) => (
-                          <MenuItem key={p.id} value={p.id}>
-                            {renderInvOption(p)}
-                          </MenuItem>
-                        ))
-                      )}
-                    </Select>
-                  </FormControl>
-
-                  {/* Deduct Qty */}
-                  <TextField
-                    label="Deduct Qty"
-                    size="small"
-                    value={f.inventoryDeductQty || "1"}
-                    onChange={(e) => {
-                      const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
-                      setF((s) => ({ ...s, inventoryDeductQty: v }));
-                    }}
-                    inputMode="decimal"
-                    helperText="How much inventory to deduct per 1 item sold"
-                    sx={{ minWidth: { sm: 220 } }}
-                  />
-                </Stack>
-              </Stack>
-            )}
-          </Stack>
-
-          {/* ✅ Only show recipe UI when stockMode = ingredients */}
-          {String(f.stockMode || "ingredients") === "ingredients" ? (
-            <>
-              <Divider />
-
-              {/* Ingredients table */}
-              <Stack spacing={1}>
-                <Stack
-                  direction="row"
-                  alignItems="center"
-                  justifyContent="space-between"
-                  spacing={1}
-                  flexWrap="wrap"
-                >
-                  <Typography fontWeight={700}>Ingredients</Typography>
-                  <Button
-                    size="small"
-                    onClick={() => {
-                      // ensure at least one row shows immediately when adding
-                      addIngredientRow();
-                    }}
-                    startIcon={<AddIcon />}
-                  >
-                    Add Ingredient
-                  </Button>
-                </Stack>
-
-                <TableContainer
-                  component={Paper}
-                  elevation={0}
-                  sx={{
-                    border: "1px solid",
-                    borderColor: "divider",
-                    borderRadius: 1,
-                    overflow: "hidden",
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              {/* Inventory Product */}
+              <FormControl fullWidth size="small">
+                <InputLabel id="edit-direct-product-label">Inventory Product</InputLabel>
+                <Select
+                  labelId="edit-direct-product-label"
+                  label="Inventory Product"
+                  value={f.inventoryIngredientId || ""}
+                  onChange={(e) => setF((s) => ({ ...s, inventoryIngredientId: e.target.value }))}
+                  MenuProps={dropdownMenuProps}
+                  renderValue={(val) => {
+                    if (!val) return <em>Select Inventory Product</em>;
+                    const picked = inventoryProducts.find((p) => String(p.id) === String(val));
+                    return picked ? renderInvOption(picked) : <em>Select Inventory Product</em>;
                   }}
                 >
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={{ fontWeight: 700, width: 220 }}>Inventory Category</TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>Inventory Name</TableCell>
-                        <TableCell sx={{ fontWeight: 700, width: 160 }}>Qty</TableCell>
-                        <TableCell sx={{ width: 48 }} />
-                      </TableRow>
-                    </TableHead>
+                  {inventoryProducts.length === 0 ? (
+                    <MenuItem value="" disabled>
+                      <em>No products found</em>
+                    </MenuItem>
+                  ) : (
+                    inventoryProducts.map((p) => (
+                      <MenuItem key={p.id} value={p.id}>
+                        {renderInvOption(p)}
+                      </MenuItem>
+                    ))
+                  )}
+                </Select>
+              </FormControl>
 
-                    <TableBody>
-                      {itemIngredients.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={3}>
-                            <Typography variant="body2" color="text.secondary">
-                              No ingredients yet. Click <strong>Add Ingredient</strong>.
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        itemIngredients.map((row) => (
-                          <TableRow key={row.id} hover>
-                            {/* Category selector (NEW) */}
-                            <TableCell>
-                              <FormControl fullWidth size="small">
-                                <Select
-                                  value={row.category || ""}
-                                  displayEmpty
-                                  onChange={(e) => onSelectIngredientCategory(row.id, e.target.value)}
-                                  MenuProps={dropdownMenuProps}
-                                >
-                                  <MenuItem value="">
-                                    <em>Select category</em>
-                                  </MenuItem>
-                                  {ingredientInvCategories.map((c) => (
-                                    <MenuItem key={c.id} value={c.name}>
-                                      {c.name}
-                                    </MenuItem>
-                                  ))}
-                                </Select>
-                              </FormControl>
-                            </TableCell>
-
-                            {/* Inventory Name */}
-                            <TableCell>
-                              <FormControl fullWidth size="small">
-                                <Select
-                                  value={row.ingredientId || ""}
-                                  displayEmpty
-                                  disabled={!row.category}
-                                  onChange={(e) => onSelectInventory(row.id, e.target.value)}
-                                  MenuProps={dropdownMenuProps}
-                                  sx={{
-                                    "& .MuiSelect-select": {
-                                      display: "flex",
-                                      alignItems: "center",
-                                      py: 1.25,
-                                    },
-                                  }}
-                                  renderValue={(val) => {
-                                    if (!row.category) return <em>Select category first</em>;
-                                    if (!val) return <em>Select ingredient</em>;
-                                    const picked = inventory.find((x) => String(x.id) === String(val));
-                                    return picked ? renderRecipeIngOption(picked) : <em>Select ingredient</em>;
-                                  }}
-                                >
-                                  <MenuItem value="">
-                                    <em>{row.category ? "Select ingredient" : "Select category first"}</em>
-                                  </MenuItem>
-
-                                  {inventory
-                                    .filter((x) => String(x.kind || "").toLowerCase() !== "product")
-                                    .filter((x) => String(x.category || "") === String(row.category || ""))
-                                    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-                                    .map((ing) => (
-                                      <MenuItem key={ing.id} value={ing.id}>
-                                        {renderRecipeIngOption(ing)}
-                                      </MenuItem>
-                                    ))}
-                                </Select>
-                              </FormControl>
-                            </TableCell>
-
-                            {/* Qty */}
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={row.qty || ""}
-                                onChange={(e) => onRowChange(row.id, "qty", e.target.value)}
-                                inputMode="numeric"
-                                placeholder="0"
-                                fullWidth
-                                disabled={!row.ingredientId}
-                              />
-                            </TableCell>
-
-                            {/* Remove */}
-                            <TableCell align="right">
-                              <Tooltip title="Remove ingredient">
-                                <span>
-                                  <IconButton size="small" onClick={() => removeIngredientRow(row.id)}>
-                                    <DeleteOutlineIcon fontSize="small" />
-                                  </IconButton>
-                                </span>
-                              </Tooltip>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-
-                </TableContainer>
-                
-              </Stack>
-            </>
-          ) : <Divider />}
+              {/* Deduct Qty */}
+              <TextField
+                label="Deduct Qty"
+                size="small"
+                value={f.inventoryDeductQty || "1"}
+                onChange={(e) => {
+                  const v = String(e.target.value ?? "").replace(/[^0-9.]/g, "");
+                  setF((s) => ({ ...s, inventoryDeductQty: v }));
+                }}
+                inputMode="decimal"
+                helperText="How much inventory to deduct per 1 item sold"
+                sx={{ minWidth: { sm: 220 } }}
+                disabled={!f.inventoryIngredientId}
+              />
+            </Stack>
+          </Stack>
 
           {saveErr && (
             <Typography variant="body2" color="error">

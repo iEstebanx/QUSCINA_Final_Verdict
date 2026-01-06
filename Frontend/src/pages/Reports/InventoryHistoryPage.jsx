@@ -75,17 +75,6 @@ const comfyCells = {
 const formatNumber = (n) =>
   Number(n || 0).toLocaleString("en-PH", { maximumFractionDigits: 3 });
 
-const formatNumberMoney = (n) =>
-  Number(n || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-
-const peso = (n) => `₱${formatNumberMoney(n)}`;
-
-// PDF-safe: jsPDF default fonts can't reliably render ₱
-const pdfMoney = (n) => `PHP ${formatNumberMoney(n)}`;
-
 const pdfSafeText = (v) => {
   if (v === null || v === undefined) return "";
   return String(v)
@@ -244,7 +233,6 @@ export default function InventoryHistoryPage() {
         const rows = (j.rows || []).map((r) => ({
           ...r,
           qty: Number(r.qty || 0),
-          price: Number(r.price || 0),
         }));
 
         setActivity(rows);
@@ -291,8 +279,6 @@ export default function InventoryHistoryPage() {
         beginStock: previousEnd,
         adjust,
         endStock: newEnd,
-        unitCost: r.price,
-        totalValue: r.price * Math.abs(r.qty),
       };
     });
 
@@ -585,7 +571,6 @@ export default function InventoryHistoryPage() {
         "Adjustment",
         "New Stock",
         "Unit",
-        "Value",
       ]],
       body: baseRows.map((r) => [
         pdfSafeText(formatDateTime(r.ts)),
@@ -596,7 +581,6 @@ export default function InventoryHistoryPage() {
         pdfSafeText(r.adjust >= 0 ? `+${formatNumber(r.adjust)}` : formatNumber(r.adjust)),
         pdfSafeText(formatNumber(r.endStock)),
         pdfSafeText(r.unit),
-        pdfMoney(r.totalValue),
       ]),
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 4 },
@@ -810,7 +794,6 @@ export default function InventoryHistoryPage() {
                     <TableCell>Stock Adjustment</TableCell>
                     <TableCell>New Stock</TableCell>
                     <TableCell>Unit</TableCell>
-                    <TableCell align="right">Value</TableCell>
                   </TableRow>
                 </TableHead>
 
@@ -836,13 +819,12 @@ export default function InventoryHistoryPage() {
 
                       <TableCell>{formatNumber(row.endStock)}</TableCell>
                       <TableCell>{row.unit}</TableCell>
-                      <TableCell align="right">{peso(row.totalValue)}</TableCell>
                     </TableRow>
                   ))}
 
                   {filtered.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={9} align="center">
+                      <TableCell colSpan={8} align="center">
                         <Typography color="text.secondary">
                           No history records found for this range/search.
                         </Typography>

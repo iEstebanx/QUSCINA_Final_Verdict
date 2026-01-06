@@ -317,8 +317,8 @@ CREATE TABLE IF NOT EXISTS `items` (
   `active` TINYINT(1) NOT NULL DEFAULT 1,
 
   -- STOCK MODE (OPTION 2)
-  `stockMode` ENUM('ingredients','direct')
-    NOT NULL DEFAULT 'ingredients',
+  'stockMode' ENUM('ingredients','direct','hybrid')
+    NOT NULL DEFAULT 'ingredients';
 
   -- Direct inventory link
   `inventoryIngredientId` INT UNSIGNED NULL,
@@ -351,13 +351,12 @@ CREATE TABLE IF NOT EXISTS `items` (
     REFERENCES `inventory_ingredients` (`id`)
     ON UPDATE CASCADE
     ON DELETE SET NULL,
-
-  -- ✅ Enforce recipe when stockMode = ingredients
-  CONSTRAINT `chk_items_stockmode_ingredients_requires_recipe`
+    
+  CONSTRAINT 'chk_items_stockmode_recipe_required'
     CHECK (
-      `stockMode` <> 'ingredients'
-      OR (`ingredients` IS NOT NULL AND JSON_LENGTH(`ingredients`) > 0)
-    )
+      'stockMode' NOT IN ('ingredients','hybrid')
+      OR (ingredients IS NOT NULL AND JSON_LENGTH(ingredients) > 0)
+    );
 ) ENGINE=InnoDB
 DEFAULT CHARSET=utf8mb4
 COLLATE=utf8mb4_unicode_ci;

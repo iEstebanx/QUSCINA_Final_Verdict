@@ -316,6 +316,7 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
 
   const deduceByInvId = new Map(); // invId -> qtyToDeduct (DECIMAL)
   const details = []; // optional debug
+  const directInvIds = new Set();
 
   for (const it of items) {
     const id = Number(it?.id);
@@ -325,16 +326,15 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
     const stockMode = String(meta?.stockMode || "ingredients").toLowerCase();
 
     if (!meta) {
-      // If missing item row, skip silently (or throw if you want)
       details.push({ itemId: id, stockMode: "missing_item_row" });
       continue;
     }
 
+    // ---------- INGREDIENTS MODE (recipe only) ----------
     if (stockMode === "ingredients") {
       let recipe = safeJsonParse(meta.ingredients, []);
       if (!Array.isArray(recipe)) recipe = [];
 
-      // normalize recipe rows; ingredientId stored as string in your design
       recipe = recipe
         .map((r) => ({
           ingredientId: String(r?.ingredientId ?? "").trim(),
@@ -342,7 +342,6 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
         }))
         .filter((r) => r.ingredientId && r.qty > 0);
 
-      // enforce recipe existence for ingredients mode (matches CHECK)
       if (!recipe.length) {
         details.push({ itemId: id, stockMode, error: "no_recipe" });
         continue;
@@ -352,7 +351,7 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
         const invId = Number(r.ingredientId);
         if (!Number.isFinite(invId) || invId <= 0) continue;
 
-        const need = (safeNumber(r.qty, 0) * orderQty);
+        const need = safeNumber(r.qty, 0) * orderQty;
         if (!need) continue;
 
         const prev = deduceByInvId.get(invId) || 0;
@@ -360,7 +359,11 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
       }
 
       details.push({ itemId: id, stockMode, recipeRows: recipe.length });
-    } else if (stockMode === "direct") {
+      continue;
+    }
+
+    // ---------- DIRECT MODE (direct only) ----------
+    if (stockMode === "direct") {
       const invId = Number(meta.inventoryIngredientId);
       const deductPerUnit = safeNumber(meta.inventoryDeductQty, 1);
 
@@ -373,17 +376,73 @@ async function buildInventoryDeductionsFromCartItems(conn, cartItems = []) {
       const prev = deduceByInvId.get(invId) || 0;
       deduceByInvId.set(invId, round2(prev + need));
 
+      directInvIds.add(invId); // ✅ mark as direct-used
       details.push({ itemId: id, stockMode, invId, deductPerUnit });
-    } else {
-      details.push({ itemId: id, stockMode, error: "unknown_stockmode" });
+      continue;
     }
+
+    // ---------- HYBRID MODE (recipe + optional direct) ----------
+    if (stockMode === "hybrid") {
+      // A) recipe part (same normalization as ingredients mode)
+      let recipe = safeJsonParse(meta.ingredients, []);
+      if (!Array.isArray(recipe)) recipe = [];
+
+      recipe = recipe
+        .map((r) => ({
+          ingredientId: String(r?.ingredientId ?? "").trim(),
+          qty: safeNumber(r?.qty ?? r?.quantity ?? r?.amount, 0),
+        }))
+        .filter((r) => r.ingredientId && r.qty > 0);
+
+      // We DO NOT force recipe to exist for hybrid (hybrid may be direct-only)
+      for (const r of recipe) {
+        const invId = Number(r.ingredientId);
+        if (!Number.isFinite(invId) || invId <= 0) continue;
+
+        const need = safeNumber(r.qty, 0) * orderQty;
+        if (!need) continue;
+
+        const prev = deduceByInvId.get(invId) || 0;
+        deduceByInvId.set(invId, round2(prev + need));
+      }
+
+      // B) direct part (if linked)
+      const invId = Number(meta.inventoryIngredientId);
+      const deductPerUnit = safeNumber(meta.inventoryDeductQty, 1);
+
+      if (invId) {
+        const need = (deductPerUnit > 0 ? deductPerUnit : 1) * orderQty;
+        const prev = deduceByInvId.get(invId) || 0;
+        deduceByInvId.set(invId, round2(prev + need));
+
+        directInvIds.add(invId); // ✅ hybrid direct link must also be Product
+      }
+
+      // Optional strictness: if BOTH are missing, mark it
+      if (!recipe.length && !invId) {
+        details.push({ itemId: id, stockMode, error: "hybrid_empty" });
+      } else {
+        details.push({
+          itemId: id,
+          stockMode,
+          recipeRows: recipe.length,
+          hasDirect: !!invId,
+          ...(invId ? { invId, deductPerUnit } : {}),
+        });
+      }
+
+      continue;
+    }
+
+    // ---------- UNKNOWN ----------
+    details.push({ itemId: id, stockMode, error: "unknown_stockmode" });
   }
 
-  return { deduceByInvId, details };
+  return { deduceByInvId, details, directInvIds };
 }
 
 async function assertEnoughInventoryForCart(conn, cartItems = []) {
-  const { deduceByInvId, details } =
+  const { deduceByInvId, details, directInvIds } =
     await buildInventoryDeductionsFromCartItems(conn, cartItems);
 
   const invIds = Array.from(deduceByInvId.keys());
@@ -432,7 +491,7 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
 
     // "direct must link to product" rule: we can only know which invIds are direct
     // by looking at details. We'll be strict: if ANY detail indicates direct invId, enforce kind.
-    const usedAsDirect = details.some((d) => d?.stockMode === "direct" && Number(d?.invId) === invId);
+    const usedAsDirect = directInvIds?.has(invId);
     if (usedAsDirect && Number(inv.inventoryTypeId || 1) !== 2) {
       problems.push({
         invId,
@@ -460,6 +519,7 @@ async function assertEnoughInventoryForCart(conn, cartItems = []) {
     err.httpStatus = 409;
     err.code = "INSUFFICIENT_INVENTORY";
     err.problems = problems;
+    err.details = details;
     throw err;
   }
 }
@@ -491,8 +551,8 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
   // ---- cash change helpers (Backoffice POS) ----
   router.post("/check-inventory", async (req, res) => {
+    const { items = [] } = req.body || {};
     try {
-      const { items = [] } = req.body || {};
 
       if (!Array.isArray(items) || !items.length) {
         await safeLogOrderAudit({
@@ -832,27 +892,21 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         await safeLogOrderAudit({
           app,
           action: "Save Pending Order",
-          success: true,
-          reason: "ok",
+          success: false,
+          reason: "validation_error",
           employeeId,
           shiftId,
-          orderId,
-          role: req.user?.role, // optional (resolveRoleFromEmployeeId will cover too)
-          items: items.map(it => ({
+          role: req.user?.role,
+          items: (items || []).map(it => ({
             name: it.name,
             qty: safeNumber(it.qty ?? it.quantity, 1),
             price: safeNumber(it.price, 0),
             discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
           })),
-          extra: {
-            terminalId,
-            orderType,
-            netAmount: totals.net_amount,
-            discountAmount: totals.discount_amount,
-          },
+          extra: { terminalId, orderType, customerName, tableNo },
           req,
         });
-        
+
         return res.status(400).json({
           ok: false,
           error: "Missing shiftId / terminalId / employeeId",
@@ -2035,12 +2089,12 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
           success: false,
           reason: "server_error",
           orderId,
-          items: items.map(it => ({
-            name: it.name,
-            qty: safeNumber(it.qty ?? it.quantity, 1),
-            price: safeNumber(it.price, 0),
-            discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
-          })),
+          shiftId: req.body?.shiftId,
+          items: [{
+            name: itemName || "Refund",
+            qty: safeNumber(qty, 1),
+            price: round2(rawAmt),
+          }],
           extra: {
             amount: rawAmt,
             methodName: methodName || null,
@@ -2077,7 +2131,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         orderId,
         employeeId,
         items: [{
-          name: it.item_name,
+          name: `Item #${itemId}`,
           qty: reqQty,
           price: safeNumber(it.item_price, 0),
         }],
@@ -2757,7 +2811,8 @@ router.post("/charge", async (req, res) => {
       return res.status(409).json({
         ok: false,
         code: "INSUFFICIENT_INVENTORY",
-        problems: e.problems || [],
+        problems: e.problems || [],      // what inventory failed
+        details: e.details || [],        // how deduction was computed (debug)
         error: "Insufficient inventory to complete the sale",
       });
     }

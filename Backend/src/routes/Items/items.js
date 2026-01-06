@@ -88,13 +88,6 @@ function parseJsonArrayMaybe(raw) {
   return [];
 }
 
-const STOCK_MODES = new Set(["ingredients", "direct"]);
-
-function normalizeStockMode(v) {
-  const s = String(v ?? "").trim().toLowerCase();
-  return STOCK_MODES.has(s) ? s : null;
-}
-
 async function getInventoryRow(db, id) {
   const rows = await db.query(
     `SELECT id, name, inventory_type_id, currentStock
@@ -115,16 +108,23 @@ async function getInventoryRow(db, id) {
  * Returns normalized fields ready for INSERT/UPDATE:
  * { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients }
  */
+function deriveStockMode(ingredients, inventoryIngredientId) {
+  const hasIng = Array.isArray(ingredients) && ingredients.length > 0;
+  const hasDirect = !!inventoryIngredientId;
+
+  if (hasIng && hasDirect) return "hybrid";
+  if (hasIng) return "ingredients";
+  if (hasDirect) return "direct";
+  return "none";
+}
+
 async function validateAndNormalizeStockFields(db, input) {
-  const stockMode =
-    normalizeStockMode(input.stockMode) || "ingredients";
+  const rawIngredients = parseJsonArrayMaybe(input.ingredients);
 
- const rawIngredients = parseJsonArrayMaybe(input.ingredients);
-
-  // ✅ Normalize ingredients for consistent frontend behavior
+  // Normalize recipe ingredients
   const ingredients = rawIngredients
     .map((r) => ({
-      ingredientId: String(r?.ingredientId ?? "").trim(), // KEEP AS STRING
+      ingredientId: String(r?.ingredientId ?? "").trim(), // KEEP STRING
       name: normalize(r?.name),
       category: normalize(r?.category),
       unit: normalize(r?.unit),
@@ -132,6 +132,7 @@ async function validateAndNormalizeStockFields(db, input) {
     }))
     .filter((r) => r.ingredientId && r.qty > 0);
 
+  // Normalize direct inventory link
   let inventoryIngredientId = null;
   if (input.inventoryIngredientId != null && input.inventoryIngredientId !== "") {
     const n = Number(input.inventoryIngredientId);
@@ -140,48 +141,29 @@ async function validateAndNormalizeStockFields(db, input) {
 
   let inventoryDeductQty = cleanDecimalQty(input.inventoryDeductQty, 1.0);
 
-  // Basic numeric constraints
-  if (inventoryDeductQty <= 0) {
-    throw new Error("inventoryDeductQty must be greater than 0.");
-  }
-  // keep it within DECIMAL(12,3) practical sanity
-  if (inventoryDeductQty > 999999999.999) {
-    throw new Error("inventoryDeductQty is too large.");
-  }
+  // If there is NO direct link, deduct qty is irrelevant — normalize to 1
+  if (!inventoryIngredientId) inventoryDeductQty = 1.0;
 
-  if (stockMode === "ingredients") {
-    if (!ingredients || ingredients.length === 0) {
-      // your DB CHECK will also reject this; backend gives nicer message
-      throw new Error("stockMode=ingredients requires at least 1 ingredient in recipe.");
-    }
-    // For ingredients mode, ignore direct-link fields
-    inventoryIngredientId = null;
-    inventoryDeductQty = 1.0;
-  }
+  // If there IS direct link, validate qty
+  if (inventoryIngredientId) {
+    if (inventoryDeductQty <= 0) throw new Error("inventoryDeductQty must be greater than 0.");
+    if (inventoryDeductQty > 999999999.999) throw new Error("inventoryDeductQty is too large.");
 
-  if (stockMode === "direct") {
-    if (!inventoryIngredientId) {
-      throw new Error("stockMode=direct requires inventoryIngredientId.");
-    }
-
+    // Must be Product type
     const inv = await getInventoryRow(db, inventoryIngredientId);
-    if (!inv) {
-      throw new Error("Selected inventory item does not exist.");
-    }
-
-    // ✅ Recommended: force direct-mode to use only inventory.kind='product'
-    // If you want to allow ingredients too, remove this block.
+    if (!inv) throw new Error("Selected inventory item does not exist.");
     if (Number(inv.inventory_type_id || 1) !== 2) {
-      throw new Error(
-        "Direct stock mode can only link to inventory items marked as Product."
-      );
+      throw new Error("Direct inventory link can only use inventory items marked as Product.");
     }
-
-    // For direct mode, recipe is optional but typically empty
-    // (You can keep ingredients as-is if you want, but best to keep recipe empty)
-    // We'll keep whatever was provided, but you can force empty if you prefer:
-    // ingredients = [];
   }
+
+  // ✅ Require at least one source (keep this rule since your frontend also enforces it)
+  if (!ingredients.length && !inventoryIngredientId) {
+    throw new Error("Item must have at least one stock source (ingredients or direct inventory).");
+  }
+
+  // ✅ stockMode becomes derived, not user-chosen
+  const stockMode = deriveStockMode(ingredients, inventoryIngredientId);
 
   return { stockMode, inventoryIngredientId, inventoryDeductQty, ingredients };
 }
@@ -465,7 +447,6 @@ module.exports = ({ db } = {}) => {
 
       // ✅ Stock normalization (Option 2)
       const norm = await validateAndNormalizeStockFields(db, {
-        stockMode: b.stockMode,
         inventoryIngredientId: b.inventoryIngredientId,
         inventoryDeductQty: b.inventoryDeductQty,
         ingredients: b.ingredients,
@@ -649,34 +630,38 @@ module.exports = ({ db } = {}) => {
       // ✅ Stock normalization if any related field touched
       if (touchingStock) {
         // Use incoming values if present, otherwise fallback to existing row
-        const incoming = {
-          stockMode:
-            Object.prototype.hasOwnProperty.call(b, "stockMode")
-              ? b.stockMode
-              : before.stockMode,
-          inventoryIngredientId:
-            Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId")
-              ? b.inventoryIngredientId
-              : before.inventoryIngredientId,
-          inventoryDeductQty:
-            Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty")
-              ? b.inventoryDeductQty
-              : before.inventoryDeductQty,
-          ingredients:
-            Object.prototype.hasOwnProperty.call(b, "ingredients")
-              ? b.ingredients
-              : before.ingredients,
-        };
+          const incoming = {
+            inventoryIngredientId:
+              Object.prototype.hasOwnProperty.call(b, "inventoryIngredientId")
+                ? b.inventoryIngredientId
+                : before.inventoryIngredientId,
 
-        const norm = await validateAndNormalizeStockFields(db, incoming);
+            inventoryDeductQty:
+              Object.prototype.hasOwnProperty.call(b, "inventoryDeductQty")
+                ? b.inventoryDeductQty
+                : before.inventoryDeductQty,
 
-        sets.push("stockMode = ?", "inventoryIngredientId = ?", "inventoryDeductQty = ?", "ingredients = ?");
-        params.push(
-          norm.stockMode,
-          norm.inventoryIngredientId,
-          norm.inventoryDeductQty,
-          JSON.stringify(norm.ingredients || [])
-        );
+            ingredients:
+              Object.prototype.hasOwnProperty.call(b, "ingredients")
+                ? b.ingredients
+                : before.ingredients,
+          };
+
+          const norm = await validateAndNormalizeStockFields(db, incoming);
+
+          sets.push(
+            "stockMode = ?",
+            "inventoryIngredientId = ?",
+            "inventoryDeductQty = ?",
+            "ingredients = ?"
+          );
+
+          params.push(
+            norm.stockMode,
+            norm.inventoryIngredientId,
+            norm.inventoryDeductQty,
+            JSON.stringify(norm.ingredients || [])
+          );
       } else {
         // If ingredients came alone (shouldn't), keep old behavior: ignore
         // (touchingStock covers it)

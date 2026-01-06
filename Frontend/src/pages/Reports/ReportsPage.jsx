@@ -334,10 +334,39 @@ const bestSellerExportTitle = useMemo(() => {
 }, [bestCategoryLabel, bestTopLabel, bestSortLabel]);
 
 useEffect(() => {
+  let alive = true;
+
   fetch("/api/reports/best-seller-categories")
     .then((r) => r.json())
-    .then((j) => setBestSellerCategoryOptions(j?.ok ? (j.data || []) : []))
-    .catch(() => setBestSellerCategoryOptions([]));
+    .then((j) => {
+      if (!alive) return;
+
+      const rows = j?.ok ? (j.data || []) : [];
+
+      // ✅ Remove Uncategorized (and also guard null/0 categories)
+      const cleaned = rows.filter((c) => {
+        const name = String(c?.name ?? "").trim().toLowerCase();
+        const id = c?.categoryId;
+
+        if (!name) return false;
+        if (name === "uncategorized") return false;
+        if (id === null || id === undefined) return false;
+        // optional: if your backend uses 0 for uncategorized
+        if (String(id) === "0") return false;
+
+        return true;
+      });
+
+      setBestSellerCategoryOptions(cleaned);
+    })
+    .catch(() => {
+      if (!alive) return;
+      setBestSellerCategoryOptions([]);
+    });
+
+  return () => {
+    alive = false;
+  };
 }, []);
 
   const blurOnFocus = (e) => {

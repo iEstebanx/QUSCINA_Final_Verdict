@@ -464,6 +464,29 @@ const formatInventoryProblems = (problems = []) => {
     }
   };
 
+const dropdownMenuProps = {
+  MenuListProps: { disablePadding: true },
+  PaperProps: {
+    className: "scroll-x",
+    sx: (theme) => ({
+      maxHeight: 320,
+      "& .MuiList-root": { py: 0 },
+      "& .MuiMenuItem-root": {
+        px: 1.5,
+        mx: -1.5,
+        borderRadius: 0,
+      },
+      "& .MuiMenuItem-root.Mui-disabled": {
+        px: 1.5,
+        mx: -1.5,
+        opacity: 1,
+        color: "text.secondary",
+        fontStyle: "italic",
+      },
+    }),
+  },
+};
+
   return (
     <Box className={styles.pageRoot} sx={(t) => cssVars(t)}>
       {/* Top bar */}
@@ -474,6 +497,7 @@ const formatInventoryProblems = (problems = []) => {
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               displayEmpty
+              MenuProps={dropdownMenuProps}
             >
               <MenuItem value="">
                 <em>Category</em>

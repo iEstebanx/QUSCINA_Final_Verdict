@@ -22,7 +22,6 @@ import {
   Stack,
   Button,
   Chip,
-  Avatar,
   Card,
   CardContent,
 } from "@mui/material";
@@ -33,8 +32,6 @@ import {
   Cell,
   ResponsiveContainer,
 } from "recharts";
-import TrendingUpIcon from "@mui/icons-material/TrendingUp";
-import TrendingDownIcon from "@mui/icons-material/TrendingDown";
 import InventoryIcon from "@mui/icons-material/Inventory";
 import PaymentIcon from "@mui/icons-material/Payment";
 import PeopleIcon from "@mui/icons-material/People";
@@ -73,20 +70,6 @@ const formatDateTime = (iso) => {
   } catch {
     return "-";
   }
-};
-
-const SORT_LABELS = {
-  orders_desc: "Orders (High → Low)",
-  orders_asc: "Orders (Low → High)",
-  sales_desc: "Sales (High → Low)",
-  sales_asc: "Sales (Low → High)",
-};
-
-const SORT_SHORT = {
-  orders_desc: "Orders ↓",
-  orders_asc: "Orders ↑",
-  sales_desc: "Sales ↓",
-  sales_asc: "Sales ↑",
 };
 
 const startOfWeekMon = (d) => {
@@ -262,7 +245,99 @@ export default function DashboardPage() {
   const [availableYears, setAvailableYears] = useState([]);
 const [availableMonthsByYear, setAvailableMonthsByYear] = useState({});
 
-const [bestItemSort, setBestItemSort] = useState("orders_desc"); 
+// ------------------------ Best Seller (Dashboard inline) ------------------------
+const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | "m:<id>" | "inv:<id>"
+const [bestItemLimit, setBestItemLimit] = useState("10");       // "all" | "5" | "10" | "20"
+const [bestItemSort, setBestItemSort] = useState("orders_desc");
+
+const [bestSellerItems, setBestSellerItems] = useState([]);
+const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
+
+const [reloadTick, setReloadTick] = useState(0); // optional, cache-buster
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    try {
+      const resp = await fetch(joinApi("api/reports/best-seller-categories"), { cache: "no-store" });
+      const json = await resp.json().catch(() => ({}));
+      if (!alive) return;
+
+      const rows = json?.ok ? (json.data || []) : [];
+
+      // Optional cleanup like your ReportsPage
+      const cleaned = rows.filter((c) => {
+        const name = String(c?.name ?? "").trim().toLowerCase();
+        if (!name) return false;
+        if (name === "uncategorized") return false;
+        return true;
+      });
+
+      setBestSellerCategoryOptions(cleaned);
+    } catch (e) {
+      if (!alive) return;
+      setBestSellerCategoryOptions([]);
+    }
+  })();
+
+  return () => { alive = false; };
+}, []);
+
+useEffect(() => {
+  let alive = true;
+
+  (async () => {
+    try {
+      const qs =
+        customFrom && customTo
+          ? `range=custom&from=${customFrom}&to=${customTo}`
+          : `range=${range}`;
+
+      const url =
+        joinApi(`api/reports/best-seller-items?${qs}`) +
+        `&categoryId=${encodeURIComponent(bestItemCategory)}` +
+        `&limit=${encodeURIComponent(bestItemLimit)}` +
+        `&_=${reloadTick}`;
+
+      const resp = await fetch(url, { cache: "no-store" });
+      const json = await resp.json().catch(() => ({}));
+      if (!alive) return;
+
+      setBestSellerItems(json?.ok ? (json.data || []) : []);
+    } catch (e) {
+      if (!alive) return;
+      setBestSellerItems([]);
+    }
+  })();
+
+  return () => { alive = false; };
+}, [range, customFrom, customTo, bestItemCategory, bestItemLimit, reloadTick]);
+
+const sortedBestSellerItems = useMemo(() => {
+  const arr = [...(bestSellerItems || [])];
+  const num = (v) => Number(v || 0);
+
+  const tieBreak = (a, b) => {
+    const o = num(b.orders) - num(a.orders);
+    if (o !== 0) return o;
+
+    const s = num(b.sales) - num(a.sales);
+    if (s !== 0) return s;
+
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  };
+
+  const cmpMap = {
+    orders_desc: (a, b) => (num(b.orders) - num(a.orders)) || tieBreak(a, b),
+    orders_asc:  (a, b) => (num(a.orders) - num(b.orders)) || tieBreak(a, b),
+    sales_desc:  (a, b) => (num(b.sales) - num(a.sales)) || tieBreak(a, b),
+    sales_asc:   (a, b) => (num(a.sales) - num(b.sales)) || tieBreak(a, b),
+  };
+
+  arr.sort(cmpMap[bestItemSort] || cmpMap.orders_desc);
+  return arr;
+}, [bestSellerItems, bestItemSort]);
 
 const now = dayjs();
 
@@ -276,12 +351,6 @@ const [monthYear, setMonthYear] = useState(now.year());
 const [monthIndex, setMonthIndex] = useState(now.month()); // 0..11
 
 const [availableWeekKeys, setAvailableWeekKeys] = useState([]); // ["YYYY-MM-DD", ...]
-
-// ✅ Best Seller (items)
-const [bestSellerItems, setBestSellerItems] = useState([]);
-const [bestSellerCategoryOptions, setBestSellerCategoryOptions] = useState([]);
-const [bestItemCategory, setBestItemCategory] = useState("all"); // "all" | 0 | categoryId
-const [bestItemLimit, setBestItemLimit] = useState("5"); // "all" | "5" | "10" | "20"
 
 const [activePieIndex, setActivePieIndex] = useState(-1);
 
@@ -355,13 +424,6 @@ const weekOptions = useMemo(() => {
 }, [availableWeekKeys]);
 
 const yearOptions = availableYears.length ? availableYears : [dayjs().year()];
-
-useEffect(() => {
-  fetch(joinApi("api/dashboard/best-seller-categories"), { cache: "no-store" })
-    .then((r) => r.json())
-    .then((j) => setBestSellerCategoryOptions(j?.ok ? (j.data || []) : []))
-    .catch(() => setBestSellerCategoryOptions([]));
-}, []);
 
 useEffect(() => {
   let alive = true;
@@ -702,13 +764,6 @@ const preventDateFieldWheelAndArrows = {
         const sData = await sRes.json();
         if (alive && sData.ok) setSalesSeries(sData.series);
 
-        // best sellers
-        const bRes = await fetch(
-          joinApi(`api/dashboard/best-seller-items?${qs}&categoryId=${bestItemCategory}&limit=${bestItemLimit}`)
-        );
-        const bData = await bRes.json();
-        if (alive && bData.ok) setBestSellerItems(bData.data || []);
-
         // payments
         const pRes = await fetch(
           joinApi(`api/dashboard/payments?${qs}`) // ✅ use joinApi
@@ -724,7 +779,7 @@ const preventDateFieldWheelAndArrows = {
     return () => {
       alive = false;
     };
-  }, [range, customFrom, customTo, bestItemCategory, bestItemLimit]);
+  }, [range, customFrom, customTo]);
 
   const metricsWithAccounts = {
     ...metrics,
@@ -786,34 +841,6 @@ const tableCellLastSx = {
   pr: 2.5,               // ✅ extra right padding near rounded edge
 };
 
-const sortedBestSellerItems = useMemo(() => {
-  const arr = [...bestSellerItems];
-  const num = (v) => Number(v || 0);
-
-  // stable tie-breakers (keep list consistent when values match)
-  const tieBreak = (a, b) => {
-    const o = num(b.orders) - num(a.orders);
-    if (o !== 0) return o;
-
-    const s = num(b.sales) - num(a.sales);
-    if (s !== 0) return s;
-
-    return String(a.name || "").localeCompare(String(b.name || ""));
-  };
-
-  const cmpMap = {
-    orders_desc: (a, b) => (num(b.orders) - num(a.orders)) || tieBreak(a, b),
-    orders_asc: (a, b) => (num(a.orders) - num(b.orders)) || tieBreak(a, b),
-
-    sales_desc: (a, b) => (num(b.sales) - num(a.sales)) || tieBreak(a, b),
-    sales_asc: (a, b) => (num(a.sales) - num(b.sales)) || tieBreak(a, b),
-  };
-
-  const cmp = cmpMap[bestItemSort] || cmpMap.orders_desc;
-  arr.sort(cmp);
-  return arr;
-}, [bestSellerItems, bestItemSort]);
-
 const isCurrentWeek = () => {
   if (range !== "weeks") return false;
   const mondayKey = startOfWeekMon(dayjs()).format("YYYY-MM-DD");
@@ -851,13 +878,6 @@ const rangeLabel = useMemo(() => {
 
   return "Custom";
 }, [range, weekKey, customFrom, customTo]);
-
-  const selectedCatName =
-  String(bestItemCategory) === "all"
-    ? ""
-    : (bestSellerCategoryOptions.find(
-        (c) => String(c.categoryId) === String(bestItemCategory)
-      )?.name || "");
 
   const EmptyState = ({ icon, title, description, hint }) => (
     <Box
@@ -935,6 +955,30 @@ const PaymentTooltip = ({ active, payload }) => {
     </Box>
   );
 };
+
+  const dropdownMenuProps = {
+    MenuListProps: { disablePadding: true },
+
+    PaperProps: {
+      className: "scroll-x",
+      sx: (theme) => ({
+        maxHeight: 320,
+        "& .MuiList-root": { py: 0 },
+        "& .MuiMenuItem-root": {
+          px: 1.5,
+          mx: -1.5,
+          borderRadius: 0,
+        },
+        "& .MuiMenuItem-root.Mui-disabled": {
+          px: 1.5,
+          mx: -1.5,
+          opacity: 1,
+          color: "text.secondary",
+          fontStyle: "italic",
+        },
+      }),
+    },
+  };
 
   return (
     <Box p={2}>
@@ -1210,223 +1254,136 @@ const PaymentTooltip = ({ active, payload }) => {
         {/* ============================ Best Sellers ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", lg: "span 8" } }}>
           <Paper sx={cardSx}>
-            <Box sx={cardHeaderSx}>
-              <TrendingUpIcon color="primary" />
-              <Box sx={{ width: "100%" }}>
-                <Stack
-                  direction={{ xs: "column", sm: "row" }}
-                  alignItems={{ xs: "stretch", sm: "center" }}
-                  justifyContent="space-between"
-                  gap={1}
-                >
-                  {/* Title */}
-                  <Typography
-                    variant="h6"
-                    fontWeight={800}
-                    sx={{ lineHeight: 1.1, whiteSpace: "nowrap" }}
+            <Box sx={{ ...cardHeaderSx, justifyContent: "space-between" }}>
+              <Typography variant="h6" fontWeight={800}>
+                Best Sellers
+              </Typography>
+
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <FormControl size="small" sx={{ minWidth: { xs: 160, sm: 220 } }}>
+                  <InputLabel>Category</InputLabel>
+                  <Select
+                    label="Category"
+                    value={bestItemCategory}
+                    onChange={(e) => setBestItemCategory(e.target.value)}
+                    MenuProps={dropdownMenuProps}
                   >
-                    Best Seller
-                  </Typography>
+                    <MenuItem value="all">All</MenuItem>
+                    {bestSellerCategoryOptions.map((c) => (
+                      <MenuItem key={String(c.categoryId)} value={String(c.categoryId)}>
+                        {c.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
 
-                  {/* Filters (Category on top, Sort+Top on bottom) */}
-                  <Stack
-                    direction="column"
-                    spacing={1}
-                    alignItems={{ xs: "stretch", sm: "flex-end" }}
-                    sx={{ minWidth: 0 }}
+                <FormControl size="small" sx={{ minWidth: 90 }}>
+                  <InputLabel>Top</InputLabel>
+                  <Select
+                    label="Top"
+                    value={bestItemLimit}
+                    onChange={(e) => setBestItemLimit(e.target.value)}
                   >
-                    {/* Row 1: CATEGORY */}
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      justifyContent={{ xs: "flex-start", sm: "flex-end" }}
-                      sx={{ width: "100%" }}
-                    >
-                      <FormControl
-                        size="small"
-                        sx={{
-                          flex: "0 0 auto",
-                          width: { xs: "100%", sm: 260 },
-                          minWidth: 0,
-                        }}
-                      >
-                        <InputLabel>Category</InputLabel>
-                        <Select
-                          label="Category"
-                          value={bestItemCategory}
-                          onChange={(e) => setBestItemCategory(e.target.value)}
-                        >
-                          <MenuItem value="all">All</MenuItem>
-                          {bestSellerCategoryOptions.map((c) => (
-                            <MenuItem key={c.categoryId} value={c.categoryId}>
-                              {c.name}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    </Stack>
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="5">5</MenuItem>
+                    <MenuItem value="10">10</MenuItem>
+                    <MenuItem value="20">20</MenuItem>
+                  </Select>
+                </FormControl>
 
-                    {/* Row 2: SORT + TOP */}
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      useFlexGap
-                      flexWrap="wrap"
-                      justifyContent={{ xs: "flex-start", sm: "flex-end" }}
-                      sx={{ width: "100%" }}
-                    >
-                      {/* SORT */}
-                      <FormControl
-                        size="small"
-                        sx={{
-                          flex: "0 0 auto",
-                          width: { xs: 190, sm: 200 },
-                          minWidth: 0,
-                        }}
-                      >
-                        <InputLabel>Sort</InputLabel>
-                        <Select
-                          label="Sort"
-                          value={bestItemSort}
-                          onChange={(e) => setBestItemSort(e.target.value)}
-                          renderValue={(v) =>
-                            isXs ? (SORT_SHORT[v] || SORT_LABELS[v] || "Sort") : (SORT_LABELS[v] || "Sort")
-                          }
-                          MenuProps={{
-                            PaperProps: {
-                              sx: { width: { xs: 240, sm: 220 }, maxWidth: "90vw" },
-                            },
-                            MenuListProps: { sx: { p: 0 } },
-                          }}
-                          sx={{
-                            "& .MuiSelect-select": {
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              pr: 4,
-                            },
-                          }}
-                        >
-                          <MenuItem value="orders_desc">Orders (High → Low)</MenuItem>
-                          <MenuItem value="orders_asc">Orders (Low → High)</MenuItem>
-                          <MenuItem value="sales_desc">Sales (High → Low)</MenuItem>
-                          <MenuItem value="sales_asc">Sales (Low → High)</MenuItem>
-                        </Select>
-                      </FormControl>
-
-                      {/* TOP */}
-                      <FormControl size="small" sx={{ minWidth: 90, flex: "0 0 110px" }}>
-                        <InputLabel>Top</InputLabel>
-                        <Select
-                          label="Top"
-                          value={bestItemLimit}
-                          onChange={(e) => setBestItemLimit(e.target.value)}
-                        >
-                          <MenuItem value="all">All</MenuItem>
-                          <MenuItem value="5">5</MenuItem>
-                          <MenuItem value="10">10</MenuItem>
-                          <MenuItem value="20">20</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Stack>
-                  </Stack>
-                </Stack>
-              </Box>
-
+                <FormControl size="small" sx={{ minWidth: 160 }}>
+                  <InputLabel>Sort</InputLabel>
+                  <Select
+                    label="Sort"
+                    value={bestItemSort}
+                    onChange={(e) => setBestItemSort(e.target.value)}
+                  >
+                    <MenuItem value="orders_desc">Orders (High → Low)</MenuItem>
+                    <MenuItem value="orders_asc">Orders (Low → High)</MenuItem>
+                    <MenuItem value="sales_desc">Sales (High → Low)</MenuItem>
+                    <MenuItem value="sales_asc">Sales (Low → High)</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
             </Box>
-              <Box
-                sx={{
-                  ...cardContentSx,
-                  p: 0,     // ✅ no padding so table touches border
-                  gap: 0,
-                }}
+
+            <Box sx={cardContentSx}>
+              <TableContainer
+                className="scroll-x"
+                sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}
               >
-                <TableContainer
-                  className="scroll-x"
-                  sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    maxHeight: { xs: 230, sm: 250, md: 270 }, // same pattern as User Accounts
-                    overflowY: "auto",
-                    overflowX: "hidden",
-                  }}
-                >
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={{ ...tableCellFirstSx, width: 56 }} />
-                        <TableCell>Item Name</TableCell>
-                        <TableCell align="right" sx={{ ...tableCellSx, width: 90 }}>
-                          Orders
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ ...tableCellFirstSx, width: 56 }} />
+                      <TableCell sx={tableCellSx}>Item Name</TableCell>
+                      <TableCell align="right" sx={{ ...tableCellSx, width: 90 }}>
+                        Orders
+                      </TableCell>
+                      <TableCell sx={tableCellLastSx}>Category</TableCell>
+                    </TableRow>
+                  </TableHead>
+
+                  <TableBody>
+                    {sortedBestSellerItems.map((item, i) => (
+                      <TableRow key={`${item.itemId || item.name}-${i}`} hover>
+                        <TableCell sx={tableCellFirstSx}>
+                          <Box
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: "50%",
+                              display: "grid",
+                              placeItems: "center",
+                              bgcolor: theme.palette.primary.main,
+                              color: "#fff",
+                              fontWeight: 800,
+                              fontSize: 13,
+                            }}
+                          >
+                            {i + 1}
+                          </Box>
                         </TableCell>
-                        <TableCell sx={{ ...tableCellLastSx, width: 160 }}>
-                          Category
+
+                        <TableCell sx={tableCellSx}>
+                          <Typography variant="body2" fontWeight={700} noWrap>
+                            {item.name}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            ({item.qty} qty • {peso(item.sales)})
+                          </Typography>
+                        </TableCell>
+
+                        <TableCell align="right" sx={tableCellSx}>
+                          <Typography variant="body2" fontWeight={900} noWrap>
+                            {item.orders}
+                          </Typography>
+                        </TableCell>
+
+                        <TableCell sx={tableCellLastSx}>
+                          <Typography variant="body2" fontWeight={700} noWrap>
+                            {item.category || "-"}
+                          </Typography>
                         </TableCell>
                       </TableRow>
-                    </TableHead>
+                    ))}
 
-                    <TableBody>
-                      {sortedBestSellerItems.map((item, i) => (
-                        <TableRow key={`${item.itemId}-${i}`} hover>
-                          {/* Rank */}
-                          <TableCell sx={tableCellFirstSx}>
-                            <Avatar
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: theme.palette.primary.main,
-                                fontSize: 13,
-                              }}
-                            >
-                              {i + 1}
-                            </Avatar>
-                          </TableCell>
-
-                          {/* Item Name */}
-                          <TableCell sx={tableCellSx}>
-                            <Typography variant="body2" fontWeight={700} noWrap>
-                              {item.name}
+                    {sortedBestSellerItems.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Box py={4} textAlign="center" color="text.secondary">
+                            <Typography fontWeight={900}>No best sellers yet</Typography>
+                            <Typography variant="body2">
+                              No sales recorded for this range.
                             </Typography>
-                            <Typography variant="caption" color="text.secondary" noWrap>
-                              ({item.qty} qty • {peso(item.sales)})
-                            </Typography>
-                          </TableCell>
-
-                          {/* Orders */}
-                          <TableCell align="right" sx={tableCellSx}>
-                            <Typography variant="body2" fontWeight={800} noWrap>
-                              {item.orders}
-                            </Typography>
-                          </TableCell>
-
-                          {/* Category */}
-                          <TableCell sx={tableCellLastSx}>
-                            <Typography variant="body2" fontWeight={600} noWrap>
-                              {item.category || selectedCatName || "-"}
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-
-                      {/* Empty state (inside table, same structure as other tables) */}
-                      {sortedBestSellerItems.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={4} sx={tableCellSx}>
-                            <Box py={4}>
-                              <EmptyState
-                                icon={<TrendingUpIcon color="disabled" sx={{ fontSize: 40 }} />}
-                                title="No best sellers yet"
-                                description="There were no sales recorded in the selected period, so there’s no best-selling data to display."
-                                hint="Try switching the range to Week/Month or choose a different date."
-                              />
-                            </Box>
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </Box>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
           </Paper>
         </Box>
 

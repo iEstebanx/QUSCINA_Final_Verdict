@@ -169,6 +169,52 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
               if (!hasStock) stockReason = "insufficient-direct-stock";
             }
           }
+        } else if (stockMode === "hybrid") {
+          // HYBRID = must satisfy BOTH recipe ingredients AND direct product stock
+          const hasIngredients = ingredients.length > 0;
+
+          const invIdNum = num(row.inventoryIngredientId, 0);
+          const deductQty = num(row.inventoryDeductQty, 1);
+
+          // 1) recipe check
+          let okRecipe = false;
+          if (!hasIngredients) {
+            okRecipe = false;
+          } else {
+            okRecipe = ingredients.every((ing) => {
+              const ingId = Number(ing.ingredientId);
+              if (!Number.isFinite(ingId) || ingId <= 0) return false;
+
+              const inv = invById.get(ingId);
+              const current = inv?.currentStock ?? 0;
+              const needed = num(ing.qty, 0);
+
+              return current >= needed;
+            });
+          }
+
+          // 2) direct check (must be Product)
+          let okDirect = false;
+          if (!invIdNum) {
+            okDirect = false;
+          } else {
+            const inv = invById.get(invIdNum);
+            if (!inv) okDirect = false;
+            else if (Number(inv.inventoryTypeId || 1) !== 2) okDirect = false;
+            else {
+              const current = num(inv.currentStock, 0);
+              okDirect = current >= (deductQty > 0 ? deductQty : 1);
+            }
+          }
+
+          hasStock = okRecipe && okDirect;
+
+          // debug reason
+          if (!hasIngredients) stockReason = "hybrid-missing-recipe";
+          else if (!invIdNum) stockReason = "hybrid-missing-direct";
+          else if (!okRecipe) stockReason = "insufficient-ingredients-stock";
+          else if (!okDirect) stockReason = "insufficient-direct-stock";
+          else stockReason = "ok";
         } else {
           // Unknown/unsupported stockMode → safest is mark unavailable
           hasStock = false;
@@ -299,6 +345,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
 
         const stockMode = String(item.stockMode || "ingredients").toLowerCase();
 
+        // /pos/menu/toggle — stockMode gates (UPDATED with HYBRID support)
         if (stockMode === "ingredients") {
           let ingredients = safeJsonParse(item.ingredientsJson, []);
           if (!Array.isArray(ingredients)) ingredients = [];
@@ -355,6 +402,7 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
               error: "This item cannot be marked available because one or more ingredients are out of stock.",
             });
           }
+
         } else if (stockMode === "direct") {
           const invIdNum = num(item.inventoryIngredientId, 0);
           const deductQty = num(item.inventoryDeductQty, 1);
@@ -395,12 +443,115 @@ module.exports = function posMenuRouterFactory({ db } = {}) {
               error: "This item cannot be marked available because the linked inventory is out of stock.",
             });
           }
+
+        } else if (stockMode === "hybrid") {
+          // ✅ HYBRID: require BOTH (ingredients in stock) AND (direct product in stock)
+
+          // --- (A) ingredients check ---
+          let ingredients = safeJsonParse(item.ingredientsJson, []);
+          if (!Array.isArray(ingredients)) ingredients = [];
+
+          ingredients = ingredients
+            .map((r) => ({
+              ingredientId: String(r?.ingredientId ?? "").trim(),
+              qty: num(r?.qty ?? r?.quantity ?? r?.amount, 0),
+            }))
+            .filter((r) => r.ingredientId && r.qty > 0);
+
+          if (ingredients.length === 0) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because it has no recipe ingredients.",
+            });
+          }
+
+          const ids = ingredients
+            .map((r) => Number(r.ingredientId))
+            .filter((n) => Number.isFinite(n) && n > 0);
+
+          if (!ids.length) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because its recipe has invalid ingredient ids.",
+            });
+          }
+
+          const placeholders = ids.map(() => "?").join(",");
+          const rawInv = await db.query(
+            `
+            SELECT id, currentStock
+            FROM inventory_ingredients
+            WHERE id IN (${placeholders})
+            `,
+            ids
+          );
+
+          const invRows = asArray(rawInv);
+          const stockById = new Map(
+            invRows.map((r) => [Number(r.id), num(r.currentStock, 0)])
+          );
+
+          const okRecipe = ingredients.every((ing) => {
+            const ingId = Number(ing.ingredientId);
+            const current = stockById.get(ingId) ?? 0;
+            return current >= num(ing.qty, 0);
+          });
+
+          if (!okRecipe) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because one or more ingredients are out of stock.",
+            });
+          }
+
+          // --- (B) direct check ---
+          const invIdNum = num(item.inventoryIngredientId, 0);
+          const deductQty = num(item.inventoryDeductQty, 1);
+
+          if (!invIdNum) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because it has no Direct inventory link.",
+            });
+          }
+
+          const invRows2 = await db.query(
+            `SELECT id, inventory_type_id, currentStock FROM inventory_ingredients WHERE id = ? LIMIT 1`,
+            [invIdNum]
+          );
+          const inv2 = asArray(invRows2)[0];
+
+          if (!inv2) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because its linked inventory record was not found.",
+            });
+          }
+
+          if (Number(inv2.inventory_type_id || 1) !== 2) {
+            return res.status(400).json({
+              ok: false,
+              error: "Hybrid mode direct link must be a Product (inventory_type_id=2).",
+            });
+          }
+
+          const current2 = num(inv2.currentStock, 0);
+          const need2 = deductQty > 0 ? deductQty : 1;
+
+          if (current2 < need2) {
+            return res.status(400).json({
+              ok: false,
+              error: "This item cannot be marked available because the linked inventory is out of stock.",
+            });
+          }
+
         } else {
           return res.status(400).json({
             ok: false,
             error: "This item cannot be marked available because it has an unsupported stockMode.",
           });
         }
+
       }
 
       // Persist manual toggle

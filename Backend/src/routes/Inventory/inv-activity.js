@@ -172,11 +172,11 @@ module.exports = ({ db } = {}) => {
 
       // We filter via inventory_ingredients (joined as ii)
       if (typeFilter && typeFilter !== "all") {
-        where.push("ii.inventory_type_id = ?");
+        where.push("(ii.id IS NOT NULL AND ii.inventory_type_id = ?)");
         params.push(typeFilter);
       }
       if (category && category !== "all") {
-        where.push("ii.category = ?");
+        where.push("(ii.id IS NOT NULL AND ii.category = ?)");
         params.push(category);
       }
 

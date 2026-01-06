@@ -316,7 +316,7 @@ module.exports = ({ db } = {}) => {
       `
       SELECT id, name
       FROM items
-      WHERE (stockMode IS NULL OR stockMode = 'ingredients')
+      WHERE (stockMode IS NULL OR stockMode IN ('ingredients','hybrid'))
         AND (${whereJson})
       LIMIT 5
       `,
@@ -332,7 +332,7 @@ module.exports = ({ db } = {}) => {
     const rows = await db.query(
       `SELECT id, name
         FROM items
-        WHERE stockMode = 'direct'
+        WHERE stockMode IN ('direct','hybrid')
           AND inventoryIngredientId = ?
         LIMIT 5`,
       [idNum]
