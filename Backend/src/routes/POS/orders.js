@@ -551,7 +551,7 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
 
   // ---- cash change helpers (Backoffice POS) ----
   router.post("/check-inventory", async (req, res) => {
-    const { items = [] } = req.body || {};
+    const { items = [], employeeId } = req.body || {};
     try {
 
       if (!Array.isArray(items) || !items.length) {
@@ -560,6 +560,9 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
           action: "Check Inventory",
           success: true,
           reason: "no_items",
+          employeeId,
+          role: req.user?.role || "System",
+          affectedItems: [],
           extra: { itemCount: 0 },
           req,
         });
@@ -574,6 +577,13 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         action: "Check Inventory",
         success: true,
         reason: "ok",
+        employeeId,
+        role: req.user?.role || "System",
+        affectedItems: (items || []).map((it) => ({
+          name: it.name,
+          qty: safeNumber(it.qty ?? it.quantity, 1),
+          price: safeNumber(it.price, 0),
+        })),
         extra: { itemCount: items.length },
         req,
       });
@@ -586,6 +596,8 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
           action: "Check Inventory",
           success: false,
           reason: "insufficient_inventory",
+          employeeId,
+          role: req.user?.role || "System",
           items: items.map(it => ({
             name: it.name,
             qty: safeNumber(it.qty ?? it.quantity, 1),
@@ -609,6 +621,8 @@ async function applyInventoryFromCartItems(conn, cartItems = [], direction = "ou
         action: "Check Inventory",
         success: false,
         reason: "server_error",
+        employeeId,
+        role: req.user?.role || "System",
         extra: { errorMessage: e.message || String(e) },
         req,
       });
@@ -2767,6 +2781,12 @@ router.post("/charge", async (req, res) => {
       employeeId,
       shiftId,
       orderId: finalOrderId,
+      affectedItems: (items || []).map((it) => ({
+        name: it.name,
+        qty: safeNumber(it.qty ?? it.quantity, 1),
+        price: safeNumber(it.price, 0),
+        discountPercent: safeNumber(it.discountPercent ?? it.discount_percent ?? 0, 0),
+      })),
       extra: {
         terminalId,
         mode,

@@ -1254,13 +1254,49 @@ const PaymentTooltip = ({ active, payload }) => {
         {/* ============================ Best Sellers ============================ */}
         <Box sx={{ gridColumn: { xs: "span 12", lg: "span 8" } }}>
           <Paper sx={cardSx}>
-            <Box sx={{ ...cardHeaderSx, justifyContent: "space-between" }}>
-              <Typography variant="h6" fontWeight={800}>
+            <Box
+              sx={{
+                ...cardHeaderSx,
+                // allow wrapping but keep title safe and controls right-aligned
+                flexWrap: "wrap",
+                rowGap: 1,
+                columnGap: 1.25,
+              }}
+            >
+              <Typography
+                variant="h6"
+                fontWeight={800}
+                noWrap
+                sx={{
+                  flex: "1 1 auto",
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
                 Best Sellers
               </Typography>
 
-              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                <FormControl size="small" sx={{ minWidth: { xs: 160, sm: 220 } }}>
+              <Stack
+                direction="row"
+                spacing={1}
+                useFlexGap
+                flexWrap="wrap"
+                sx={{
+                  ml: "auto",
+                  justifyContent: "flex-end",
+                  alignItems: "center",
+                  minWidth: 0,
+                }}
+              >
+                <FormControl
+                  size="small"
+                  sx={{
+                    minWidth: { xs: 160, sm: 220 },
+                    flex: "0 0 auto",
+                  }}
+                >
                   <InputLabel>Category</InputLabel>
                   <Select
                     label="Category"
@@ -1277,7 +1313,7 @@ const PaymentTooltip = ({ active, payload }) => {
                   </Select>
                 </FormControl>
 
-                <FormControl size="small" sx={{ minWidth: 90 }}>
+                <FormControl size="small" sx={{ minWidth: 90, flex: "0 0 auto" }}>
                   <InputLabel>Top</InputLabel>
                   <Select
                     label="Top"
@@ -1291,7 +1327,7 @@ const PaymentTooltip = ({ active, payload }) => {
                   </Select>
                 </FormControl>
 
-                <FormControl size="small" sx={{ minWidth: 160 }}>
+                <FormControl size="small" sx={{ minWidth: 160, flex: "0 0 auto" }}>
                   <InputLabel>Sort</InputLabel>
                   <Select
                     label="Sort"

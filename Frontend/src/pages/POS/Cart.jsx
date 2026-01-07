@@ -131,7 +131,7 @@ const { user } = useAuth();
 
 // For Backoffice POS we'll just use a static terminal + dummy shift for now.
 const { shiftId, hasShift, refreshLatestShift, openShift } = useShift();
-const terminalId = "TERMINAL-1";
+const terminalId = "TERMINAL";
 
 const employeeId = useMemo(
   () =>

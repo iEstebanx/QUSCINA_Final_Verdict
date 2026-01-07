@@ -63,6 +63,13 @@ function suggestShift(now = new Date()) {
   return upcoming || windows[windows.length - 1];
 }
 
+// --- Terminal label helper (UI only) ---
+const terminalLabel = (idOrText) => {
+  const s = String(idOrText ?? "");
+  // UI label only: TERMINAL-1 / TERMINAL-2 / etc -> TERMINAL
+  return s.replace(/TERMINAL-\d+/gi, "TERMINAL");
+};
+
 // ------------------------- Denoms + validation -------------------------
 const denominations = [
   { label: "₱1", value: 1 },
@@ -134,6 +141,16 @@ export default function FloatingShiftModal({
 
   const [conflict, setConflict] = useState(null);
   const [conflictOpen, setConflictOpen] = useState(false);
+
+  const showShiftConflict = (msg, tid) => {
+    setConflict({
+      terminalId: tid,
+      employeeName: null,
+      employeeId: null,
+      message: terminalLabel(msg) || "A shift is already open. Please remit/close the current shift first.",
+    });
+    setConflictOpen(true);
+  };
 
   const handleDropdownChange = (denom, value) => {
     setQuantities((prev) => ({
@@ -249,42 +266,22 @@ export default function FloatingShiftModal({
     } catch (err) {
       console.error("[Backoffice POS] open shift failed", err);
 
-      if (err?.status === 409 || (err?.code && String(err.code).startsWith("SHIFT_"))) {
-        let message = err?.message || "Failed to open shift.";
-        let cTerminalId = tid;
-        let cEmployeeName = null;
-        let cEmployeeId = null;
+      const msg = String(err?.message || "");
+      const msgLower = msg.toLowerCase();
 
-        if (err?.code === "SHIFT_HELD_BY_OTHER_TERMINAL" && err?.holder) {
-          cTerminalId = err.holder.terminal_id || tid || "another terminal";
-          cEmployeeName =
-            err.holder.employee_name ||
-            err.holder.employee_username ||
-            err.holder.employee_email ||
-            (err.holder.employee_id ? `Employee #${err.holder.employee_id}` : "another user");
-          cEmployeeId = err.holder.employee_id || null;
+      // ✅ Catch "already open" even when openShift throws new Error("...") (no status/code)
+      const looksLikeConflict =
+        err?.status === 409 ||
+        (err?.code && String(err.code).startsWith("SHIFT_")) ||
+        msgLower.includes("already open") ||
+        msgLower.includes("shift is already open");
 
-          message = `A shift is already open on ${cTerminalId} for ${cEmployeeName}. You can’t open another shift while that terminal’s shift is still open. Please ask them to remit/close their shift first.`;
-        } else if (
-          err?.code === "SHIFT_ALREADY_OPEN_SAME_TERMINAL" ||
-          err?.code === "SHIFT_ALREADY_OPEN" ||
-          err?.message === "Shift already open"
-        ) {
-          cTerminalId = tid;
-          message = `A shift is already open on ${cTerminalId}. You can’t open another shift while this terminal’s shift is still open. Please remit/close the current shift first.`;
-        }
-
-        setConflict({
-          terminalId: cTerminalId,
-          employeeName: cEmployeeName,
-          employeeId: cEmployeeId,
-          message,
-        });
-        setConflictOpen(true);
-        setSubmitting(false);
-        return;
+      if (looksLikeConflict) {
+        showShiftConflict(msg || "A shift is already open.", tid);
+        return; // ✅ hard stop: no refresh, no onShiftOpened
       }
 
+      // keep alerts for non-conflict errors
       window.alert(err?.message || "Failed to open shift");
     } finally {
       setSubmitting(false);
@@ -591,7 +588,7 @@ export default function FloatingShiftModal({
 
           {conflict?.terminalId && (
             <Typography variant="body2" sx={{ opacity: 0.8 }}>
-              Terminal: <strong>{conflict.terminalId}</strong>
+              Terminal: <strong>{terminalLabel(conflict.terminalId)}</strong>
               {conflict?.employeeName && (
                 <>
                   {" "}
@@ -658,7 +655,7 @@ export default function FloatingShiftModal({
                   early_reason: earlyReason || null,
                   early_note: earlyNote || null,
                 };
-                await openShift(payload);
+                const shift = await openShift(payload);
 
                 setEarlyDialog({ open: false, message: "", earlyMinutes: 0 });
                 setPendingOpenPayload(null);
@@ -667,10 +664,28 @@ export default function FloatingShiftModal({
                   await refreshLatestShift();
                 }
                 if (typeof onShiftOpened === "function") {
-                  onShiftOpened(null);
+                  onShiftOpened(shift || null);
                 }
               } catch (err) {
                 console.error("[Backoffice POS] open shift failed", err);
+
+                const msg = String(err?.message || "");
+                const msgLower = msg.toLowerCase();
+
+                const looksLikeConflict =
+                  err?.status === 409 ||
+                  (err?.code && String(err.code).startsWith("SHIFT_")) ||
+                  msgLower.includes("already open") ||
+                  msgLower.includes("shift is already open");
+
+                if (looksLikeConflict) {
+                  showShiftConflict(
+                    msg || "A shift is already open.",
+                    pendingOpenPayload?.terminal_id || terminalId || "TERMINAL-1"
+                  );
+                  return; // ✅ hard stop
+                }
+
                 window.alert(err?.message || "Failed to open shift");
               } finally {
                 setSubmitting(false);

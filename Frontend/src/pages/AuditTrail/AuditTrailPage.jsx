@@ -204,6 +204,16 @@ export default function AuditTrailPage() {
   const isAuth = moduleKind === "auth";
   const isSystem = moduleKind === "system";
 
+  const isPos = moduleKind === "pos";
+
+  const affectedItems = selectedRow?.detail?.affectedData?.items || [];
+  const hasAffectedItems = Array.isArray(affectedItems) && affectedItems.length > 0;
+
+  const hideEmployee =
+    String(selectedRow?.role || "").toLowerCase() === "system" ||
+    !String(selectedRow?.employee || "").trim() ||
+    String(selectedRow?.employee || "").trim() === "—";
+
   const dialogTitle =
     selectedRow?.action === "POS - Void"
       ? "POS - Void Order Details"
@@ -459,119 +469,160 @@ export default function AuditTrailPage() {
             <DialogContent dividers className="scroll-x" sx={{ p: 0 }}>
               <Box sx={{ py: 2, px: 3 }}>
                 <Grid container spacing={2}>
-                  {/* ----------------------------------------------------
-                      USER INFORMATION - COMPACT
-                     ---------------------------------------------------- */}
-                  <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper
-                      variant="outlined"
-                      sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
-                    >
-                      <Typography
-                        variant="subtitle1"
-                        fontWeight={600}
-                        gutterBottom
-                        color="primary"
-                        sx={{ fontSize: "1rem" }}
-                      >
-                        User Information
-                      </Typography>
+                  {isPos ? (
+                    <>
+                      {/* POS: 2-column top row */}
+                      <Grid item xs={12} md={4}>
+                        <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                          <Typography
+                            variant="subtitle1"
+                            fontWeight={600}
+                            gutterBottom
+                            color="primary"
+                            sx={{ fontSize: "1rem" }}
+                          >
+                            User Information
+                          </Typography>
 
-                      <Stack spacing={1.5} mt={1.5}>
-                        <CompactDetailRow
-                          label="Employee"
-                          value={selectedRow.employee}
-                        />
-                        <CompactDetailRow
-                          label="Role"
-                          value={selectedRow.role || "—"}
-                        />
-                        <CompactDetailRow
-                          label="Timestamp"
-                          value={selectedRow.timestamp}
-                        />
-                      </Stack>
+                          <Stack spacing={1.5} mt={1.5}>
+                            {!hideEmployee && (
+                              <CompactDetailRow label="Employee" value={selectedRow.employee} />
+                            )}
+                            <CompactDetailRow label="Role" value={selectedRow.role || "—"} />
+                            <CompactDetailRow label="Timestamp" value={selectedRow.timestamp} />
+                          </Stack>
+                        </Paper>
+                      </Grid>
 
-                      {isAuth &&
-                        selectedRow.detail?.affectedData?.statusChange &&
-                        selectedRow.detail.affectedData.statusChange !==
-                          "NONE" && (
-                          <Box mt={2}>
+                      <Grid item xs={12} md={8}>
+                        <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                          <Typography
+                            variant="subtitle1"
+                            fontWeight={600}
+                            gutterBottom
+                            color="primary"
+                            sx={{ fontSize: "1rem" }}
+                          >
+                            Action Details
+                          </Typography>
+
+                          <GenericActionDetails detail={selectedRow.detail} />
+                        </Paper>
+                      </Grid>
+
+                      {/* POS: Items full width (below) */}
+                      <Grid item xs={12}>
+                        <Paper variant="outlined" sx={{ p: 2, borderRadius: 1.5 }}>
+                          <Typography
+                            variant="subtitle1"
+                            fontWeight={600}
+                            gutterBottom
+                            color="primary"
+                            sx={{ fontSize: "1rem" }}
+                          >
+                            Affected Data
+                          </Typography>
+
+                          {/* If none, show a nicer empty */}
+                          {hasAffectedItems ? (
+                            <GenericAffectedData detail={selectedRow.detail} />
+                          ) : (
+                            <Box py={2}>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{ fontStyle: "italic" }}
+                              >
+                                No items affected
+                              </Typography>
+                            </Box>
+                          )}
+                        </Paper>
+                      </Grid>
+                    </>
+                  ) : (
+                    <>
+                      {/* NON-POS: keep your existing 3-column layout */}
+                      <Grid item xs={12} md={isAuth ? 6 : 4}>
+                        <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                          <Typography
+                            variant="subtitle1"
+                            fontWeight={600}
+                            gutterBottom
+                            color="primary"
+                            sx={{ fontSize: "1rem" }}
+                          >
+                            User Information
+                          </Typography>
+
+                          <Stack spacing={1.5} mt={1.5}>
+                            <CompactDetailRow label="Employee" value={selectedRow.employee} />
+                            <CompactDetailRow label="Role" value={selectedRow.role || "—"} />
+                            <CompactDetailRow label="Timestamp" value={selectedRow.timestamp} />
+                          </Stack>
+
+                          {isAuth &&
+                            selectedRow.detail?.affectedData?.statusChange &&
+                            selectedRow.detail.affectedData.statusChange !== "NONE" && (
+                              <Box mt={2}>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ mb: 1, display: "block", fontWeight: 600 }}
+                                >
+                                  Status
+                                </Typography>
+                                <StatusChip detail={selectedRow.detail} isAuth={true} />
+                              </Box>
+                            )}
+                        </Paper>
+                      </Grid>
+
+                      {!isAuth && (
+                        <Grid item xs={12} md={4}>
+                          <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
                             <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{
-                                mb: 1,
-                                display: "block",
-                                fontWeight: 600,
-                              }}
+                              variant="subtitle1"
+                              fontWeight={600}
+                              gutterBottom
+                              color="primary"
+                              sx={{ fontSize: "1rem" }}
                             >
-                              Status
+                              Affected Data
                             </Typography>
-                            <StatusChip
-                              detail={selectedRow.detail}
-                              isAuth={true}
-                            />
-                          </Box>
-                        )}
-                    </Paper>
-                  </Grid>
 
-                  {/* ----------------------------------------------------
-                      AFFECTED DATA - COMPACT
-                     ---------------------------------------------------- */}
-                  {!isAuth && (
-                    <Grid item xs={12} md={4}>
-                      <Paper
-                        variant="outlined"
-                        sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
-                      >
-                        <Typography
-                          variant="subtitle1"
-                          fontWeight={600}
-                          gutterBottom
-                          color="primary"
-                          sx={{ fontSize: "1rem" }}
-                        >
-                          Affected Data
-                        </Typography>
-
-                        {isSystem ? (
-                          <SystemAffectedData detail={selectedRow.detail} />
-                        ) : (
-                          <GenericAffectedData detail={selectedRow.detail} />
-                        )}
-                      </Paper>
-                    </Grid>
-                  )}
-
-                  {/* ----------------------------------------------------
-                      ACTION DETAILS - COMPACT
-                     ---------------------------------------------------- */}
-                  <Grid item xs={12} md={isAuth ? 6 : 4}>
-                    <Paper
-                      variant="outlined"
-                      sx={{ p: 2, height: "100%", borderRadius: 1.5 }}
-                    >
-                      <Typography
-                        variant="subtitle1"
-                        fontWeight={600}
-                        gutterBottom
-                        color="primary"
-                        sx={{ fontSize: "1rem" }}
-                      >
-                        Action Details
-                      </Typography>
-
-                      {isAuth ? (
-                        <AuthActionDetails detail={selectedRow.detail} />
-                      ) : isSystem ? (
-                        <SystemActionDetails detail={selectedRow.detail} />
-                      ) : (
-                        <GenericActionDetails detail={selectedRow.detail} />
+                            {isSystem ? (
+                              <SystemAffectedData detail={selectedRow.detail} />
+                            ) : (
+                              <GenericAffectedData detail={selectedRow.detail} />
+                            )}
+                          </Paper>
+                        </Grid>
                       )}
-                    </Paper>
-                  </Grid>
+
+                      <Grid item xs={12} md={isAuth ? 6 : 4}>
+                        <Paper variant="outlined" sx={{ p: 2, height: "100%", borderRadius: 1.5 }}>
+                          <Typography
+                            variant="subtitle1"
+                            fontWeight={600}
+                            gutterBottom
+                            color="primary"
+                            sx={{ fontSize: "1rem" }}
+                          >
+                            Action Details
+                          </Typography>
+
+                          {isAuth ? (
+                            <AuthActionDetails detail={selectedRow.detail} />
+                          ) : isSystem ? (
+                            <SystemActionDetails detail={selectedRow.detail} />
+                          ) : (
+                            <GenericActionDetails detail={selectedRow.detail} />
+                          )}
+                        </Paper>
+                      </Grid>
+                    </>
+                  )}
                 </Grid>
               </Box>
             </DialogContent>
@@ -686,6 +737,9 @@ function GenericActionDetails({ detail }) {
   const app = String(a.app || meta.app || "").toLowerCase();
 
   const actionType = a.actionType || "";
+
+  const moduleName = a.module || "";
+  const isPosOrders = moduleName === "pos_orders";
 
   const isPosShiftOpen  = app === "pos" && actionType === "Open Shift";
   const isPosShiftClose = app === "pos" && actionType === "Close Shift";
@@ -879,7 +933,57 @@ function GenericActionDetails({ detail }) {
      (ingredients, items, discounts, etc.)
      ============================================ */
 
-  const moduleName = a.module;
+  /* ============================================
+   POS ORDERS (Backoffice POS): Charge / Pending / Check Inventory / Refund / Void
+   ============================================ */
+    if (isPosOrders) {
+      const formatPeso = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "—";
+        return `₱${n.toFixed(2)}`;
+      };
+
+      const payments = Array.isArray(a.payments) ? a.payments : [];
+      const paymentSummary =
+        payments.length
+          ? payments.map((p) => `${p.methodName || "Unknown"}: ${formatPeso(p.amount)}`).join(" • ")
+          : "—";
+
+      return (
+        <Stack spacing={1.5} mt={1.5}>
+          <CompactDetailRow label="Action Type" value={a.actionType || "—"} />
+
+          {a.shiftId != null && <CompactDetailRow label="Shift ID" value={String(a.shiftId)} />}
+          {a.terminalId && (<CompactDetailRow label="Terminal" value={String(a.terminalId).replace(/-\d+$/i, "")}/>)}
+          {a.orderId != null && <CompactDetailRow label="Order ID" value={String(a.orderId)} />}
+
+          {a.orderType && <CompactDetailRow label="Order Type" value={String(a.orderType)} />}
+          {a.customerName && <CompactDetailRow label="Customer" value={String(a.customerName)} />}
+          {a.tableNo != null && <CompactDetailRow label="Table" value={String(a.tableNo)} />}
+
+          {a.mode && <CompactDetailRow label="Mode" value={String(a.mode)} />}
+          {typeof a.isFinalPayment === "boolean" && (
+            <CompactDetailRow label="Final Payment" value={a.isFinalPayment ? "Yes" : "No"} />
+          )}
+
+          {a.grossAmount != null && <CompactDetailRow label="Gross" value={formatPeso(a.grossAmount)} />}
+          {a.discountAmount != null && <CompactDetailRow label="Discount" value={formatPeso(a.discountAmount)} />}
+          {a.netAmount != null && <CompactDetailRow label="Net" value={formatPeso(a.netAmount)} />}
+
+          {a.paidTotal != null && <CompactDetailRow label="Paid (this request)" value={formatPeso(a.paidTotal)} />}
+          {a.combinedPaid != null && <CompactDetailRow label="Paid (combined)" value={formatPeso(a.combinedPaid)} />}
+
+          {payments.length > 0 && (
+            <CompactDetailRow label="Payments" value={paymentSummary} />
+          )}
+
+          {a.itemCount != null && (
+            <CompactDetailRow label="Item Count" value={String(a.itemCount)} />
+          )}
+        </Stack>
+      );
+    }
+  
   const isIngredientLog = moduleName === "inventory_ingredients";
 
   // movement is set by backend ingredients.js for stock changes
@@ -1068,7 +1172,7 @@ function summarizeItemChangedFieldsUI(changedKeys = []) {
 function GenericAffectedData({ detail }) {
   const items = detail?.affectedData?.items || [];
   const moduleName = detail?.actionDetails?.module;
-
+  const isPosOrders = moduleName === "pos_orders";
   const isDiscountLog   = moduleName === "discounts";
   const isIngredientLog = moduleName === "inventory_ingredients";
   const isItemLog       = moduleName === "items";
@@ -1327,6 +1431,44 @@ function GenericAffectedData({ detail }) {
                         {itemChangeSummary}
                       </Typography>
                     )}
+                  </Box>
+                );
+              }
+              // 🔹 POS Orders: show name + qty + price
+              if (isPosOrders) {
+                const qty = it.qty != null ? Number(it.qty) : null;
+                const price = it.price != null ? Number(it.price) : null;
+
+                const formatPrice = (v) => {
+                  const n = Number(v);
+                  if (!Number.isFinite(n)) return "—";
+                  return `₱${n.toFixed(2)}`;
+                };
+
+                return (
+                  <Box
+                    key={idx}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 1,
+                      bgcolor: "action.hover",
+                      fontSize: "0.8125rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 0.5,
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+                      {it.name || "—"}
+                    </Typography>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Qty: {qty != null ? qty : "—"}
+                    </Typography>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Price: {price != null ? formatPrice(price) : "—"}
+                    </Typography>
                   </Box>
                 );
               }
