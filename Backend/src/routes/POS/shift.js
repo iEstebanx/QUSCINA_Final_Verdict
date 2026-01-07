@@ -69,6 +69,71 @@ module.exports = function posShiftRouterFactory({ db }) {
     return req.user?.employeeId || req.user?.sub || req.user?.id || null;
   }
 
+  // ----------------------------
+  // AUDIT TRAIL HELPERS (copy pattern from POS/orders.js)
+  // ----------------------------
+  async function resolveRoleFromEmployeeId(connOrDb, employeeId) {
+    try {
+      const sql = `SELECT role FROM employees WHERE employee_id = ? LIMIT 1`;
+      if (connOrDb.execute) {
+        const [rows] = await connOrDb.execute(sql, [employeeId]);
+        return rows?.[0]?.role || null;
+      }
+      const rows = await connOrDb.query(sql, [employeeId]);
+      return rows?.[0]?.role || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function writeAudit(connOrDb, req, { action, detail }) {
+    const employeeId = getEmployeeId(req);
+
+    // Role fallback: use token role if present, else query employees
+    const role =
+      req.user?.role ||
+      req.user?.userRole ||
+      (employeeId ? await resolveRoleFromEmployeeId(connOrDb, employeeId) : null) ||
+      "Unknown";
+
+    const ip =
+      req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() ||
+      req.ip ||
+      null;
+
+    const userAgent = req.headers["user-agent"] || null;
+
+    const payload = {
+      ...(detail || {}),
+      meta: {
+        ...(detail?.meta || {}),
+        app: "pos",
+        ip,
+        userAgent,
+      },
+    };
+
+    const sql = `
+      INSERT INTO audit_trail
+        (employee, role, action, detail, timestamp)
+      VALUES
+        (?, ?, ?, ?, NOW())
+    `;
+
+    const params = [
+      employeeId ? String(employeeId) : "System",
+      String(role || "Unknown"),
+      String(action || "POS - Shift"),
+      JSON.stringify(payload),
+    ];
+
+    if (connOrDb.execute) {
+      await connOrDb.execute(sql, params);
+    } else {
+      await connOrDb.query(sql, params);
+    }
+  }
+
   async function hasPendingOrdersForShift(conn, shiftId) {
     const [rows] = await conn.execute(
       `
@@ -265,6 +330,22 @@ module.exports = function posShiftRouterFactory({ db }) {
             employee_id: holder.employee_id,
             employee_name: displayName,
           };
+          await writeAudit(conn, req, {
+            action: "POS - Open Shift",
+            detail: {
+              statusMessage: "Blocked: shift already open on terminal",
+              actionDetails: {
+                app: "pos",
+                module: "pos_shifts",
+                actionType: "Open Shift",
+                terminalId: terminal_id,
+                blocked: true,
+                code: "SHIFT_ALREADY_OPEN_ON_TERMINAL",
+                holder: err.holder,
+              },
+              affectedData: { items: [] },
+            },
+          });
           throw err;
         }
 
@@ -339,6 +420,34 @@ module.exports = function posShiftRouterFactory({ db }) {
         }
 
         const [row] = await conn.execute(`SELECT * FROM pos_shifts WHERE shift_id = ?`, [shiftId]);
+
+        await writeAudit(conn, req, {
+          action: "POS - Open Shift",
+          detail: {
+            actionDetails: {
+              app: "pos",
+              module: "pos_shifts",
+              actionType: "Open Shift",
+              terminalId: terminal_id,
+              shiftId,
+              openingFloat: opening_float,
+              denominations: inserted,
+              note: note || null,
+
+              // template metadata (optional but useful)
+              shift_code: shift_code || null,
+              shift_name: shift_name || null,
+              scheduled_start: scheduled_start || null,
+              scheduled_end: scheduled_end || null,
+              opened_early: Number(opened_early || 0),
+              early_minutes: Number(early_minutes || 0),
+              early_reason: early_reason ?? null,
+              early_note: early_note ?? null,
+            },
+            affectedData: { items: [] },
+          },
+        });
+
         return { shift: row?.[0] || null, denoms_inserted: inserted };
       });
 
@@ -391,6 +500,32 @@ module.exports = function posShiftRouterFactory({ db }) {
           [shift_id, type, amount, reason || null, employeeId]
         );
         const moveId = ins.insertId;
+
+        await writeAudit(conn, req, {
+          action: "POS - Cash Move",
+          detail: {
+            actionDetails: {
+              app: "pos",
+              module: "pos_shifts",
+              actionType: "Cash Move",
+              shiftId: shift_id,
+              moveId,
+              moveType: type,
+              moveTypeLabel:
+                type === "cash_in" ? "Cash In" :
+                type === "cash_out" ? "Cash Out" :
+                type === "safe_drop" ? "Safe Drop" :
+                type === "payout" ? "Payout" :
+                type === "refund_cash" ? "Refund Cash" :
+                "Cash Move",
+              amount,
+              reason: reason || null,
+              denominations,
+              expectedCashBefore: expected_cash,
+            },
+            affectedData: { items: [] },
+          },
+        });
 
         for (const d of denominations) {
           if (!Number.isFinite(Number(d?.denom_value)) || Number(d?.qty) <= 0) continue;
@@ -637,6 +772,24 @@ module.exports = function posShiftRouterFactory({ db }) {
             WHERE shift_id = ?`,
           [declared_cash, expected_cash, variance, closing_note || null, shiftId]
         );
+
+        await writeAudit(conn, req, {
+          action: "POS - Close Shift",
+          detail: {
+            actionDetails: {
+              app: "pos",
+              module: "pos_shifts",
+              actionType: "Close Shift",
+              shiftId,
+              terminalId: shift.terminal_id,
+              declaredCash: declared_cash,
+              expectedCash: expected_cash,
+              variance,
+              closingNote: closing_note || null,
+            },
+            affectedData: { items: [] },
+          },
+        });
 
         const [updated] = await conn.execute(`SELECT * FROM pos_shifts WHERE shift_id = ?`, [shiftId]);
         return updated?.[0] || null;

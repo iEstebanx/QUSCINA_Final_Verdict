@@ -1,8 +1,18 @@
 // QUSCINA_BACKOFFICE/Backend/src/routes/Reports/reports.js
 const express = require("express");
+const dayjs = require("dayjs");
+
+const {
+  getAuditUserFromReq,
+  logInventoryExportAuditSafe,
+  toIsoManila,
+} = require("../Inventory/inv-activity");
 
 module.exports = ({ db }) => {
   const router = express.Router();
+
+  router.use(express.json());
+  router.use(requireAuth);  
 
   function buildRangeSQL(range, from, to) {
     switch (range) {
@@ -731,6 +741,56 @@ router.get("/shift-sales-history", async (req, res) => {
   } catch (e) {
     console.error("SHIFT SALES HISTORY ERROR", e);
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+/* =========================================================================
+ * EXPORT AUDIT (Reports PDF / Excel)
+ * ========================================================================= */
+router.post("/audit-export", requireAuth, async (req, res) => {
+  try {
+    const {
+      format,           // "pdf" | "excel"
+      range,            // days | weeks | monthly | quarterly | yearly | custom
+      from,
+      to,
+      filename,
+      sectionCount,     // optional: number of sections exported
+      rangeLabel,
+    } = req.body || {};
+
+    const exportedAt = toIsoManila(new Date());
+
+    const fmt = String(format || "").toLowerCase();
+    const action =
+      fmt === "pdf"
+        ? "Reports Exported (PDF)"
+        : "Reports Exported (Excel)";
+
+    await logInventoryExportAuditSafe(db, req, {
+      action,
+      actionType: fmt === "pdf" ? "export_pdf" : "export_excel",
+      extra: {
+        statusMessage: `Exported reports (${fmt.toUpperCase()}).`,
+        actionDetails: {
+          module: "reports",
+          format: fmt,
+          filename,
+          range,
+          from,
+          to,
+          rangeLabel,
+          sectionCount,
+          exportedAt,
+        },
+      },
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    // ⚠️ audit failure should NEVER block export
+    console.error("[reports export audit] failed", e);
+    return res.json({ ok: false });
   }
 });
 

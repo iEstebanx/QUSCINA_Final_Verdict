@@ -411,6 +411,8 @@ useEffect(() => {
 
     const pick = exportAll ? DEFAULT_EXPORT : exportPick;
 
+    const { exportedAt, filename } = buildExportMeta(exportKind);
+
     const exportBestSellerItems = pick.bestSellerItems
       ? sortedBestSellerItems
       : [];
@@ -418,6 +420,8 @@ useEffect(() => {
     if (exportKind === "excel") {
       await buildSalesExcelXlsx({
         rangeText: currentRangeLabel,
+        exportedAt,
+        filename,
         categorySeriesData: pick.dailySales ? categorySeries : [],
         paymentsData: pick.paymentTypes ? payments : [],
         bestSellerItems: exportBestSellerItems,
@@ -430,6 +434,8 @@ useEffect(() => {
     if (exportKind === "pdf") {
       await buildSalesPdf({
         rangeText: currentRangeLabel,
+        exportedAt,
+        filename,
         categoryTop5Data: pick.dailySales ? categoryTop5 : [],
         categorySeriesData: pick.dailySales ? categorySeries : [],
         paymentsData: pick.paymentTypes ? payments : [],
@@ -439,6 +445,20 @@ useEffect(() => {
         preparedBy,
       });
     }
+
+      fetch("/api/reports/audit-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: exportKind,
+          range,
+          from: customFrom || null,
+          to: customTo || null,
+          filename,
+          rangeLabel: currentRangeLabel,
+          sectionCount: Object.values(pick).filter(Boolean).length,
+        }),
+      }).catch(() => {});
 
     setExportOpen(false);
   };
@@ -901,6 +921,9 @@ const bestSellerBoardHeight = Math.min(
   // 🔹 Text version of current filter range (used in dialog + PDF/Excel)
   const displayDate = (s) =>
   dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s;
+
+  const fileDate = (s) =>
+  dayjs(s).isValid() ? dayjs(s).format("MM-DD-YYYY") : s;
   
   const currentRangeLabel = useMemo(() => {
     if (range === "custom") {
@@ -930,6 +953,64 @@ const bestSellerBoardHeight = Math.min(
     () => new Set(activeDays),
     [activeDays]
   );
+
+  const safeSlug = (s) =>
+    String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/(^-|-$)/g, "");
+
+  const buildExportSlug = () => {
+    const f = customFrom ? dayjs(customFrom) : null;
+    const t = customTo ? dayjs(customTo) : null;
+
+    // fallback
+    const y = (f && f.isValid() ? f.year() : dayjs().year());
+    const m0 = (f && f.isValid() ? f.month() : dayjs().month()); // 0-based
+
+    if (range === "days") {
+      const d = f && f.isValid() ? fileDate(f) : fileDate(dayjs());
+      return `today-${d}`;
+    }
+
+    if (range === "weeks") {
+      const fromS = f && f.isValid() ? fileDate(f) : "from";
+      const toS = t && t.isValid() ? fileDate(t) : "to";
+      return `week-${fromS}_to_${toS}`;
+    }
+
+    if (range === "monthly") {
+      const mm = String(m0 + 1).padStart(2, "0");
+      return `month-${y}-${mm}`;
+    }
+
+    if (range === "quarterly") {
+      const q = Math.floor(m0 / 3) + 1;
+      return `q${q}-${y}`;
+    }
+
+    if (range === "yearly") {
+      return `year-${y}`;
+    }
+
+    // custom (or anything else)
+    if (customFrom && customTo) {
+      return `custom-${fileDate(customFrom)}_to_${fileDate(customTo)}`;
+    }
+    return "range";
+  };
+
+  const buildExportMeta = (kind) => {
+    const exportedAt = dayjs().format("YYYY-MM-DD HH:mm:ss");
+    const ext = kind === "excel" ? "xlsx" : "pdf";
+
+    const slug = safeSlug(buildExportSlug());
+    const filename = `sales-report-${slug}.${ext}`;
+
+    return { exportedAt, filename };
+  };
 
   /* ------------------------ Load REAL data from backend ------------------------ */
   useEffect(() => {
@@ -1028,6 +1109,8 @@ const bestSellerBoardHeight = Math.min(
 
 const buildSalesExcelXlsx = async ({
   rangeText,
+  exportedAt,
+  filename,
   categorySeriesData,
   paymentsData,
   bestSellerItems,
@@ -1195,7 +1278,7 @@ const buildSalesExcelXlsx = async ({
   ws.getRow(r).height = 6; r++;
 
   keyValue(r++, "Date Range", rangeText || "N/A");
-  keyValue(r++, "Generated At", new Date().toLocaleString("en-PH"));
+  keyValue(r++, "Generated At", exportedAt);
   keyValue(r++, "Branch", "Kawit, Cavite");
   ws.getRow(r).height = 6; r++;
 
@@ -1357,10 +1440,16 @@ const buildSalesExcelXlsx = async ({
 
   // Download
   const buffer = await wb.xlsx.writeBuffer();
-  const filename = `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}-${Date.now()}.xlsx`;
+
+  const outFilename =
+    filename ||
+    `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}-${Date.now()}.xlsx`;
+
   saveAs(
-    new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-    filename
+    new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    outFilename
   );
 };
 
@@ -1368,6 +1457,8 @@ const buildSalesExcelXlsx = async ({
   /* ------------------ Shared PDF builder (uses passed data) ------------------ */
 const buildSalesPdf = async ({
   rangeText,
+  exportedAt,
+  filename,
   categoryTop5Data,
   categorySeriesData,
   paymentsData,
@@ -1447,6 +1538,12 @@ const buildSalesPdf = async ({
   doc.text("Report Date range:", 72, cursorY);
   doc.setFont(undefined, "normal");
   doc.text(rangeText, 180, cursorY);
+  cursorY += 16;
+
+  doc.setFont(undefined, "bold");
+  doc.text("Generated At:", 72, cursorY);
+  doc.setFont(undefined, "normal");
+  doc.text(exportedAt, 180, cursorY);
   cursorY += 16;
 
   doc.setFont(undefined, "bold");
@@ -1655,7 +1752,11 @@ const buildSalesPdf = async ({
   doc.setFontSize(11);
   doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
 
-  doc.save(`sales-report-${rangeText.replace(/\s+/g, "-")}.pdf`);
+  const outFilename =
+    filename ||
+    `sales-report-${String(rangeText || "range").replace(/\s+/g, "-")}.pdf`;
+
+  doc.save(outFilename);
 };
 
   async function openBestCategory(row) {

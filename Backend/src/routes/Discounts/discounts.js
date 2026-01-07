@@ -9,6 +9,23 @@ function formatDiscCode(n) {
   return `DISC-${String(n).padStart(6, "0")}`;
 }
 
+// Normalize mysql2/promise results
+function asRows(result) {
+  if (!result) return [];
+  // mysql2/promise: [rows, fields]
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  // already rows
+  if (Array.isArray(result)) return result;
+  return [];
+}
+
+function asPacket(result) {
+  if (!result) return {};
+  // mysql2/promise: [OkPacket, fields]
+  if (Array.isArray(result) && result[0] && !Array.isArray(result[0])) return result[0];
+  return result; // already OkPacket
+}
+
 /**
  * Map raw discount row into a compact item object for audit trail.
  */
@@ -129,15 +146,15 @@ module.exports = ({ db } = {}) => {
   // GET /api/discounts
   router.get("/", async (_req, res) => {
     try {
-      const rows = await db.query(
+      const rows = asRows(await db.query(
         `SELECT id, code, name, type,
                 CAST(value AS DOUBLE) AS value,
                 scope, isStackable, requiresApproval, isActive,
                 createdAt, updatedAt
-           FROM discounts
+          FROM discounts
           ORDER BY createdAt DESC`
-      );
-      // Safety: ensure JS numbers
+      ));
+
       rows.forEach(r => { r.value = Number(r.value); });
       res.json(rows);
     } catch (e) {
@@ -183,19 +200,19 @@ module.exports = ({ db } = {}) => {
           now
         ]
       );
-
-      const insertId = result.insertId; // mysql2 OkPacket
+      const packet = asPacket(result);
+      const insertId = packet.insertId;
       const code = formatDiscCode(insertId);
 
       // 2) Set the final code derived from id
       await db.query(`UPDATE discounts SET code = ? WHERE id = ?`, [code, insertId]);
 
       // 3) Fetch full row for audit trail
-      const createdRows = await db.query(
+      const createdRows = asRows(await db.query(
         `SELECT * FROM discounts WHERE id = ? LIMIT 1`,
         [insertId]
-      );
-      const created = createdRows[0];
+      ));
+      const created = createdRows[0] || null;
 
       // 4) Log to audit trail (Discount Created)
       const statusMessage = created
@@ -232,10 +249,10 @@ module.exports = ({ db } = {}) => {
       if (!code) return res.status(400).json({ error: "invalid code" });
 
       // Fetch "before" snapshot for audit
-      const beforeRows = await db.query(
+      const beforeRows = asRows(await db.query(
         `SELECT * FROM discounts WHERE code = ? LIMIT 1`,
         [code]
-      );
+      ));
       const before = beforeRows[0] || null;
 
       const patch = { ...req.body };
@@ -266,10 +283,10 @@ module.exports = ({ db } = {}) => {
       await db.query(`UPDATE discounts SET ${sets.join(", ")} WHERE code = ?`, params);
 
       // Fetch "after" snapshot
-      const afterRows = await db.query(
+      const afterRows = asRows(await db.query(
         `SELECT * FROM discounts WHERE code = ? LIMIT 1`,
         [code]
-      );
+      ));
       const after = afterRows[0] || null;
 
       // Audit log: Discount Updated
@@ -305,10 +322,10 @@ module.exports = ({ db } = {}) => {
       const { code } = req.params;
 
       // Fetch snapshot before deletion
-      const rows = await db.query(
+      const rows = asRows(await db.query(
         `SELECT * FROM discounts WHERE code = ? LIMIT 1`,
         [code]
-      );
+      ));
       const discount = rows[0] || null;
 
       await db.query(`DELETE FROM discounts WHERE code = ?`, [code]);
@@ -360,19 +377,19 @@ module.exports = ({ db } = {}) => {
 
       if (ids.length) {
         const ph = ids.map(() => "?").join(",");
-        const rowsById = await db.query(
+        const rowsById = asRows(await db.query(
           `SELECT * FROM discounts WHERE id IN (${ph})`,
           ids
-        );
+        ));
         allToLog.push(...rowsById);
       }
 
       if (stringCodes.length) {
         const ph = stringCodes.map(() => "?").join(",");
-        const rowsByCode = await db.query(
+        const rowsByCode = asRows(await db.query(
           `SELECT * FROM discounts WHERE code IN (${ph})`,
           stringCodes
-        );
+        ));
         allToLog.push(...rowsByCode);
       }
 

@@ -623,6 +623,8 @@ function applyPresetRange(nextRange) {
 
   const displayDate = (s) => (dayjs(s).isValid() ? dayjs(s).format("MM/DD/YYYY") : s);
 
+  const fileDate = (s) => (dayjs(s).isValid() ? dayjs(s).format("MM-DD-YYYY") : s);
+
 const rangeLabel = useMemo(() => {
   if (range === "days") {
     return isCurrentDayByRange(customFrom, customTo, dateBounds) ? "Today" : "Day";
@@ -787,6 +789,16 @@ useEffect(() => {
       return;
     }
 
+    const exportedAtIso = new Date().toISOString();
+    const exportedAtLabel = new Date(exportedAtIso).toLocaleString("en-PH", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+
     const doc = new jsPDF({
       orientation: "portrait",
       unit: "pt",
@@ -848,6 +860,18 @@ useEffect(() => {
     doc.text(searchLabel, 120, cursorY);
     cursorY += 18;
 
+    doc.setFont(undefined, "bold");
+    doc.text("Exported at:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text(exportedAtLabel, 150, cursorY);
+    cursorY += 16;
+
+    doc.setFont(undefined, "bold");
+    doc.text("Rows:", 72, cursorY);
+    doc.setFont(undefined, "normal");
+    doc.text(String(baseRows.length), 150, cursorY);
+    cursorY += 18;
+
     ensureSpace(120);
 
     autoTable(doc, {
@@ -884,7 +908,48 @@ useEffect(() => {
     doc.setFontSize(11);
     doc.text(preparedBy || "Prepared by: N/A", 72, footerY);
 
-    doc.save(`inventory-history-${currentRangeLabel.replace(/\s+/g, "-")}.pdf`);
+    // stable range key for filenames (avoid UI labels like "This Week")
+    const rangeKey =
+      range === "days" ? "day" :
+      range === "weeks" ? "week" :
+      range === "monthly" ? "month" :
+      range === "quarterly" ? "quarter" :
+      range === "yearly" ? "year" :
+      "custom";
+
+    const fromKey = customFrom ? fileDate(customFrom) : "";
+    const toKey = customTo ? fileDate(customTo) : "";
+
+    // clean + PH-friendly: inventory-history_week_01-01-2026_to_01-07-2026.pdf
+    const filename = `inventory-history_${rangeKey}_${fromKey}_to_${toKey}.pdf`;
+        
+    // ✅ audit export (server-side)
+    try {
+      await authFetch(`${ACT_API}/audit-export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: "pdf",
+          range,
+          from: customFrom,
+          to: customTo,
+          search: search.trim(),
+          rowCount: baseRows.length,
+          filename,
+          exportedAt: exportedAtIso,
+          exportedAtLabel,
+          rangeLabel: currentRangeLabel,
+          yearSel,
+          monthSel,
+          weekSel,
+        }),
+      });
+    } catch (e) {
+      // never block exporting if audit fails
+      console.error("audit export failed:", e);
+    }
+
+    doc.save(filename);
   };
 
   return (

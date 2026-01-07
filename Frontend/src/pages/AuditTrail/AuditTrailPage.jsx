@@ -150,6 +150,13 @@ function getActionLabel(row) {
   return action;
 }
 
+  function uiTerminalLabel(value) {
+    const s = String(value ?? "").trim();
+    if (!s) return "—";
+    // TERMINAL-1 / terminal-2 / TERMINAL-10  -> TERMINAL
+    return s.replace(/-\d+$/i, "");
+  }
+
 /* ============================================================
    MAIN PAGE
    ============================================================ */
@@ -763,7 +770,7 @@ function GenericActionDetails({ detail }) {
         <CompactDetailRow label="Action Type" value="Open Shift" />
 
         {a.terminalId && (
-          <CompactDetailRow label="Terminal" value={a.terminalId} />
+          <CompactDetailRow label="Terminal" value={uiTerminalLabel(a.terminalId)} />
         )}
 
         {a.shiftId && (
@@ -893,7 +900,7 @@ function GenericActionDetails({ detail }) {
         <CompactDetailRow label="Action Type" value="Close Shift" />
 
         {a.terminalId && (
-          <CompactDetailRow label="Terminal" value={a.terminalId} />
+          <CompactDetailRow label="Terminal" value={uiTerminalLabel(a.terminalId)} />
         )}
 
         {a.shiftId && (
@@ -954,7 +961,9 @@ function GenericActionDetails({ detail }) {
           <CompactDetailRow label="Action Type" value={a.actionType || "—"} />
 
           {a.shiftId != null && <CompactDetailRow label="Shift ID" value={String(a.shiftId)} />}
-          {a.terminalId && (<CompactDetailRow label="Terminal" value={String(a.terminalId).replace(/-\d+$/i, "")}/>)}
+          {a.terminalId && (
+            <CompactDetailRow label="Terminal" value={uiTerminalLabel(a.terminalId)} />
+          )}
           {a.orderId != null && <CompactDetailRow label="Order ID" value={String(a.orderId)} />}
 
           {a.orderType && <CompactDetailRow label="Order Type" value={String(a.orderType)} />}
